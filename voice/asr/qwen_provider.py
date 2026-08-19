@@ -1,8 +1,11 @@
 import asyncio
+from importlib.metadata import PackageNotFoundError, version
 import logging
 from pathlib import Path
 from time import monotonic
 from typing import Any
+
+from ..huggingface_runtime import prepare_huggingface_environment
 
 from .provider import ASRProviderError, NoSpeechError, Transcription
 
@@ -40,18 +43,29 @@ class QwenASRProvider:
                     audio=str(wav_path),
                     language=None,
                 )
-            result = results[0]
-            text = str(result.text).strip()
-            language_value = result.language
-            language = str(language_value).strip() if language_value else "Unknown"
         except Exception as error:
             raise ASRProviderError(
                 "Qwen ASR inference failed.",
                 phase="inference",
             ) from error
 
+        if not results:
+            raise NoSpeechError("Qwen ASR returned no transcription results.")
+        result = results[0]
+        text_value = getattr(result, "text", None)
+        if text_value is None:
+            raise NoSpeechError("Qwen ASR returned no recognizable speech.")
+        if not isinstance(text_value, str):
+            raise ASRProviderError(
+                "Qwen ASR returned an invalid transcription.",
+                phase="response",
+            )
+        text = text_value.strip()
         if not text:
             raise NoSpeechError("Qwen ASR returned no recognizable speech.")
+
+        language_value = getattr(result, "language", None)
+        language = str(language_value).strip() if language_value else "Unknown"
         return Transcription(text=text, language=language)
 
     async def _get_model(self) -> Any:
@@ -66,15 +80,20 @@ class QwenASRProvider:
     def _load_model(self) -> Any:
         started_at = monotonic()
         try:
+            prepare_huggingface_environment()
             import torch
             from qwen_asr import Qwen3ASRModel
 
             dtype = resolve_torch_dtype(torch, self._device, self._dtype)
             LOGGER.info(
-                "Loading Qwen ASR model model=%s device=%s dtype=%s",
+                "Loading Qwen ASR model model=%s device=%s dtype=%s "
+                "qwen_asr=%s torch=%s torch_cuda=%s",
                 self._model_name,
                 self._device,
                 str(dtype),
+                installed_version("qwen-asr"),
+                getattr(torch, "__version__", "unknown"),
+                getattr(torch.version, "cuda", None),
             )
             model = Qwen3ASRModel.from_pretrained(
                 self._model_name,
@@ -119,3 +138,10 @@ def parse_cuda_index(device: str) -> int:
         return int(device.rsplit(":", 1)[1])
     except ValueError as error:
         raise RuntimeError(f"Invalid ASR CUDA device: {device}.") from error
+
+
+def installed_version(package: str) -> str:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return "unknown"

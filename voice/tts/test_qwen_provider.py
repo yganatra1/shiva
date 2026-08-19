@@ -33,6 +33,11 @@ class FailingInferenceModel:
         raise RuntimeError("synthetic inference failure")
 
 
+class EmptyResultModel:
+    def generate_custom_voice(self, **_arguments: object) -> tuple[list[object], int]:
+        return [], 24_000
+
+
 class QwenTTSProviderTest(unittest.TestCase):
     def test_auto_dtype_uses_bfloat16_on_ampere_cuda(self) -> None:
         cuda = FakeCuda(available=True, capability=(8, 6))
@@ -67,6 +72,15 @@ class QwenTTSProviderTest(unittest.TestCase):
             asyncio.run(provider.synthesize("Hello"))
 
         self.assertEqual(caught.exception.phase, "inference")
+
+    def test_empty_result_is_response_failure(self) -> None:
+        provider = QwenTTSProvider("mock-model", device="cpu")
+        provider._model = EmptyResultModel()
+
+        with self.assertRaises(TTSProviderError) as caught:
+            asyncio.run(provider.synthesize("Hello"))
+
+        self.assertEqual(caught.exception.phase, "response")
 
 
 if __name__ == "__main__":

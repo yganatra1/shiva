@@ -36,6 +36,15 @@ class EmptyResultModel:
         return [SimpleNamespace(text="   ", language=None)]
 
 
+class MissingTextModel:
+    def __init__(self, results: list[SimpleNamespace]) -> None:
+        self._results = results
+
+    def transcribe(self, *, audio: str, language: None) -> list[SimpleNamespace]:
+        del audio, language
+        return self._results
+
+
 class QwenASRProviderTest(unittest.TestCase):
     def test_auto_dtype_uses_bfloat16_on_ampere_cuda(self) -> None:
         cuda = FakeCuda(available=True, capability=(8, 6))
@@ -68,6 +77,15 @@ class QwenASRProviderTest(unittest.TestCase):
 
         with self.assertRaises(NoSpeechError):
             asyncio.run(provider.transcribe(Path("normalized.wav")))
+
+    def test_missing_result_or_text_is_no_speech(self) -> None:
+        for results in ([], [SimpleNamespace(text=None, language=None)]):
+            with self.subTest(results=results):
+                provider = QwenASRProvider("mock-model", device="cpu")
+                provider._model = MissingTextModel(results)
+
+                with self.assertRaises(NoSpeechError):
+                    asyncio.run(provider.transcribe(Path("normalized.wav")))
 
 
 if __name__ == "__main__":

@@ -1,8 +1,11 @@
 import asyncio
+from importlib.metadata import PackageNotFoundError, version
 from io import BytesIO
 import logging
 from time import monotonic
 from typing import Any
+
+from ..huggingface_runtime import prepare_huggingface_environment
 
 from .provider import SynthesizedSpeech, TTSProviderError
 
@@ -54,6 +57,19 @@ class QwenTTSProvider:
                     speaker=self._speaker,
                     instruct=self._instruction,
                 )
+        except Exception as error:
+            raise TTSProviderError(
+                "Qwen TTS inference failed.",
+                phase="inference",
+            ) from error
+
+        if not wavs:
+            raise TTSProviderError(
+                "Qwen TTS returned no audio results.",
+                phase="response",
+            )
+
+        try:
             wav = await asyncio.to_thread(
                 self._encode_wav,
                 wavs[0],
@@ -61,8 +77,8 @@ class QwenTTSProvider:
             )
         except Exception as error:
             raise TTSProviderError(
-                "Qwen TTS inference failed.",
-                phase="inference",
+                "Qwen TTS audio encoding failed.",
+                phase="encoding",
             ) from error
 
         if len(wav) <= 44:
@@ -84,15 +100,20 @@ class QwenTTSProvider:
     def _load_model(self) -> Any:
         started_at = monotonic()
         try:
+            prepare_huggingface_environment()
             import torch
             from qwen_tts import Qwen3TTSModel
 
             dtype = resolve_torch_dtype(torch, self._device, self._dtype)
             LOGGER.info(
-                "Loading Qwen TTS model model=%s device=%s dtype=%s",
+                "Loading Qwen TTS model model=%s device=%s dtype=%s "
+                "qwen_tts=%s torch=%s torch_cuda=%s",
                 self._model_name,
                 self._device,
                 str(dtype),
+                installed_version("qwen-tts"),
+                getattr(torch, "__version__", "unknown"),
+                getattr(torch.version, "cuda", None),
             )
             model = Qwen3TTSModel.from_pretrained(
                 self._model_name,
@@ -143,3 +164,10 @@ def parse_cuda_index(device: str) -> int:
         return int(device.rsplit(":", 1)[1])
     except ValueError as error:
         raise RuntimeError(f"Invalid TTS CUDA device: {device}.") from error
+
+
+def installed_version(package: str) -> str:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return "unknown"

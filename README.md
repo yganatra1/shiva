@@ -68,6 +68,7 @@ TTS_SPEAKER=Aiden
 TTS_LANGUAGE=English
 TTS_DEVICE=cuda:0
 TTS_DTYPE=auto
+HF_XET_HIGH_PERFORMANCE=0
 ASR_REQUEST_TIMEOUT_MS=120000
 TTS_REQUEST_TIMEOUT_MS=120000
 SHIVA_PERF_LOG=false
@@ -100,7 +101,7 @@ cd ..
 python3 -m venv /tmp/shiva-voice-tests
 source /tmp/shiva-voice-tests/bin/activate
 python -m pip install 'fastapi>=0.116,<1' 'httpx>=0.28,<1' 'python-dotenv>=1.1,<2' 'python-multipart>=0.0.20,<1'
-python -m unittest voice.asr.test_server voice.asr.test_qwen_provider voice.tts.test_server voice.tts.test_qwen_provider
+python -m unittest voice.test_huggingface_runtime voice.asr.test_server voice.asr.test_qwen_provider voice.tts.test_server voice.tts.test_qwen_provider
 deactivate
 ```
 
@@ -198,6 +199,25 @@ python -m voice.tts.server
 They bind only to `127.0.0.1:8101` and `127.0.0.1:8102` by default. Qwen adapters lazy-load on first inference. Installing requirements or running mock tests does not itself perform inference; do not expose either port publicly.
 
 `ASR_DTYPE=auto` and `TTS_DTYPE=auto` use bfloat16 on Ampere-or-newer CUDA GPUs, float16 on older CUDA GPUs, and float32 when the corresponding device is `cpu`. Handled ASR/TTS load or inference failures are logged inside the owning Python process with their phase, duration, and complete causal traceback while public gateway responses remain sanitized. Both `/health` endpoints are process-liveness checks; successful model readiness is established by an inference or explicit model warm-up.
+
+For a voice-service 503 on the GPU host, inspect the Python service log first. Then verify each isolated environment without downloading model weights:
+
+```bash
+source .venv-asr/bin/activate
+python -c 'import torch, transformers; from importlib.metadata import version; from qwen_asr import Qwen3ASRModel; print("qwen-asr", version("qwen-asr"), "torch", torch.__version__, "torch-cuda", torch.version.cuda, "cuda-ready", torch.cuda.is_available(), "transformers", transformers.__version__)'
+deactivate
+
+source .venv-tts/bin/activate
+python -c 'import torch, torchaudio, transformers; from importlib.metadata import version; from qwen_tts import Qwen3TTSModel; print("qwen-tts", version("qwen-tts"), "torch", torch.__version__, "torchaudio", torchaudio.__version__, "torch-cuda", torch.version.cuda, "cuda-ready", torch.cuda.is_available(), "transformers", transformers.__version__)'
+deactivate
+
+nvidia-smi
+ollama ps
+```
+
+The Node gateway intentionally does not expose the Python traceback. Do not automatically fall back to CPU in production; use `ASR_DEVICE=cpu` or `TTS_DEVICE=cpu` only as an explicit diagnostic or deployment choice.
+
+The voice providers discard an inherited `HF_HUB_ENABLE_HF_TRANSFER` value before importing Hugging Face because that legacy path is deprecated. Set `HF_XET_HIGH_PERFORMANCE=1` only when high-throughput Xet downloads are desired; otherwise leave the default disabled.
 
 ### Optional performance tracing
 
