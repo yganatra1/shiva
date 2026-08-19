@@ -9,6 +9,8 @@ import type {
   MemoryRelationshipResult,
 } from "./types.js";
 
+const temporalOutputGuidance = `Only include occurredAt, validFrom, or validUntil when the user supplied a fully resolved instant. Use an RFC 3339 timestamp with Z or an explicit UTC offset (for example, 2026-08-19T08:30:00Z). If only a calendar date or relative time is known, preserve that wording in content and omit the temporal field. Never use date-only, timezone-less, relative, empty, or placeholder timestamp values.`;
+
 const extractionSystemPrompt = `You evaluate only information supplied by the user for Shiva's long-term memory.
 
 Persistence acknowledgment invariant: Never claim information has been stored or will be remembered unless the memory subsystem confirms persistence.
@@ -32,13 +34,13 @@ Memory types:
 - episodic: something that happened or a decision/event, with semanticType "none"
 - semantic: a durable fact, preference, relationship, project_fact, or profile item
 
-Each remembered item must contain shouldRemember=true, memoryType, semanticType, content, importance (0..1), confidence (0..1), and optional ISO timestamps occurredAt, validFrom, validUntil. Return {"memories":[]} when nothing should be stored.`;
+Each remembered item must contain shouldRemember=true, memoryType, semanticType, content, importance (0..1), and confidence (0..1). ${temporalOutputGuidance} Return {"memories":[]} when nothing should be stored.`;
 
 const explicitCoverageSystemPrompt = `Audit an explicit memory request for omitted durable meanings.
 
 You receive the full meaningful user statement and memories already extracted from it. Return valid JSON only as {"memories":[...]}.
 
-Each new item must contain shouldRemember=true, memoryType (episodic or semantic), semanticType ("none" for episodic; fact, preference, relationship, project_fact, or profile for semantic), content, importance (0..1), confidence (0..1), and optional ISO timestamps occurredAt, validFrom, and validUntil.
+Each new item must contain shouldRemember=true, memoryType (episodic or semantic), semanticType ("none" for episodic; fact, preference, relationship, project_fact, or profile for semantic), content, importance (0..1), and confidence (0..1). ${temporalOutputGuidance}
 
 Split compound statements into atomic memories. Return every materially useful relationship, preference, fact, profile detail, project fact, event, or decision that is NOT already represented. Preserve names and context. Do not repeat or paraphrase an existing extracted memory. Return {"memories":[]} only when all useful meanings are already covered.
 
@@ -46,7 +48,7 @@ For "Remember that I love travelling with my Wife Charmi", coverage requires bot
 
 const correctionAuditSystemPrompt = `Normalize a user correction into the complete authoritative set of current memories.
 
-Return valid JSON only as {"memories":[...]}. Each item uses the standard memory fields: shouldRemember=true, memoryType, semanticType, content, importance, confidence, and optional ISO timestamps.
+Return valid JSON only as {"memories":[...]}. Each item uses the standard memory fields: shouldRemember=true, memoryType, semanticType, content, importance, and confidence. ${temporalOutputGuidance}
 
 The current user statement is authoritative. Prior conversation and the initial extraction may resolve references, but they must not contribute an older value that the user is replacing. Words such as "now", "actually", "instead", "no longer", and "only" signal replacement or exclusivity.
 
@@ -61,14 +63,16 @@ Use duplicate when they mean the same thing. Use update when the new memory refi
 
 Judge the underlying subject and attribute, not spelling or phrasing. "Favorite" and "favourite" are equivalent. A new exclusive value expressed with words such as "only", "now", "actually", "instead", or "no longer" replaces prior alternatives for the same attribute. For example, "favourite colour is only blue" contradicts both "favourite colour is black" and "favourite colours are blue and black".`;
 
+const rfc3339TimestampSchema = z.string().datetime({ offset: true });
+
 const commonMemoryShape = {
   shouldRemember: z.literal(true),
   content: z.string().trim().min(1).max(4_000),
   importance: z.number().min(0).max(1),
   confidence: z.number().min(0).max(1),
-  occurredAt: z.string().datetime({ offset: true }).nullable().optional(),
-  validFrom: z.string().datetime({ offset: true }).nullable().optional(),
-  validUntil: z.string().datetime({ offset: true }).nullable().optional(),
+  occurredAt: optionalTimestampSchema(),
+  validFrom: optionalTimestampSchema(),
+  validUntil: optionalTimestampSchema(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 };
 
@@ -129,9 +133,21 @@ const extractionResponseFormat = {
           content: { type: "string" },
           importance: { type: "number" },
           confidence: { type: "number" },
-          occurredAt: { type: "string" },
-          validFrom: { type: "string" },
-          validUntil: { type: "string" },
+          occurredAt: {
+            type: "string",
+            description:
+              "RFC 3339 timestamp with Z or UTC offset; omit when unresolved",
+          },
+          validFrom: {
+            type: "string",
+            description:
+              "RFC 3339 timestamp with Z or UTC offset; omit when unresolved",
+          },
+          validUntil: {
+            type: "string",
+            description:
+              "RFC 3339 timestamp with Z or UTC offset; omit when unresolved",
+          },
         },
         required: [
           "shouldRemember",
@@ -235,18 +251,32 @@ export class MemoryExtractor implements MemoryExtractionEngine {
     );
     const parsed = parseJson(result.content, extractionResponseSchema);
 
-    return parsed.memories.map((memory) => ({
-      memoryType: memory.memoryType,
-      semanticType:
-        memory.memoryType === "semantic" ? memory.semanticType : null,
-      content: memory.content,
-      importance: memory.importance,
-      confidence: memory.confidence,
-      occurredAt: parseDate(memory.occurredAt),
-      validFrom: parseDate(memory.validFrom),
-      validUntil: parseDate(memory.validUntil),
-      metadata: memory.metadata ?? {},
-    }));
+    return parsed.memories.map((memory) => {
+      const occurredAt = parseDate(memory.occurredAt);
+      let validFrom = parseDate(memory.validFrom);
+      let validUntil = parseDate(memory.validUntil);
+      if (
+        validFrom !== null &&
+        validUntil !== null &&
+        validUntil.getTime() < validFrom.getTime()
+      ) {
+        validFrom = null;
+        validUntil = null;
+      }
+
+      return {
+        memoryType: memory.memoryType,
+        semanticType:
+          memory.memoryType === "semantic" ? memory.semanticType : null,
+        content: memory.content,
+        importance: memory.importance,
+        confidence: memory.confidence,
+        occurredAt,
+        validFrom,
+        validUntil,
+        metadata: memory.metadata ?? {},
+      };
+    });
   }
 
   async classifyRelationship(
@@ -310,6 +340,31 @@ function parseJson<T>(content: string, schema: z.ZodType<T>): T {
 
 function formatIssuePath(path: PropertyKey[]): string {
   return path.length > 0 ? path.map(String).join(".") : "root";
+}
+
+function optionalTimestampSchema() {
+  return z.preprocess(
+    normalizeOptionalTimestamp,
+    rfc3339TimestampSchema.nullable().optional(),
+  ).catch(null);
+}
+
+function normalizeOptionalTimestamp(
+  value: unknown,
+): string | null | undefined {
+  if (value === undefined || value === null) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const candidate = value.trim();
+  if (!rfc3339TimestampSchema.safeParse(candidate).success) {
+    return null;
+  }
+  const timestamp = new Date(candidate);
+  return Number.isNaN(timestamp.getTime()) ? null : timestamp.toISOString();
 }
 
 function parseDate(value: string | null | undefined): Date | null {

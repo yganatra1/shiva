@@ -63,7 +63,7 @@ def create_app(
     normalizer: FfmpegAudioNormalizer | None = None,
 ) -> FastAPI:
     model_name = os.getenv("ASR_MODEL", "Qwen/Qwen3-ASR-0.6B")
-    device = os.getenv("ASR_DEVICE", "cuda:0")
+    device = os.getenv("ASR_DEVICE", "cpu")
     dtype = os.getenv("ASR_DTYPE", "auto")
     selected_provider = provider or QwenASRProvider(
         model_name=model_name,
