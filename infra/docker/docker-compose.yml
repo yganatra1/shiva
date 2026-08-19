@@ -22,6 +22,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      asr:
+        condition: service_started
+      tts:
+        condition: service_started
     env_file:
       - path: ../../.env
         required: false
@@ -30,10 +34,61 @@ services:
       NODE_ENV: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-shiva}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-shiva}
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      ASR_SERVICE_URL: http://asr:8101
+      TTS_SERVICE_URL: http://tts:8102
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:
       - ${SHIVA_BIND_ADDRESS:-127.0.0.1}:${PORT:-3000}:${PORT:-3000}
 
+  asr:
+    build:
+      context: ../..
+      dockerfile: infra/docker/asr.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: ../../.env
+        required: false
+    environment:
+      ASR_HOST: 0.0.0.0
+      ASR_PORT: 8101
+      HF_HOME: /models/huggingface
+    expose:
+      - "8101"
+    volumes:
+      - shiva-voice-models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  tts:
+    build:
+      context: ../..
+      dockerfile: infra/docker/tts.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: ../../.env
+        required: false
+    environment:
+      TTS_HOST: 0.0.0.0
+      TTS_PORT: 8102
+      HF_HOME: /models/huggingface
+    expose:
+      - "8102"
+    volumes:
+      - shiva-voice-models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
 volumes:
   shiva-postgres-data:
+  shiva-voice-models:

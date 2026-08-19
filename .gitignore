@@ -2,6 +2,10 @@
 node_modules/
 dist/
 coverage/
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
 
 # Environment and secrets
 .env

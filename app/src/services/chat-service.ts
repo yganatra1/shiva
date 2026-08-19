@@ -37,6 +37,19 @@ export interface PreparedChat {
   readonly chunks: AsyncIterable<ChatChunk>;
 }
 
+export type ChatInteractionMode = "text" | "voice";
+
+export interface ChatInteractionContext {
+  readonly mode: ChatInteractionMode;
+  readonly performance?: ChatPerformanceTrace;
+}
+
+const VOICE_RESPONSE_GUIDANCE: ChatMessage = {
+  role: "system",
+  content:
+    "This interaction is being spoken aloud. Respond conversationally and concisely in natural speech. Avoid markdown, tables, headings, long lists, and unnecessary formatting. Prefer short sentences and only include detail that is useful when heard.",
+};
+
 export class ShivaChatService {
   constructor(private readonly options: ShivaChatServiceOptions) {}
 
@@ -44,8 +57,9 @@ export class ShivaChatService {
     message: string,
     conversationId?: string,
     signal?: AbortSignal,
-    performance?: ChatPerformanceTrace,
+    interaction: ChatInteractionContext = { mode: "text" },
   ): Promise<PreparedChat> {
+    const performance = interaction.performance;
     await measureChatPerformance(performance, "resolve-user", () =>
       this.options.repository.ensureUser(
         this.options.userId,
@@ -100,6 +114,7 @@ export class ShivaChatService {
           recentMessages,
           relevantMemory.systemMessage,
           explicitMemory,
+          interaction.mode,
         ),
     );
 
@@ -222,9 +237,11 @@ function buildMessages(
   recentMessages: readonly StoredMessage[],
   memoryContext?: ChatMessage,
   explicitMemory?: ExplicitMemoryResult,
+  interactionMode: ChatInteractionMode = "text",
 ): readonly ChatMessage[] {
   return [
     { role: "system", content: SHIVA_SYSTEM_PROMPT },
+    ...(interactionMode === "voice" ? [VOICE_RESPONSE_GUIDANCE] : []),
     ...(explicitMemory ? [explicitMemoryInstruction(explicitMemory)] : []),
     ...(memoryContext ? [memoryContext] : []),
     ...recentMessages.map((message) => ({

@@ -37,6 +37,13 @@ export const testConfig: AppConfig = {
   embeddingRequestTimeoutMs: 1_000,
   workingMemoryMessageLimit: 20,
   memoryRetrievalLimit: 8,
+  asrServiceUrl: "http://127.0.0.1:8101",
+  ttsServiceUrl: "http://127.0.0.1:8102",
+  asrModel: "test-asr-model",
+  ttsModel: "test-tts-model",
+  ttsSpeaker: "Aiden",
+  asrRequestTimeoutMs: 1_000,
+  ttsRequestTimeoutMs: 1_000,
   performanceLogging: false,
   nodeEnv: "test",
 };

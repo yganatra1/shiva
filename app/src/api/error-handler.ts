@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 
 import { AIProviderError } from "../brain/ai-provider.js";
+import { VoiceProviderError } from "../voice/provider.js";
 import { ApiError } from "./api-error.js";
 
 interface PublicError {
@@ -61,6 +62,10 @@ function toPublicError(error: unknown): PublicError {
     return providerErrorToPublicError(error);
   }
 
+  if (error instanceof VoiceProviderError) {
+    return voiceProviderErrorToPublicError(error);
+  }
+
   const metadata = getErrorMetadata(error);
 
   if (
@@ -81,7 +86,7 @@ function toPublicError(error: unknown): PublicError {
     return {
       statusCode: 415,
       code: "UNSUPPORTED_MEDIA_TYPE",
-      message: "Content-Type must be application/json.",
+      message: "The request Content-Type is not supported.",
     };
   }
 
@@ -97,6 +102,33 @@ function toPublicError(error: unknown): PublicError {
     statusCode: 500,
     code: "INTERNAL_ERROR",
     message: "Shiva could not complete the request.",
+  };
+}
+
+function voiceProviderErrorToPublicError(
+  error: VoiceProviderError,
+): PublicError {
+  if (error.failure === "CANCELLED") {
+    return {
+      statusCode: 499,
+      code: "REQUEST_CANCELLED",
+      message: "The request was cancelled.",
+    };
+  }
+
+  if (error.service === "asr" && error.failure === "INVALID_AUDIO") {
+    return {
+      statusCode: 400,
+      code: "INVALID_AUDIO",
+      message: "The uploaded audio could not be transcribed.",
+    };
+  }
+
+  const serviceName = error.service === "asr" ? "transcription" : "speech";
+  return {
+    statusCode: error.failure === "TIMEOUT" ? 504 : 503,
+    code: error.service === "asr" ? "ASR_UNAVAILABLE" : "TTS_UNAVAILABLE",
+    message: `Shiva's ${serviceName} service is currently unavailable.`,
   };
 }
 

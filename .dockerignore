@@ -3,6 +3,9 @@
 app/node_modules
 app/dist
 coverage
+**/__pycache__
+**/*.py[cod]
+.venv*
 data
 models
 logs

@@ -1,30 +1,35 @@
-# Shiva V0.2
+# Shiva V0.3
 
-Shiva is Yash's private personal AI. V0.2 keeps the Fastify/Ollama streaming foundation and adds persistent working, episodic, and semantic memory with PostgreSQL, pgvector, embeddinggemma, and Drizzle.
+Shiva is Yash's private personal AI. V0.3 preserves the Fastify/Ollama streaming brain and V0.2 persistent memory, then adds a browser push-to-talk layer with internal Qwen ASR and TTS services.
 
 ## Architecture
 
 ```text
-Client -> Fastify POST /chat
-       -> conversation + bounded working history
-       -> embeddinggemma -> semantic/episodic retrieval -> ranking
-       -> ShivaChatService -> AIProvider -> Ollama/Gemma stream
-       -> assistant message -> synchronous explicit / deferred automatic extraction
-       -> Drizzle repository -> PostgreSQL + pgvector
+Text client  -> POST /chat -------┐
+Voice UI     -> POST /voice/chat -┴-> shared ShivaChatService
+                                      -> conversation + bounded working history
+                                      -> embeddinggemma -> memory retrieval/ranking
+                                      -> AIProvider -> Ollama/Gemma stream
+                                      -> persistence + memory extraction
+
+Voice UI -> /voice/transcribe -> internal Qwen ASR service
+Voice UI <- /voice/synthesize -> internal Qwen TTS service
 ```
 
-The API does not call Ollama or PostgreSQL directly. Provider and repository interfaces keep model, embedding, and persistence details out of the route layer. See [docs/memory-architecture.md](docs/memory-architecture.md).
+The API does not put model, embedding, or persistence details in route handlers. Provider and repository interfaces keep those boundaries explicit. `/chat` and `/voice/chat` share the same conversation, memory, persistence, cancellation, and model path; voice mode only adds speech-friendly response guidance. See [docs/memory-architecture.md](docs/memory-architecture.md) and [docs/voice-architecture.md](docs/voice-architecture.md).
 
-V0.2 does not add tools, browser/internet access, voice, authentication, a frontend, cloud fallback, procedural memory, or a knowledge graph.
+V0.3 does not add wake words, always-listening mode, streaming ASR, VAD, barge-in, speaker recognition, face recognition, voice cloning, tools/browser access, authentication, cloud fallback, procedural memory, or a knowledge graph.
 
 ## Requirements
 
 - Node.js 24 and npm
+- Python 3.12 for the real ASR/TTS services
+- ffmpeg for browser-audio normalization
 - PostgreSQL with the pgvector extension available
 - Ollama reachable at `OLLAMA_URL`
 - the configured Gemma model and `embeddinggemma` installed for real `/chat` requests
 
-Health, typechecking, building, and mocked tests do not require Ollama or PostgreSQL.
+Health, typechecking, building, and mocked Node/Python tests do not require Ollama, PostgreSQL, a GPU, or Qwen model weights.
 
 ## Environment
 
@@ -53,11 +58,18 @@ EMBEDDING_MODEL=embeddinggemma
 EMBEDDING_REQUEST_TIMEOUT_MS=60000
 WORKING_MEMORY_MESSAGE_LIMIT=20
 MEMORY_RETRIEVAL_LIMIT=8
+ASR_SERVICE_URL=http://127.0.0.1:8101
+TTS_SERVICE_URL=http://127.0.0.1:8102
+ASR_MODEL=Qwen/Qwen3-ASR-0.6B
+TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+TTS_SPEAKER=Aiden
+ASR_REQUEST_TIMEOUT_MS=120000
+TTS_REQUEST_TIMEOUT_MS=120000
 SHIVA_PERF_LOG=false
 NODE_ENV=development
 ```
 
-`SHIVA_USER_ID` identifies the single V0.2 owner and must remain stable across restarts. Use a strong database password in real environments. The app deliberately resolves the root `.env` whether commands run from the root or `app/`.
+`SHIVA_USER_ID` identifies the single Shiva owner and must remain stable across restarts. Use a strong database password in real environments. Node and both Python services deliberately resolve the root `.env`.
 
 `SHIVA_KEEP_ALIVE` accepts Ollama duration strings such as `30m` or numeric seconds. Use `SHIVA_KEEP_ALIVE=-1` to keep the chat model loaded indefinitely; Shiva serializes numeric environment values as JSON numbers as required by Ollama.
 
@@ -76,9 +88,21 @@ npm run typecheck
 npm run build
 ```
 
+Run the CPU-safe Python route tests without installing Qwen or downloading weights:
+
+```bash
+cd ..
+python3 -m venv /tmp/shiva-voice-tests
+source /tmp/shiva-voice-tests/bin/activate
+python -m pip install 'fastapi>=0.116,<1' 'httpx>=0.28,<1' 'python-dotenv>=1.1,<2' 'python-multipart>=0.0.20,<1'
+python -m unittest voice.asr.test_server voice.tts.test_server
+deactivate
+```
+
 If a local PostgreSQL/pgvector database is available and `DATABASE_URL` is configured:
 
 ```bash
+cd app
 npm run db:migrate
 npm start
 ```
@@ -111,7 +135,7 @@ curl http://127.0.0.1:3000/health
 With the default model:
 
 ```json
-{"status":"ok","name":"Shiva","version":"0.2.0","model":"gemma4:26b-a4b-it-q4_K_M"}
+{"status":"ok","name":"Shiva","version":"0.3.0","model":"gemma4:26b-a4b-it-q4_K_M"}
 ```
 
 Start a streaming conversation:
@@ -134,17 +158,53 @@ curl --no-buffer -i -X POST http://127.0.0.1:3000/chat \
 
 Errors before the first streamed chunk use a sanitized JSON envelope. Once streaming headers are committed, a later provider error closes the stream and is logged without exposing upstream response bodies, paths, credentials, or environment values.
 
+### Voice
+
+Open the lightweight browser UI after starting Shiva:
+
+```text
+http://127.0.0.1:3000/voice
+```
+
+The UI supports hold-to-talk, immediate transcription display, streamed response text, ordered sentence-level WAV playback, stop speaking, typed fallback, new conversation, and automatic reuse of the existing conversation ID.
+
+Gateway endpoints:
+
+- `POST /voice/transcribe` accepts a supported audio body such as `audio/webm` and returns `{ "text": "...", "language": "English" }`.
+- `POST /voice/chat` has the same JSON body, streaming response, and `x-shiva-conversation-id` contract as `/chat`, but selects voice response style.
+- `POST /voice/synthesize` accepts `{ "text": "..." }` and returns `audio/wav`.
+
+The Python services remain internal. In two separate shells from the repository root, after installing their isolated requirements on the GPU host:
+
+```bash
+python3.12 -m venv .venv-asr
+source .venv-asr/bin/activate
+python -m pip install -r voice/asr/requirements.txt
+python -m voice.asr.server
+```
+
+```bash
+python3.12 -m venv .venv-tts
+source .venv-tts/bin/activate
+python -m pip install -r voice/tts/requirements.txt
+python -m voice.tts.server
+```
+
+They bind only to `127.0.0.1:8101` and `127.0.0.1:8102` by default. Qwen adapters lazy-load on first inference. Installing requirements or running mock tests does not itself perform inference; do not expose either port publicly.
+
 ### Optional performance tracing
 
-Set `SHIVA_PERF_LOG=true` and restart Shiva to emit one `[SHIVA PERF]` structured log for each `/chat` request. It reports the database, working-memory, embedding, pgvector retrieval, ranking, prompt construction, Ollama TTFT/generation, persistence, and total timings in milliseconds. `pre-ollama` and `total-ttft` are elapsed from request entry; the other foreground stages are durations.
+Set `SHIVA_PERF_LOG=true` and restart Shiva to emit one `[SHIVA PERF]` structured log for each `/chat` or `/voice/chat` request. It reports the database, working-memory, embedding, pgvector retrieval, ranking, prompt construction, Ollama TTFT/generation, persistence, and total timings in milliseconds. `pre-ollama` and `total-ttft` are elapsed from request entry; the other foreground stages are durations.
 
 Deferred automatic memory work emits a separate `[SHIVA PERF ASYNC]` record with its queue delay and extraction duration. It is intentionally absent from `total-request`. Explicit `remember...` processing remains synchronous and appears as `explicit-memory` in the foreground record.
 
 Disable tracing again with `SHIVA_PERF_LOG=false`; it is off by default.
 
+Voice turns additionally emit `[SHIVA VOICE PERF]` with audio upload, ASR, voice-chat TTFT, first TTS request, TTS, and time-to-first-audio measurements.
+
 ## Current RunPod direct runtime
 
-The current RunPod Pod does not run Docker Compose. Provision PostgreSQL with pgvector, Ollama, the models, and `/workspace/shiva/repo/.env` separately. Do not overwrite the production `.env` during pulls.
+The current RunPod Pod does not run Docker Compose. Provision PostgreSQL with pgvector, Ollama, Gemma/embedding models, the two Python environments, Qwen voice models, ffmpeg, and `/workspace/shiva/repo/.env` separately. Do not overwrite the production `.env` during pulls.
 
 ```bash
 cd /workspace/shiva/repo
@@ -159,6 +219,8 @@ npm run db:migrate
 npm start
 ```
 
+Then start ASR and TTS from two additional RunPod shells using the Python service commands above with repository path `/workspace/shiva/repo`. Keep both ports bound to localhost. From your browser, access only the Fastify port through the platform's private tunnel/proxy.
+
 Before `/chat` verification, ensure the two configured models exist:
 
 ```bash
@@ -168,7 +230,7 @@ ollama list
 
 Then, from another shell, run the health and chat curls above. `npm start` is foreground execution; process supervision remains an operational choice. Keep runtime data outside Git, for example under `/workspace/shiva/{data,models,ollama,logs,backups,config}`.
 
-Do not treat local mocked tests as RunPod integration proof. Real `/chat` succeeds only when PostgreSQL/pgvector, the migration, Ollama, Gemma, and embeddinggemma are available together.
+Do not treat local mocked tests as RunPod integration proof. Real chat requires PostgreSQL/pgvector, the migration, Ollama, Gemma, and embeddinggemma. Real voice additionally requires ffmpeg, both Python services, their Qwen weights, and suitable GPU capacity.
 
 ## Future Docker runtime
 
@@ -178,14 +240,14 @@ The future Ubuntu/NVIDIA-server path is:
 Git -> Ubuntu NVIDIA server -> Docker Compose
 ```
 
-The Compose definition runs the API and a pgvector-enabled PostgreSQL database while leaving Ollama externally configurable. See [infra/README.md](infra/README.md).
+The Compose definition runs the API, pgvector-enabled PostgreSQL, and internal ASR/TTS containers while leaving Ollama externally configurable. It publishes only the Shiva API; voice ports use the private Compose network. See [infra/README.md](infra/README.md).
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Hot-reload the API from TypeScript |
-| `npm test` | Run mocked memory, stream, cancellation, and provider tests |
+| `npm test` | Run mocked memory, stream, cancellation, model-provider, and voice-gateway tests |
 | `npm run typecheck` | Strict-check app and tests without emitting |
 | `npm run build` | Compile ESM output into `app/dist` |
 | `npm run db:generate` | Generate a migration from the Drizzle schema |

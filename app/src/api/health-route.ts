@@ -9,7 +9,7 @@ export function registerHealthRoute(
   app.get("/health", () => ({
     status: "ok",
     name: "Shiva",
-    version: "0.2.0",
+    version: "0.3.0",
     model: config.model,
   }));
 }

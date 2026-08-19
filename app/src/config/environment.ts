@@ -126,6 +126,33 @@ const environmentSchema = z.object({
     .min(1)
     .max(50)
     .default(8),
+  ASR_SERVICE_URL: httpBaseUrlSchema.default("http://127.0.0.1:8101"),
+  TTS_SERVICE_URL: httpBaseUrlSchema.default("http://127.0.0.1:8102"),
+  ASR_MODEL: z
+    .string()
+    .trim()
+    .min(1)
+    .max(255)
+    .default("Qwen/Qwen3-ASR-0.6B"),
+  TTS_MODEL: z
+    .string()
+    .trim()
+    .min(1)
+    .max(255)
+    .default("Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"),
+  TTS_SPEAKER: z.string().trim().min(1).max(64).default("Aiden"),
+  ASR_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(600_000)
+    .default(120_000),
+  TTS_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(600_000)
+    .default(120_000),
   SHIVA_PERF_LOG: booleanEnvironmentSchema.default(false),
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -149,6 +176,13 @@ export interface AppConfig {
   readonly embeddingRequestTimeoutMs: number;
   readonly workingMemoryMessageLimit: number;
   readonly memoryRetrievalLimit: number;
+  readonly asrServiceUrl: string;
+  readonly ttsServiceUrl: string;
+  readonly asrModel: string;
+  readonly ttsModel: string;
+  readonly ttsSpeaker: string;
+  readonly asrRequestTimeoutMs: number;
+  readonly ttsRequestTimeoutMs: number;
   readonly performanceLogging: boolean;
   readonly nodeEnv: "development" | "test" | "production";
 }
@@ -186,6 +220,13 @@ export function loadConfig(): AppConfig {
     embeddingRequestTimeoutMs: result.data.EMBEDDING_REQUEST_TIMEOUT_MS,
     workingMemoryMessageLimit: result.data.WORKING_MEMORY_MESSAGE_LIMIT,
     memoryRetrievalLimit: result.data.MEMORY_RETRIEVAL_LIMIT,
+    asrServiceUrl: result.data.ASR_SERVICE_URL,
+    ttsServiceUrl: result.data.TTS_SERVICE_URL,
+    asrModel: result.data.ASR_MODEL,
+    ttsModel: result.data.TTS_MODEL,
+    ttsSpeaker: result.data.TTS_SPEAKER,
+    asrRequestTimeoutMs: result.data.ASR_REQUEST_TIMEOUT_MS,
+    ttsRequestTimeoutMs: result.data.TTS_REQUEST_TIMEOUT_MS,
     performanceLogging: result.data.SHIVA_PERF_LOG,
     nodeEnv: result.data.NODE_ENV,
   };

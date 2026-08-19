@@ -2,7 +2,10 @@ import type { FastifyInstance } from "fastify";
 import { once } from "node:events";
 import { z } from "zod";
 
-import type { ShivaChatService } from "../services/chat-service.js";
+import type {
+  ChatInteractionMode,
+  ShivaChatService,
+} from "../services/chat-service.js";
 import { ConversationNotFoundError } from "../memory/memory-repository.js";
 import {
   ChatPerformanceTrace,
@@ -10,6 +13,10 @@ import {
   type ChatPerformanceLogSink,
   type ChatPerformanceOutcome,
 } from "../observability/chat-performance.js";
+import {
+  parseVoiceTurnId,
+  type VoicePerformanceTracker,
+} from "../voice/voice-performance.js";
 import { ApiError } from "./api-error.js";
 
 const MAX_MESSAGE_CHARACTERS = 20_000;
@@ -17,6 +24,7 @@ const MAX_MESSAGE_CHARACTERS = 20_000;
 interface ChatRouteOptions {
   readonly performanceLogging: boolean;
   readonly performanceLogSink?: ChatPerformanceLogSink;
+  readonly voicePerformance?: VoicePerformanceTracker;
 }
 
 const chatRequestSchema = z
@@ -36,7 +44,37 @@ export function registerChatRoute(
   chatService: ShivaChatService,
   options: ChatRouteOptions,
 ): void {
-  app.post<{ Body: unknown }>("/chat", async (request, reply) => {
+  registerStreamingChatRoute(app, "/chat", "text", chatService, options);
+}
+
+export function registerVoiceChatRoute(
+  app: FastifyInstance,
+  chatService: ShivaChatService,
+  options: ChatRouteOptions,
+): void {
+  registerStreamingChatRoute(
+    app,
+    "/voice/chat",
+    "voice",
+    chatService,
+    options,
+  );
+}
+
+function registerStreamingChatRoute(
+  app: FastifyInstance,
+  path: "/chat" | "/voice/chat",
+  interactionMode: ChatInteractionMode,
+  chatService: ShivaChatService,
+  options: ChatRouteOptions,
+): void {
+  app.post<{ Body: unknown }>(path, async (request, reply) => {
+    const voiceTurnId = interactionMode === "voice"
+      ? parseVoiceTurnId(request.headers["x-shiva-voice-turn-id"])
+      : undefined;
+    if (voiceTurnId) {
+      options.voicePerformance?.markChatStarted(voiceTurnId);
+    }
     const performance = options.performanceLogging
       ? new ChatPerformanceTrace({
           requestId: request.id,
@@ -90,12 +128,18 @@ export function registerChatRoute(
           parsedRequest.data.message,
           parsedRequest.data.conversationId,
           clientDisconnectController.signal,
-          performance,
+          {
+            mode: interactionMode,
+            ...(performance ? { performance } : {}),
+          },
         );
         reply.header("x-shiva-conversation-id", preparedChat.conversationId);
 
         for await (const chunk of preparedChat.chunks) {
           if (!streamStarted) {
+            if (voiceTurnId) {
+              options.voicePerformance?.markChatFirstToken(voiceTurnId);
+            }
             reply.hijack();
             reply.raw.writeHead(200, {
               "cache-control": "no-cache, no-transform",

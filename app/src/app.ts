@@ -1,8 +1,12 @@
 import Fastify, { type FastifyInstance } from "fastify";
 
-import { registerChatRoute } from "./api/chat-route.js";
+import {
+  registerChatRoute,
+  registerVoiceChatRoute,
+} from "./api/chat-route.js";
 import { registerErrorHandling } from "./api/error-handler.js";
 import { registerHealthRoute } from "./api/health-route.js";
+import { registerVoiceRoutes } from "./api/voice-route.js";
 import type { AIProvider } from "./brain/ai-provider.js";
 import type { EmbeddingProvider } from "./brain/embedding-provider.js";
 import { OllamaEmbeddingProvider } from "./brain/ollama-embedding-provider.js";
@@ -20,6 +24,14 @@ import type {
 } from "./memory/types.js";
 import type { ChatPerformanceLogSink } from "./observability/chat-performance.js";
 import { ShivaChatService } from "./services/chat-service.js";
+import { HttpASRProvider } from "./voice/http-asr-provider.js";
+import { HttpTTSProvider } from "./voice/http-tts-provider.js";
+import type { ASRProvider, TTSProvider } from "./voice/provider.js";
+import {
+  formatVoicePerformanceLog,
+  VoicePerformanceTracker,
+  type VoicePerformanceLogSink,
+} from "./voice/voice-performance.js";
 
 const API_BODY_LIMIT_BYTES = 256 * 1024;
 const API_REQUEST_TIMEOUT_MS = 30_000;
@@ -30,6 +42,9 @@ export interface AppOverrides {
   readonly repository?: MemoryRepositoryPort;
   readonly extractionEngine?: MemoryExtractionEngine;
   readonly performanceLogSink?: ChatPerformanceLogSink;
+  readonly asrProvider?: ASRProvider;
+  readonly ttsProvider?: TTSProvider;
+  readonly voicePerformanceLogSink?: VoicePerformanceLogSink;
 }
 
 export function createApp(config: AppConfig, overrides: AppOverrides = {}): FastifyInstance {
@@ -66,6 +81,29 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     });
   const extractionEngine =
     overrides.extractionEngine ?? new MemoryExtractor(provider);
+  const asrProvider =
+    overrides.asrProvider ??
+    new HttpASRProvider({
+      baseUrl: config.asrServiceUrl,
+      requestTimeoutMs: config.asrRequestTimeoutMs,
+    });
+  const ttsProvider =
+    overrides.ttsProvider ??
+    new HttpTTSProvider({
+      baseUrl: config.ttsServiceUrl,
+      requestTimeoutMs: config.ttsRequestTimeoutMs,
+    });
+  const voicePerformance = config.performanceLogging
+    ? new VoicePerformanceTracker(
+        overrides.voicePerformanceLogSink ??
+          ((entry) => {
+            app.log.info(
+              { shivaVoicePerformance: entry },
+              formatVoicePerformanceLog(entry),
+            );
+          }),
+      )
+    : undefined;
   const memoryRetriever = new MemoryRetriever(
     repository,
     embeddingProvider,
@@ -101,6 +139,19 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     ...(overrides.performanceLogSink
       ? { performanceLogSink: overrides.performanceLogSink }
       : {}),
+    ...(voicePerformance ? { voicePerformance } : {}),
+  });
+  registerVoiceChatRoute(app, chatService, {
+    performanceLogging: config.performanceLogging,
+    ...(overrides.performanceLogSink
+      ? { performanceLogSink: overrides.performanceLogSink }
+      : {}),
+    ...(voicePerformance ? { voicePerformance } : {}),
+  });
+  registerVoiceRoutes(app, {
+    asrProvider,
+    ttsProvider,
+    ...(voicePerformance ? { performance: voicePerformance } : {}),
   });
 
   return app;

@@ -1,0 +1,11 @@
+# Shiva ASR service
+
+Internal, non-streaming speech recognition for the V0.3 push-to-talk flow. The service accepts a multipart `file`, normalizes it with ffmpeg to mono 16 kHz PCM WAV, and then calls the injected `ASRProvider`. The production adapter lazy-loads `Qwen/Qwen3-ASR-0.6B`; tests inject a fake and never load model weights.
+
+Run from the repository root after installing the requirements and ensuring `ffmpeg` is available:
+
+```bash
+python -m voice.asr.server
+```
+
+It binds to `127.0.0.1:8101` by default. `ASR_HOST`, `ASR_PORT`, `ASR_MODEL`, and `ASR_DEVICE` are configurable. Do not publish this port; clients should use Shiva's `/voice/transcribe` gateway.
