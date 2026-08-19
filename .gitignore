@@ -1,0 +1,30 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data
+data/
+models/
+ollama/
+uploads/
+logs/
+backups/
+pgdata/
+*.gguf
+*.safetensors
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.log
+
+# Operating system and editor files
+.DS_Store
+*.swp
+*.swo
