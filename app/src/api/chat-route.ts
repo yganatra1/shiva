@@ -21,7 +21,7 @@ export function registerChatRoute(
   app: FastifyInstance,
   chatService: ShivaChatService,
 ): void {
-  app.post<{ Body: unknown }>("/chat", async (request) => {
+  app.post<{ Body: unknown }>("/chat", async (request, reply) => {
     if (request.mediaType !== "application/json") {
       throw new ApiError(
         415,
@@ -40,10 +40,26 @@ export function registerChatRoute(
       );
     }
 
-    const response = await chatService.respondTo(
-      parsedRequest.data.message,
-      request.signal,
-    );
-    return { response };
+    const clientDisconnectController = new AbortController();
+    const abortOnPrematureClose = (): void => {
+      if (!reply.raw.writableEnded) {
+        clientDisconnectController.abort();
+      }
+    };
+
+    reply.raw.once("close", abortOnPrematureClose);
+    if (reply.raw.destroyed && !reply.raw.writableEnded) {
+      clientDisconnectController.abort();
+    }
+
+    try {
+      const response = await chatService.respondTo(
+        parsedRequest.data.message,
+        clientDisconnectController.signal,
+      );
+      return { response };
+    } finally {
+      reply.raw.removeListener("close", abortOnPrematureClose);
+    }
   });
 }

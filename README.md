@@ -64,6 +64,7 @@ Useful commands from `app/`:
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Run with hot reload through `tsx` |
+| `npm test` | Run route cancellation and provider timeout regression tests |
 | `npm run typecheck` | Check strict TypeScript without emitting files |
 | `npm run build` | Compile ESM JavaScript into `app/dist` |
 | `npm start` | Run the compiled server |
@@ -183,8 +184,12 @@ shiva/
 │   │   │   └── README.md
 │   │   ├── app.ts
 │   │   └── server.ts
+│   ├── test/
+│   │   ├── chat-cancellation.test.ts
+│   │   └── ollama-provider.test.ts
 │   ├── package-lock.json
 │   ├── package.json
+│   ├── tsconfig.test.json
 │   └── tsconfig.json
 ├── config/
 │   └── README.md
