@@ -61,8 +61,13 @@ MEMORY_RETRIEVAL_LIMIT=8
 ASR_SERVICE_URL=http://127.0.0.1:8101
 TTS_SERVICE_URL=http://127.0.0.1:8102
 ASR_MODEL=Qwen/Qwen3-ASR-0.6B
+ASR_DEVICE=cuda:0
+ASR_DTYPE=auto
 TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
 TTS_SPEAKER=Aiden
+TTS_LANGUAGE=English
+TTS_DEVICE=cuda:0
+TTS_DTYPE=auto
 ASR_REQUEST_TIMEOUT_MS=120000
 TTS_REQUEST_TIMEOUT_MS=120000
 SHIVA_PERF_LOG=false
@@ -95,7 +100,7 @@ cd ..
 python3 -m venv /tmp/shiva-voice-tests
 source /tmp/shiva-voice-tests/bin/activate
 python -m pip install 'fastapi>=0.116,<1' 'httpx>=0.28,<1' 'python-dotenv>=1.1,<2' 'python-multipart>=0.0.20,<1'
-python -m unittest voice.asr.test_server voice.tts.test_server
+python -m unittest voice.asr.test_server voice.asr.test_qwen_provider voice.tts.test_server voice.tts.test_qwen_provider
 deactivate
 ```
 
@@ -191,6 +196,8 @@ python -m voice.tts.server
 ```
 
 They bind only to `127.0.0.1:8101` and `127.0.0.1:8102` by default. Qwen adapters lazy-load on first inference. Installing requirements or running mock tests does not itself perform inference; do not expose either port publicly.
+
+`ASR_DTYPE=auto` and `TTS_DTYPE=auto` use bfloat16 on Ampere-or-newer CUDA GPUs, float16 on older CUDA GPUs, and float32 when the corresponding device is `cpu`. Handled ASR/TTS load or inference failures are logged inside the owning Python process with their phase, duration, and complete causal traceback while public gateway responses remain sanitized. Both `/health` endpoints are process-liveness checks; successful model readiness is established by an inference or explicit model warm-up.
 
 ### Optional performance tracing
 

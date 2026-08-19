@@ -1,8 +1,14 @@
 import asyncio
 from io import BytesIO
+import logging
+from time import monotonic
 from typing import Any
 
 from .provider import SynthesizedSpeech, TTSProviderError
+
+
+LOGGER = logging.getLogger("uvicorn.error")
+SUPPORTED_DTYPES = {"auto", "bfloat16", "float16", "float32"}
 
 
 DEFAULT_SPEAKING_INSTRUCTION = (
@@ -20,12 +26,18 @@ class QwenTTSProvider:
         speaker: str = "Aiden",
         language: str = "English",
         device: str = "cuda:0",
+        dtype: str = "auto",
         instruction: str = DEFAULT_SPEAKING_INSTRUCTION,
     ) -> None:
+        if dtype not in SUPPORTED_DTYPES:
+            raise ValueError(
+                "TTS_DTYPE must be one of auto, bfloat16, float16, or float32."
+            )
         self._model_name = model_name
         self._speaker = speaker
         self._language = language
         self._device = device
+        self._dtype = dtype
         self._instruction = instruction
         self._model: Any | None = None
         self._load_lock = asyncio.Lock()
@@ -48,10 +60,16 @@ class QwenTTSProvider:
                 sample_rate,
             )
         except Exception as error:
-            raise TTSProviderError("Qwen TTS inference failed.") from error
+            raise TTSProviderError(
+                "Qwen TTS inference failed.",
+                phase="inference",
+            ) from error
 
         if len(wav) <= 44:
-            raise TTSProviderError("Qwen TTS returned empty audio.")
+            raise TTSProviderError(
+                "Qwen TTS returned empty audio.",
+                phase="response",
+            )
         return SynthesizedSpeech(wav=wav)
 
     async def _get_model(self) -> Any:
@@ -64,17 +82,34 @@ class QwenTTSProvider:
         return self._model
 
     def _load_model(self) -> Any:
+        started_at = monotonic()
         try:
             import torch
             from qwen_tts import Qwen3TTSModel
 
-            return Qwen3TTSModel.from_pretrained(
+            dtype = resolve_torch_dtype(torch, self._device, self._dtype)
+            LOGGER.info(
+                "Loading Qwen TTS model model=%s device=%s dtype=%s",
+                self._model_name,
+                self._device,
+                str(dtype),
+            )
+            model = Qwen3TTSModel.from_pretrained(
                 self._model_name,
                 device_map=self._device,
-                dtype=torch.bfloat16,
+                dtype=dtype,
             )
+            LOGGER.info(
+                "Qwen TTS model loaded model=%s duration_ms=%.2f",
+                self._model_name,
+                (monotonic() - started_at) * 1_000,
+            )
+            return model
         except Exception as error:
-            raise TTSProviderError("Qwen TTS could not be loaded.") from error
+            raise TTSProviderError(
+                "Qwen TTS could not be loaded.",
+                phase="load",
+            ) from error
 
     @staticmethod
     def _encode_wav(samples: Any, sample_rate: int) -> bytes:
@@ -83,3 +118,28 @@ class QwenTTSProvider:
         output = BytesIO()
         sf.write(output, samples, sample_rate, format="WAV", subtype="PCM_16")
         return output.getvalue()
+
+
+def resolve_torch_dtype(torch: Any, device: str, requested: str) -> Any:
+    """Resolve an explicit or device-safe dtype without importing Torch in tests."""
+    if requested != "auto":
+        return getattr(torch, requested)
+
+    if device.startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"TTS_DEVICE={device} was requested but CUDA is unavailable."
+            )
+        capability = torch.cuda.get_device_capability(parse_cuda_index(device))
+        return torch.bfloat16 if capability[0] >= 8 else torch.float16
+
+    return torch.float32
+
+
+def parse_cuda_index(device: str) -> int:
+    if ":" not in device:
+        return 0
+    try:
+        return int(device.rsplit(":", 1)[1])
+    except ValueError as error:
+        raise RuntimeError(f"Invalid TTS CUDA device: {device}.") from error

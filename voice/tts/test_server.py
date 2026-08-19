@@ -21,7 +21,10 @@ class FakeTTSProvider:
 
 class FailingTTSProvider:
     async def synthesize(self, _text: str) -> SynthesizedSpeech:
-        raise TTSProviderError("unavailable")
+        try:
+            raise RuntimeError("private TTS load failure")
+        except RuntimeError as error:
+            raise TTSProviderError("unavailable", phase="load") from error
 
 
 class TTSServerTest(unittest.TestCase):
@@ -42,13 +45,17 @@ class TTSServerTest(unittest.TestCase):
             "/synthesize",
             json={"text": "   "},
         )
-        unavailable = TestClient(create_app(provider=FailingTTSProvider())).post(
-            "/synthesize",
-            json={"text": "Hello"},
-        )
+        with self.assertLogs("uvicorn.error", level="ERROR") as logs:
+            unavailable = TestClient(create_app(provider=FailingTTSProvider())).post(
+                "/synthesize",
+                json={"text": "Hello"},
+            )
 
         self.assertEqual(invalid.status_code, 422)
         self.assertEqual(unavailable.status_code, 503)
+        self.assertIn("phase=load", "\n".join(logs.output))
+        self.assertIn("private TTS load failure", "\n".join(logs.output))
+        self.assertNotIn("private TTS load failure", unavailable.text)
 
 
 if __name__ == "__main__":

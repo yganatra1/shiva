@@ -1,19 +1,22 @@
 import asyncio
+import logging
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+from time import monotonic
 from typing import Annotated
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
-from .provider import ASRProvider, ASRProviderError
+from .provider import ASRProvider, ASRProviderError, NoSpeechError
 from .qwen_provider import QwenASRProvider
 
 ROOT_ENVIRONMENT = Path(__file__).resolve().parents[2] / ".env"
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 FFMPEG_TIMEOUT_SECONDS = 60
+LOGGER = logging.getLogger("uvicorn.error")
 
 load_dotenv(ROOT_ENVIRONMENT)
 
@@ -60,9 +63,12 @@ def create_app(
     normalizer: FfmpegAudioNormalizer | None = None,
 ) -> FastAPI:
     model_name = os.getenv("ASR_MODEL", "Qwen/Qwen3-ASR-0.6B")
+    device = os.getenv("ASR_DEVICE", "cuda:0")
+    dtype = os.getenv("ASR_DTYPE", "auto")
     selected_provider = provider or QwenASRProvider(
         model_name=model_name,
-        device=os.getenv("ASR_DEVICE", "cuda:0"),
+        device=device,
+        dtype=dtype,
     )
     selected_normalizer = normalizer or FfmpegAudioNormalizer()
     application = FastAPI(title="Shiva ASR", version="0.3.0")
@@ -80,6 +86,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="Invalid audio upload.")
 
         suffix = safe_audio_suffix(file.filename)
+        provider_started_at: float | None = None
         try:
             with tempfile.TemporaryDirectory(prefix="shiva-asr-") as directory:
                 source = Path(directory) / f"upload{suffix}"
@@ -90,6 +97,7 @@ def create_app(
                     source,
                     normalized,
                 )
+                provider_started_at = monotonic()
                 result = await selected_provider.transcribe(normalized)
         except InvalidAudioError as error:
             raise HTTPException(
@@ -97,9 +105,28 @@ def create_app(
                 detail="The uploaded audio could not be decoded.",
             ) from error
         except ASRProviderError as error:
+            provider_duration_ms = (
+                (monotonic() - provider_started_at) * 1_000
+                if provider_started_at is not None
+                else 0.0
+            )
+            LOGGER.exception(
+                "ASR provider failed phase=%s duration_ms=%.2f "
+                "model=%s device=%s dtype=%s",
+                error.phase,
+                provider_duration_ms,
+                model_name,
+                device,
+                dtype,
+            )
             raise HTTPException(
                 status_code=503,
                 detail="The ASR model is unavailable.",
+            ) from error
+        except NoSpeechError as error:
+            raise HTTPException(
+                status_code=400,
+                detail="No speech could be recognized in the uploaded audio.",
             ) from error
 
         return {"text": result.text, "language": result.language}
@@ -109,7 +136,8 @@ def create_app(
 
 def safe_audio_suffix(filename: str | None) -> str:
     suffix = Path(filename or "").suffix.lower()
-    return suffix if suffix in {".webm", ".ogg", ".mp4", ".m4a", ".mp3", ".wav"} else ".audio"
+    supported = {".webm", ".ogg", ".mp4", ".m4a", ".mp3", ".wav"}
+    return suffix if suffix in supported else ".audio"
 
 
 app = create_app()

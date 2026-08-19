@@ -22,9 +22,13 @@ The browser stores `x-shiva-conversation-id` in `sessionStorage`, sends it as th
 
 The internal FastAPI ASR service defaults to `127.0.0.1:8101`. `POST /transcribe` accepts multipart audio. Every upload, including WebM/Opus, is decoded by ffmpeg and normalized to mono 16 kHz PCM WAV before the `ASRProvider` sees it. The production adapter lazy-loads `Qwen/Qwen3-ASR-0.6B`; tests use a fake provider.
 
+The ASR process logs model-load and inference failures with a phase, elapsed time, and chained traceback, but returns only a generic 503 to the gateway. Valid audio with no recognizable speech is classified as invalid input instead of model unavailability. `GET /health` is deliberately liveness-only because the model is lazy-loaded; a successful transcription or deployment warm-up establishes readiness.
+
 ## TTS boundary
 
 The internal FastAPI TTS service defaults to `127.0.0.1:8102`. `POST /synthesize` accepts `{ "text": "..." }` and returns `audio/wav`. The production adapter lazy-loads `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`, defaults to English and `Aiden`, and supplies a natural conversational instruction. Voice cloning is absent.
+
+Like ASR, TTS logs phase-aware load/inference failures and their chained traceback only inside its private service while returning a sanitized 503 through Fastify. Its health endpoint is also liveness-only while the model remains lazy-loaded.
 
 As `/voice/chat` text streams into the browser, complete sentences are queued for TTS immediately. Synthesis is sentence-level rather than true audio streaming: requests are serialized, ready WAV segments are played in order, and the final incomplete sentence is flushed when generation ends.
 

@@ -53,10 +53,24 @@ test("HTTP ASR provider classifies invalid audio and unavailability", async () =
       throw new TypeError("connection refused");
     }) as typeof fetch,
   });
+  const upstreamUnavailable = new HttpASRProvider({
+    baseUrl: "http://127.0.0.1:8101",
+    requestTimeoutMs: 1_000,
+    fetchImplementation: (async () =>
+      Response.json(
+        { detail: "internal diagnostic that must not escape" },
+        { status: 503 },
+      )) as typeof fetch,
+  });
 
   await expectVoiceFailure(invalid.transcribe(input), "asr", "INVALID_AUDIO");
   await expectVoiceFailure(
     unavailable.transcribe(input),
+    "asr",
+    "UNAVAILABLE",
+  );
+  await expectVoiceFailure(
+    upstreamUnavailable.transcribe(input),
     "asr",
     "UNAVAILABLE",
   );
@@ -96,6 +110,24 @@ test("HTTP TTS provider rejects malformed audio", async () => {
     provider.synthesize({ text: "Hello" }),
     "tts",
     "INVALID_RESPONSE",
+  );
+});
+
+test("HTTP TTS provider classifies an upstream 503 as unavailable", async () => {
+  const provider = new HttpTTSProvider({
+    baseUrl: "http://127.0.0.1:8102",
+    requestTimeoutMs: 1_000,
+    fetchImplementation: (async () =>
+      Response.json(
+        { detail: "internal diagnostic that must not escape" },
+        { status: 503 },
+      )) as typeof fetch,
+  });
+
+  await expectVoiceFailure(
+    provider.synthesize({ text: "Hello" }),
+    "tts",
+    "UNAVAILABLE",
   );
 });
 

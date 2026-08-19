@@ -16,3 +16,11 @@ class ASRProvider(Protocol):
 
 class ASRProviderError(RuntimeError):
     """Raised when the configured ASR model cannot complete inference."""
+
+    def __init__(self, message: str, phase: str = "unknown") -> None:
+        super().__init__(message)
+        self.phase = phase
+
+
+class NoSpeechError(ValueError):
+    """Raised when valid audio contains no recognizable speech."""

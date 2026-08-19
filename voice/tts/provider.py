@@ -14,3 +14,7 @@ class TTSProvider(Protocol):
 
 class TTSProviderError(RuntimeError):
     """Raised when the configured TTS model cannot complete inference."""
+
+    def __init__(self, message: str, phase: str = "unknown") -> None:
+        super().__init__(message)
+        self.phase = phase

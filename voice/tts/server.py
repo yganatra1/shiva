@@ -1,5 +1,7 @@
+import logging
 import os
 from pathlib import Path
+from time import monotonic
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Response
@@ -10,6 +12,7 @@ from .qwen_provider import QwenTTSProvider
 
 ROOT_ENVIRONMENT = Path(__file__).resolve().parents[2] / ".env"
 MAX_TTS_CHARACTERS = 4_000
+LOGGER = logging.getLogger("uvicorn.error")
 
 load_dotenv(ROOT_ENVIRONMENT)
 
@@ -26,11 +29,15 @@ def create_app(provider: TTSProvider | None = None) -> FastAPI:
         "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
     )
     speaker = os.getenv("TTS_SPEAKER", "Aiden")
+    language = os.getenv("TTS_LANGUAGE", "English")
+    device = os.getenv("TTS_DEVICE", "cuda:0")
+    dtype = os.getenv("TTS_DTYPE", "auto")
     selected_provider = provider or QwenTTSProvider(
         model_name=model_name,
         speaker=speaker,
-        language=os.getenv("TTS_LANGUAGE", "English"),
-        device=os.getenv("TTS_DEVICE", "cuda:0"),
+        language=language,
+        device=device,
+        dtype=dtype,
     )
     application = FastAPI(title="Shiva TTS", version="0.3.0")
 
@@ -45,9 +52,21 @@ def create_app(provider: TTSProvider | None = None) -> FastAPI:
 
     @application.post("/synthesize", response_class=Response)
     async def synthesize(request: SynthesisRequest) -> Response:
+        provider_started_at = monotonic()
         try:
             speech = await selected_provider.synthesize(request.text)
         except TTSProviderError as error:
+            LOGGER.exception(
+                "TTS provider failed phase=%s duration_ms=%.2f "
+                "model=%s device=%s dtype=%s speaker=%s language=%s",
+                error.phase,
+                (monotonic() - provider_started_at) * 1_000,
+                model_name,
+                device,
+                dtype,
+                speaker,
+                language,
+            )
             raise HTTPException(
                 status_code=503,
                 detail="The TTS model is unavailable.",

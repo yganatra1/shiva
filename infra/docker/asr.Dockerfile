@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg python3 python3-pip python3-venv \
+    && apt-get install -y --no-install-recommends ffmpeg python3 python3-pip python3-venv sox \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/shiva

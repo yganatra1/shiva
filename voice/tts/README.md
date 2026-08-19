@@ -8,4 +8,4 @@ Run from the repository root after installing the requirements:
 python -m voice.tts.server
 ```
 
-It binds to `127.0.0.1:8102` by default. `TTS_HOST`, `TTS_PORT`, `TTS_MODEL`, `TTS_SPEAKER`, `TTS_LANGUAGE`, and `TTS_DEVICE` are configurable. Do not publish this port; clients should use Shiva's `/voice/synthesize` gateway.
+It binds to `127.0.0.1:8102` by default. `TTS_HOST`, `TTS_PORT`, `TTS_MODEL`, `TTS_SPEAKER`, `TTS_LANGUAGE`, `TTS_DEVICE`, and `TTS_DTYPE` are configurable. `TTS_DTYPE=auto` selects bfloat16 on an Ampere-or-newer CUDA GPU and float32 on CPU. Do not publish this port; clients should use Shiva's `/voice/synthesize` gateway.
