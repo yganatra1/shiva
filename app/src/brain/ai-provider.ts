@@ -7,7 +7,7 @@ export interface ChatMessage {
 
 export interface ChatInput {
   readonly messages: readonly ChatMessage[];
-  readonly responseFormat?: "json";
+  readonly responseFormat?: "json" | Readonly<Record<string, unknown>>;
   readonly signal?: AbortSignal;
 }
 

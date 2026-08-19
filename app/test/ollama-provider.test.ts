@@ -88,6 +88,42 @@ test("the provider distinguishes caller cancellation from its deadline", async (
   );
 });
 
+test("the provider forwards JSON Schema with deterministic structured output", async (context) => {
+  let requestBody: unknown;
+  const upstream = createServer((request, response) => {
+    const bodyParts: Buffer[] = [];
+    request.on("data", (part: Buffer) => bodyParts.push(part));
+    request.on("end", () => {
+      requestBody = JSON.parse(
+        Buffer.concat(bodyParts).toString("utf8"),
+      ) as unknown;
+      response.setHeader("content-type", "application/x-ndjson");
+      response.write(
+        `${JSON.stringify({ done: false, message: { content: '{"memories":[]}' } })}\n`,
+      );
+      response.end(`${JSON.stringify({ done: true })}\n`);
+    });
+  });
+  context.after(() => closeServer(upstream));
+  const format = {
+    type: "object",
+    properties: {
+      memories: { type: "array", items: { type: "object" } },
+    },
+    required: ["memories"],
+  } as const;
+
+  await createProvider(await listenOnRandomPort(upstream), 1_000).chat({
+    messages: [{ role: "user", content: "Extract memory." }],
+    responseFormat: format,
+  });
+
+  assert.ok(isRecord(requestBody));
+  assert.deepEqual(requestBody.format, format);
+  assert.ok(isRecord(requestBody.options));
+  assert.equal(requestBody.options.temperature, 0);
+});
+
 test("the provider rejects malformed or incomplete streams", async (context) => {
   let responseMode: "malformed" | "incomplete" = "malformed";
   const upstream = createServer((request, response) => {

@@ -83,6 +83,7 @@ export class OllamaProvider implements AIProvider {
           keep_alive: this.options.keepAlive,
           options: {
             num_ctx: this.options.contextLength,
+            ...(input.responseFormat ? {} : {}),
           },
           ...(input.responseFormat ? { format: input.responseFormat } : {}),
         }),

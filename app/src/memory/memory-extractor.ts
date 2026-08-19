@@ -61,48 +61,38 @@ Use duplicate when they mean the same thing. Use update when the new memory refi
 
 Judge the underlying subject and attribute, not spelling or phrasing. "Favorite" and "favourite" are equivalent. A new exclusive value expressed with words such as "only", "now", "actually", "instead", or "no longer" replaces prior alternatives for the same attribute. For example, "favourite colour is only blue" contradicts both "favourite colour is black" and "favourite colours are blue and black".`;
 
-const rememberedMemorySchema = z
-  .object({
-    shouldRemember: z.literal(true),
-    memoryType: z.enum(["episodic", "semantic"]),
-    semanticType: z
-      .enum(["fact", "preference", "relationship", "project_fact", "profile"])
-      .nullable()
-      .optional(),
-    content: z.string().trim().min(1).max(4_000),
-    importance: z.number().min(0).max(1),
-    confidence: z.number().min(0).max(1),
-    occurredAt: z.string().datetime({ offset: true }).nullable().optional(),
-    validFrom: z.string().datetime({ offset: true }).nullable().optional(),
-    validUntil: z.string().datetime({ offset: true }).nullable().optional(),
-    metadata: z.record(z.string(), z.unknown()).optional(),
-  })
-  .superRefine((memory, context) => {
-    if (memory.memoryType === "semantic" && !memory.semanticType) {
-      context.addIssue({
-        code: "custom",
-        path: ["semanticType"],
-        message: "semantic memories require semanticType",
-      });
-    }
+const commonMemoryShape = {
+  shouldRemember: z.literal(true),
+  content: z.string().trim().min(1).max(4_000),
+  importance: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1),
+  occurredAt: z.string().datetime({ offset: true }).nullable().optional(),
+  validFrom: z.string().datetime({ offset: true }).nullable().optional(),
+  validUntil: z.string().datetime({ offset: true }).nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+};
 
-    if (memory.memoryType === "episodic" && memory.semanticType) {
-      context.addIssue({
-        code: "custom",
-        path: ["semanticType"],
-        message: "episodic memories must use a null semanticType",
-      });
-    }
-  });
-
-const ignoredMemorySchema = z.object({
-  shouldRemember: z.literal(false),
-});
+const rememberedMemorySchema = z.discriminatedUnion("memoryType", [
+  z.object({
+    ...commonMemoryShape,
+    memoryType: z.literal("episodic"),
+    semanticType: z.null(),
+  }),
+  z.object({
+    ...commonMemoryShape,
+    memoryType: z.literal("semantic"),
+    semanticType: z.enum([
+      "fact",
+      "preference",
+      "relationship",
+      "project_fact",
+      "profile",
+    ]),
+  }),
+]);
 
 const extractionResponseSchema = z.object({
-  memories: z
-    .array(z.union([rememberedMemorySchema, ignoredMemorySchema]))
-    .max(10),
+  memories: z.array(rememberedMemorySchema).max(10),
 });
 
 const relationshipResponseSchema = z.object({
@@ -114,6 +104,9 @@ const relationshipResponseSchema = z.object({
   ]),
   confidence: z.number().min(0).max(1),
 });
+
+const extractionResponseFormat = z.toJSONSchema(extractionResponseSchema);
+const relationshipResponseFormat = z.toJSONSchema(relationshipResponseSchema);
 
 export class MemoryExtractionError extends Error {
   override readonly name = "MemoryExtractionError";
@@ -180,7 +173,7 @@ export class MemoryExtractor implements MemoryExtractionEngine {
     const result = await this.provider.chat(
       withOptionalSignal(
         {
-          responseFormat: "json",
+          responseFormat: extractionResponseFormat,
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: JSON.stringify(payload) },
@@ -191,22 +184,18 @@ export class MemoryExtractor implements MemoryExtractionEngine {
     );
     const parsed = parseJson(result.content, extractionResponseSchema);
 
-    return parsed.memories
-      .filter((memory): memory is z.infer<typeof rememberedMemorySchema> =>
-        memory.shouldRemember,
-      )
-      .map((memory) => ({
-        memoryType: memory.memoryType,
-        semanticType:
-          memory.memoryType === "semantic" ? (memory.semanticType ?? null) : null,
-        content: memory.content,
-        importance: memory.importance,
-        confidence: memory.confidence,
-        occurredAt: parseDate(memory.occurredAt),
-        validFrom: parseDate(memory.validFrom),
-        validUntil: parseDate(memory.validUntil),
-        metadata: memory.metadata ?? {},
-      }));
+    return parsed.memories.map((memory) => ({
+      memoryType: memory.memoryType,
+      semanticType:
+        memory.memoryType === "semantic" ? memory.semanticType : null,
+      content: memory.content,
+      importance: memory.importance,
+      confidence: memory.confidence,
+      occurredAt: parseDate(memory.occurredAt),
+      validFrom: parseDate(memory.validFrom),
+      validUntil: parseDate(memory.validUntil),
+      metadata: memory.metadata ?? {},
+    }));
   }
 
   async classifyRelationship(
@@ -217,7 +206,7 @@ export class MemoryExtractor implements MemoryExtractionEngine {
     const result = await this.provider.chat(
       withOptionalSignal(
         {
-          responseFormat: "json",
+          responseFormat: relationshipResponseFormat,
           messages: [
             { role: "system", content: relationshipSystemPrompt },
             {
@@ -257,11 +246,19 @@ function parseJson<T>(content: string, schema: z.ZodType<T>): T {
 
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
+    const issueSummary = parsed.error.issues
+      .slice(0, 5)
+      .map((issue) => `${formatIssuePath(issue.path)}:${issue.code}`)
+      .join(", ");
     throw new MemoryExtractionError(
-      "The model returned memory JSON with an invalid shape.",
+      `The model returned memory JSON with an invalid shape (${issueSummary}).`,
     );
   }
   return parsed.data;
+}
+
+function formatIssuePath(path: PropertyKey[]): string {
+  return path.length > 0 ? path.map(String).join(".") : "root";
 }
 
 function parseDate(value: string | null | undefined): Date | null {

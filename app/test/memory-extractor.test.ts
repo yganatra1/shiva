@@ -63,6 +63,8 @@ test("explicit extraction audits a compound statement for omitted atomic meaning
     ],
   );
   assert.equal(inputs.length, 2);
+  assert.equal(typeof inputs[0]?.responseFormat, "object");
+  assert.equal(typeof inputs[1]?.responseFormat, "object");
   assert.match(inputs[1]?.messages[0]?.content ?? "", /omitted durable meanings/i);
   assert.match(
     inputs[1]?.messages[1]?.content ?? "",
@@ -123,6 +125,8 @@ test("correction audit replaces a merged old preference with only the current va
     ["Yash's favourite colour is only blue."],
   );
   assert.equal(inputs.length, 2);
+  assert.equal(typeof inputs[0]?.responseFormat, "object");
+  assert.equal(typeof inputs[1]?.responseFormat, "object");
   assert.match(inputs[1]?.messages[0]?.content ?? "", /authoritative/i);
   assert.doesNotMatch(memories[0]?.content ?? "", /black/i);
 });
