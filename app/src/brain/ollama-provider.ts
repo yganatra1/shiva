@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   AIProviderError,
   type AIProvider,
+  type ChatChunk,
   type ChatInput,
   type ChatResult,
 } from "./ai-provider.js";
@@ -15,12 +16,20 @@ interface OllamaProviderOptions {
   readonly requestTimeoutMs: number;
 }
 
-const ollamaResponseSchema = z
+const ollamaStreamChunkSchema = z
   .object({
-    done: z.literal(true),
-    message: z.object({
-      content: z.string(),
-    }),
+    done: z.boolean(),
+    message: z
+      .object({
+        content: z.string(),
+      })
+      .optional(),
+  })
+  .passthrough();
+
+const ollamaStreamErrorSchema = z
+  .object({
+    error: z.string(),
   })
   .passthrough();
 
@@ -32,6 +41,23 @@ export class OllamaProvider implements AIProvider {
   }
 
   async chat(input: ChatInput): Promise<ChatResult> {
+    let content = "";
+
+    for await (const chunk of this.streamChat(input)) {
+      content += chunk.content;
+    }
+
+    if (content.trim().length === 0) {
+      throw new AIProviderError(
+        "INVALID_RESPONSE",
+        "Ollama returned an empty response.",
+      );
+    }
+
+    return { content };
+  }
+
+  async *streamChat(input: ChatInput): AsyncIterable<ChatChunk> {
     const deadlineController = new AbortController();
     const requestSignal = input.signal
       ? AbortSignal.any([deadlineController.signal, input.signal])
@@ -53,7 +79,7 @@ export class OllamaProvider implements AIProvider {
           model: this.options.model,
           messages: input.messages,
           think: false,
-          stream: false,
+          stream: true,
           keep_alive: this.options.keepAlive,
           options: {
             num_ctx: this.options.contextLength,
@@ -70,25 +96,64 @@ export class OllamaProvider implements AIProvider {
         );
       }
 
-      const payload = await parseResponse(response, requestSignal);
-      const parsedResponse = ollamaResponseSchema.safeParse(payload);
-
-      if (!parsedResponse.success) {
+      if (!response.body) {
         throw new AIProviderError(
           "INVALID_RESPONSE",
-          "Ollama returned an unexpected response shape.",
+          "Ollama returned a response without a body.",
         );
       }
 
-      const content = parsedResponse.data.message.content;
-      if (content.trim().length === 0) {
+      let completed = false;
+      let receivedContent = false;
+
+      for await (const payload of readNdjson(response.body)) {
+        if (ollamaStreamErrorSchema.safeParse(payload).success) {
+          throw new AIProviderError(
+            "UPSTREAM_ERROR",
+            "Ollama reported an error while streaming.",
+          );
+        }
+
+        const parsedChunk = ollamaStreamChunkSchema.safeParse(payload);
+        if (!parsedChunk.success) {
+          throw new AIProviderError(
+            "INVALID_RESPONSE",
+            "Ollama returned an unexpected streaming response shape.",
+          );
+        }
+
+        const content = parsedChunk.data.message?.content ?? "";
+        if (content.length > 0) {
+          receivedContent = true;
+          yield { content };
+        }
+
+        if (parsedChunk.data.done) {
+          completed = true;
+          break;
+        }
+
+        if (!parsedChunk.data.message) {
+          throw new AIProviderError(
+            "INVALID_RESPONSE",
+            "Ollama returned a streaming chunk without a message.",
+          );
+        }
+      }
+
+      if (!completed) {
+        throw new AIProviderError(
+          "INVALID_RESPONSE",
+          "Ollama ended the response before completing the stream.",
+        );
+      }
+
+      if (!receivedContent) {
         throw new AIProviderError(
           "INVALID_RESPONSE",
           "Ollama returned an empty response.",
         );
       }
-
-      return { content };
     } catch (error: unknown) {
       if (error instanceof AIProviderError) {
         throw error;
@@ -121,20 +186,59 @@ export class OllamaProvider implements AIProvider {
   }
 }
 
-async function parseResponse(
-  response: Response,
-  signal: AbortSignal,
-): Promise<unknown> {
+async function* readNdjson(
+  body: ReadableStream<Uint8Array>,
+): AsyncIterable<unknown> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
   try {
-    return await response.json();
-  } catch (error: unknown) {
-    if (signal.aborted) {
-      throw error;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        buffer += decoder.decode();
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const payload = parseNdjsonLine(line);
+        if (payload !== undefined) {
+          yield payload;
+        }
+      }
     }
 
+    const finalPayload = parseNdjsonLine(buffer);
+    if (finalPayload !== undefined) {
+      yield finalPayload;
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Fetch cancellation and provider errors are classified by the caller.
+    }
+    reader.releaseLock();
+  }
+}
+
+function parseNdjsonLine(line: string): unknown | undefined {
+  const trimmedLine = line.trim();
+  if (trimmedLine.length === 0) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(trimmedLine) as unknown;
+  } catch {
     throw new AIProviderError(
       "INVALID_RESPONSE",
-      "Ollama returned malformed JSON.",
+      "Ollama returned malformed streaming JSON.",
     );
   }
 }

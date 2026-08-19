@@ -14,8 +14,13 @@ export interface ChatResult {
   readonly content: string;
 }
 
+export interface ChatChunk {
+  readonly content: string;
+}
+
 export interface AIProvider {
   chat(input: ChatInput): Promise<ChatResult>;
+  streamChat(input: ChatInput): AsyncIterable<ChatChunk>;
 }
 
 export type AIProviderFailure =

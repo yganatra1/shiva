@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { once } from "node:events";
 import { z } from "zod";
 
 import type { ShivaChatService } from "../services/chat-service.js";
@@ -52,14 +53,49 @@ export function registerChatRoute(
       clientDisconnectController.abort();
     }
 
+    let streamStarted = false;
+
     try {
-      const response = await chatService.respondTo(
+      for await (const chunk of chatService.streamResponseTo(
         parsedRequest.data.message,
         clientDisconnectController.signal,
-      );
-      return { response };
+      )) {
+        if (!streamStarted) {
+          reply.hijack();
+          reply.raw.writeHead(200, {
+            "cache-control": "no-cache, no-transform",
+            "content-type": "text/plain; charset=utf-8",
+            "x-content-type-options": "nosniff",
+          });
+          streamStarted = true;
+        }
+
+        if (!reply.raw.write(chunk.content)) {
+          await once(reply.raw, "drain", {
+            signal: clientDisconnectController.signal,
+          });
+        }
+      }
+
+      if (streamStarted && !reply.raw.destroyed) {
+        reply.raw.end();
+      }
+    } catch (error: unknown) {
+      if (!streamStarted) {
+        throw error;
+      }
+
+      if (!clientDisconnectController.signal.aborted) {
+        request.log.error({ err: error }, "Streaming chat response failed");
+      }
+
+      if (!reply.raw.destroyed) {
+        reply.raw.destroy();
+      }
     } finally {
       reply.raw.removeListener("close", abortOnPrematureClose);
     }
+
+    return reply;
   });
 }
