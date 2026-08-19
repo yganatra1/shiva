@@ -20,7 +20,7 @@ class QwenASRProvider:
     def __init__(
         self,
         model_name: str,
-        device: str = "cuda:0",
+        device: str = "cpu",
         dtype: str = "auto",
     ) -> None:
         if dtype not in SUPPORTED_DTYPES:
