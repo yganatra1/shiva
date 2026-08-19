@@ -34,6 +34,13 @@ const secretPatterns: readonly RegExp[] = [
   /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/,
 ];
 
+export interface ExplicitMemoryResult {
+  readonly stored: readonly MemoryRecord[];
+  readonly duplicateCount: number;
+  readonly rejectedCount: number;
+  readonly extractedCount: number;
+}
+
 export class MemoryService {
   constructor(
     private readonly repository: MemoryRepositoryPort,
@@ -44,26 +51,53 @@ export class MemoryService {
   async rememberInteraction(
     input: RememberInteractionInput,
   ): Promise<readonly MemoryRecord[]> {
+    return (
+      await this.processInteraction(
+        input,
+        isExplicitMemoryRequest(input.userMessage.content),
+      )
+    ).stored;
+  }
+
+  async rememberExplicitInteraction(
+    input: RememberInteractionInput,
+  ): Promise<ExplicitMemoryResult> {
+    return this.processInteraction(input, true);
+  }
+
+  private async processInteraction(
+    input: RememberInteractionInput,
+    explicitRequest: boolean,
+  ): Promise<ExplicitMemoryResult> {
     if (
       isFillerMessage(input.userMessage.content) ||
       containsSecret(input.userMessage.content)
     ) {
-      return [];
+      return {
+        stored: [],
+        duplicateCount: 0,
+        rejectedCount: 1,
+        extractedCount: 0,
+      };
     }
 
     const extracted = await this.extractor.extract({
       userMessage: input.userMessage.content,
       assistantResponse: input.assistantResponse,
       recentMessages: input.recentMessages,
+      explicitRequest,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
-    const explicitRequest = isExplicitMemoryRequest(input.userMessage.content);
     const stored: MemoryRecord[] = [];
+    let duplicateCount = 0;
+    let rejectedCount = 0;
 
     for (const extractedMemory of extracted) {
       if (
         isFillerMessage(extractedMemory.content) ||
         containsSecret(extractedMemory.content)
       ) {
+        rejectedCount += 1;
         continue;
       }
 
@@ -77,19 +111,23 @@ export class MemoryService {
             },
           }
         : extractedMemory;
-      const embedding = await this.embeddingProvider.embed({
-        text: candidate.content,
-      });
+      const embedding = await this.embeddingProvider.embed(
+        input.signal
+          ? { text: candidate.content, signal: input.signal }
+          : { text: candidate.content },
+      );
       const supersedesId =
         candidate.memoryType === "semantic"
           ? await this.findSupersededMemory(
               input.userId,
               candidate,
               embedding,
+              input.signal,
             )
           : undefined;
 
       if (supersedesId === "duplicate") {
+        duplicateCount += 1;
         continue;
       }
 
@@ -115,13 +153,19 @@ export class MemoryService {
       );
     }
 
-    return stored;
+    return {
+      stored,
+      duplicateCount,
+      rejectedCount,
+      extractedCount: extracted.length,
+    };
   }
 
   private async findSupersededMemory(
     userId: string,
     candidate: ExtractedMemory,
     embedding: readonly number[],
+    signal?: AbortSignal,
   ): Promise<string | "duplicate" | undefined> {
     const similar = await this.repository.findSimilarSemanticMemories(
       userId,
@@ -137,6 +181,7 @@ export class MemoryService {
     const relationship = await this.extractor.classifyRelationship(
       existing,
       candidate,
+      signal,
     );
     return relationshipAction(existing.id, relationship);
   }

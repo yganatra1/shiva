@@ -4,7 +4,12 @@ import type {
   ChatMessage,
 } from "../brain/ai-provider.js";
 import { SHIVA_SYSTEM_PROMPT } from "../brain/system-prompt.js";
-import { isFillerMessage, type MemoryService } from "../memory/memory-service.js";
+import {
+  isExplicitMemoryRequest,
+  isFillerMessage,
+  type ExplicitMemoryResult,
+  type MemoryService,
+} from "../memory/memory-service.js";
 import type { MemoryRetriever } from "../memory/memory-retriever.js";
 import type {
   MemoryRepositoryPort,
@@ -52,10 +57,25 @@ export class ShivaChatService {
       conversation.id,
       this.options.workingMemoryMessageLimit,
     );
+    const explicitRequest = isExplicitMemoryRequest(message);
+    const explicitMemory = explicitRequest
+      ? await this.options.memoryService.rememberExplicitInteraction({
+          userId: this.options.userId,
+          conversationId: conversation.id,
+          userMessage,
+          assistantResponse: "",
+          recentMessages,
+          ...(signal ? { signal } : {}),
+        })
+      : undefined;
     const relevantMemory = isFillerMessage(message)
       ? { memories: [] }
       : await this.retrieveMemorySafely(message, signal);
-    const messages = buildMessages(recentMessages, relevantMemory.systemMessage);
+    const messages = buildMessages(
+      recentMessages,
+      relevantMemory.systemMessage,
+      explicitMemory,
+    );
 
     return {
       conversationId: conversation.id,
@@ -64,6 +84,7 @@ export class ShivaChatService {
         userMessage,
         recentMessages,
         messages,
+        !explicitRequest,
         signal,
       ),
     };
@@ -93,6 +114,7 @@ export class ShivaChatService {
     userMessage: StoredMessage,
     recentMessages: readonly StoredMessage[],
     messages: readonly ChatMessage[],
+    deferMemoryExtraction: boolean,
     signal?: AbortSignal,
   ): AsyncIterable<ChatChunk> {
     let assistantResponse = "";
@@ -113,6 +135,10 @@ export class ShivaChatService {
       assistantResponse,
     );
 
+    if (!deferMemoryExtraction) {
+      return;
+    }
+
     setImmediate(() => {
       void this.options.memoryService
         .rememberInteraction({
@@ -132,13 +158,38 @@ export class ShivaChatService {
 function buildMessages(
   recentMessages: readonly StoredMessage[],
   memoryContext?: ChatMessage,
+  explicitMemory?: ExplicitMemoryResult,
 ): readonly ChatMessage[] {
   return [
     { role: "system", content: SHIVA_SYSTEM_PROMPT },
+    ...(explicitMemory ? [explicitMemoryInstruction(explicitMemory)] : []),
     ...(memoryContext ? [memoryContext] : []),
     ...recentMessages.map((message) => ({
       role: message.role,
       content: message.content,
     })),
   ];
+}
+
+function explicitMemoryInstruction(result: ExplicitMemoryResult): ChatMessage {
+  if (result.stored.length > 0) {
+    return {
+      role: "system",
+      content: `The user's explicit memory request completed successfully and ${result.stored.length} atomic memory item(s) were persisted before this response. You may acknowledge only that the information has already been remembered. Use past or present-perfect wording; do not promise a future save.`,
+    };
+  }
+
+  if (result.duplicateCount > 0) {
+    return {
+      role: "system",
+      content:
+        "The user's explicit memory request completed successfully, and the information was already present in memory. You may accurately say it is already remembered.",
+    };
+  }
+
+  return {
+    role: "system",
+    content:
+      "No material information from the explicit memory request was persisted. Do not claim that it was remembered and do not say that you will remember it.",
+  };
 }

@@ -9,7 +9,7 @@ Client -> Fastify POST /chat
        -> conversation + bounded working history
        -> embeddinggemma -> semantic/episodic retrieval -> ranking
        -> ShivaChatService -> AIProvider -> Ollama/Gemma stream
-       -> assistant message -> deferred memory extraction
+       -> assistant message -> synchronous explicit / deferred automatic extraction
        -> Drizzle repository -> PostgreSQL + pgvector
 ```
 

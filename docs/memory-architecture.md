@@ -14,7 +14,9 @@ Episodic memory records events and decisions, including optional occurrence and 
 
 For each meaningful request, Shiva embeds the query, retrieves active semantic and episodic candidates by cosine similarity, reranks them using 70% similarity, 20% importance, and 10% recency, and injects only the top configured results. Retrieved records have their access timestamp and count updated.
 
-After a streamed answer completes, Shiva stores the assistant message and schedules memory extraction. Extraction uses the reasoning model with a dedicated structured-JSON prompt. Its failure is logged but does not fail the already completed chat. Obvious credentials are rejected. Similar semantic candidates are classified as duplicate, update, contradiction, or unrelated; updates and contradictions supersede the old row without deleting history.
+Explicit requests such as “remember that” are processed before response streaming begins. The full meaningful statement is extracted and then audited for omitted atomic meanings, so one compound statement can produce multiple memories. Shiva acknowledges successful memory only after persistence completes; a persistence failure prevents the response model from making that claim.
+
+For non-explicit conversation, Shiva stores the assistant message and schedules automatic extraction after streaming. Automatic extraction failure is logged but does not fail the completed chat. Obvious credentials are rejected. Similar semantic candidates are classified as duplicate, update, contradiction, or unrelated; updates and contradictions supersede the old row without deleting history.
 
 The boundaries remain:
 

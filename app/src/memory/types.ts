@@ -93,6 +93,7 @@ export interface MemoryExtractionInput {
   readonly userMessage: string;
   readonly assistantResponse: string;
   readonly recentMessages: readonly StoredMessage[];
+  readonly explicitRequest?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -102,6 +103,7 @@ export interface RememberInteractionInput {
   readonly userMessage: StoredMessage;
   readonly assistantResponse: string;
   readonly recentMessages: readonly StoredMessage[];
+  readonly signal?: AbortSignal;
 }
 
 export interface MemoryRelationshipResult {

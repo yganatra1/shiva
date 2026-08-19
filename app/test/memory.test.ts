@@ -88,6 +88,40 @@ test("explicit remember requests receive strong priority", async () => {
   assert.equal(repository.memories[0]?.metadata.explicitMemoryRequest, true);
 });
 
+test("a compound explicit request persists every atomic relationship and preference", async () => {
+  const { service, repository, extractor } = createMemoryHarness();
+  const compoundMessage = {
+    ...sourceMessage,
+    content: "Remember that I love travelling with my Wife Charmi",
+  };
+  extractor.extracted = [
+    {
+      ...semanticCandidate(),
+      semanticType: "relationship",
+      content: "Charmi is Yash's wife.",
+    },
+    {
+      ...semanticCandidate(),
+      semanticType: "preference",
+      content: "Yash loves travelling with his wife Charmi.",
+    },
+  ];
+
+  const result = await service.rememberExplicitInteraction(
+    interaction(compoundMessage),
+  );
+
+  assert.equal(result.stored.length, 2);
+  assert.deepEqual(
+    repository.memories.map((memory) => [memory.semanticType, memory.content]),
+    [
+      ["relationship", "Charmi is Yash's wife."],
+      ["preference", "Yash loves travelling with his wife Charmi."],
+    ],
+  );
+  assert.ok(repository.memories.every((memory) => memory.importance >= 0.85));
+});
+
 test("semantic and episodic retrieval injects only ranked results", async () => {
   const repository = new InMemoryRepository();
   const embedding = new FakeEmbeddingProvider();
