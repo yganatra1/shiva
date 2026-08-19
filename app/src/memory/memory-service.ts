@@ -8,7 +8,8 @@ import type {
   RememberInteractionInput,
 } from "./types.js";
 
-const SEMANTIC_SIMILARITY_THRESHOLD = 0.86;
+const SEMANTIC_SIMILARITY_THRESHOLD = 0.72;
+const SEMANTIC_RECONCILIATION_LIMIT = 10;
 const RELATIONSHIP_CONFIDENCE_THRESHOLD = 0.75;
 
 const fillerMessages = new Set([
@@ -116,9 +117,9 @@ export class MemoryService {
           ? { text: candidate.content, signal: input.signal }
           : { text: candidate.content },
       );
-      const supersedesId =
-        candidate.memoryType === "semantic"
-          ? await this.findSupersededMemory(
+      const reconciliation =
+        candidate.memoryType === "semantic" && candidate.semanticType
+          ? await this.reconcileSemanticMemory(
               input.userId,
               candidate,
               embedding,
@@ -126,7 +127,7 @@ export class MemoryService {
             )
           : undefined;
 
-      if (supersedesId === "duplicate") {
+      if (reconciliation === "duplicate") {
         duplicateCount += 1;
         continue;
       }
@@ -148,7 +149,7 @@ export class MemoryService {
             embedding,
             metadata: candidate.metadata,
           },
-          supersedesId,
+          reconciliation,
         ),
       );
     }
@@ -161,29 +162,45 @@ export class MemoryService {
     };
   }
 
-  private async findSupersededMemory(
+  private async reconcileSemanticMemory(
     userId: string,
     candidate: ExtractedMemory,
     embedding: readonly number[],
     signal?: AbortSignal,
-  ): Promise<string | "duplicate" | undefined> {
-    const similar = await this.repository.findSimilarSemanticMemories(
-      userId,
-      embedding,
-      SEMANTIC_SIMILARITY_THRESHOLD,
-      3,
-    );
-    const existing = similar[0];
-    if (!existing) {
-      return undefined;
+  ): Promise<readonly string[] | "duplicate"> {
+    if (!candidate.semanticType) {
+      return [];
     }
 
-    const relationship = await this.extractor.classifyRelationship(
-      existing,
-      candidate,
-      signal,
+    const similar = await this.repository.findSimilarSemanticMemories(
+      userId,
+      candidate.semanticType,
+      embedding,
+      SEMANTIC_SIMILARITY_THRESHOLD,
+      SEMANTIC_RECONCILIATION_LIMIT,
     );
-    return relationshipAction(existing.id, relationship);
+    const duplicateIds: string[] = [];
+    const conflictingIds: string[] = [];
+
+    for (const existing of similar) {
+      const relationship = await this.extractor.classifyRelationship(
+        existing,
+        candidate,
+        signal,
+      );
+      const action = relationshipAction(existing.id, relationship);
+      if (action === "duplicate") {
+        duplicateIds.push(existing.id);
+      } else if (action) {
+        conflictingIds.push(action);
+      }
+    }
+
+    if (duplicateIds.length === 1 && conflictingIds.length === 0) {
+      return "duplicate";
+    }
+
+    return [...new Set([...duplicateIds, ...conflictingIds])];
   }
 }
 

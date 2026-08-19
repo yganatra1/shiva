@@ -14,6 +14,7 @@ import type {
   MemorySearchResult,
   MemoryType,
   NewMemoryInput,
+  SemanticMemoryType,
   StoredMessage,
   StoredMessageRole,
 } from "../src/memory/types.js";
@@ -59,6 +60,10 @@ export class FakeExtractionEngine implements MemoryExtractionEngine {
     relationship: "unrelated",
     confidence: 1,
   };
+  relationshipResolver?: (
+    existing: MemoryRecord,
+    candidate: ExtractedMemory,
+  ) => MemoryRelationshipResult;
   failure?: Error;
 
   async extract(
@@ -70,8 +75,11 @@ export class FakeExtractionEngine implements MemoryExtractionEngine {
     return this.extracted;
   }
 
-  async classifyRelationship(): Promise<MemoryRelationshipResult> {
-    return this.relationship;
+  async classifyRelationship(
+    existing: MemoryRecord,
+    candidate: ExtractedMemory,
+  ): Promise<MemoryRelationshipResult> {
+    return this.relationshipResolver?.(existing, candidate) ?? this.relationship;
   }
 }
 
@@ -150,6 +158,7 @@ export class InMemoryRepository implements MemoryRepositoryPort {
 
   async findSimilarSemanticMemories(
     _userId: string,
+    _semanticType: SemanticMemoryType,
     _embedding: readonly number[],
     _minimumSimilarity: number,
     limit: number,
@@ -159,7 +168,7 @@ export class InMemoryRepository implements MemoryRepositoryPort {
 
   async saveMemory(
     input: NewMemoryInput,
-    supersedesId?: string,
+    supersedesIds: readonly string[] = [],
   ): Promise<MemoryRecord> {
     const now = new Date();
     const memory: MemoryRecord = {
@@ -185,11 +194,11 @@ export class InMemoryRepository implements MemoryRepositoryPort {
     };
     this.memories.push(memory);
 
-    if (supersedesId) {
+    for (const supersedesId of new Set(supersedesIds)) {
       const index = this.memories.findIndex((item) => item.id === supersedesId);
       const existing = this.memories[index];
-      if (index < 0 || !existing) {
-        throw new Error("Missing superseded memory.");
+      if (index < 0 || !existing || existing.status !== "active") {
+        throw new Error("Missing active superseded memory.");
       }
       this.memories[index] = {
         ...existing,

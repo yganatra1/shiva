@@ -143,13 +143,14 @@ export interface MemoryRepositoryPort {
   ): Promise<readonly MemorySearchResult[]>;
   findSimilarSemanticMemories(
     userId: string,
+    semanticType: SemanticMemoryType,
     embedding: readonly number[],
     minimumSimilarity: number,
     limit: number,
   ): Promise<readonly MemorySearchResult[]>;
   saveMemory(
     input: NewMemoryInput,
-    supersedesId?: string,
+    supersedesIds?: readonly string[],
   ): Promise<MemoryRecord>;
   touchMemories(memoryIds: readonly string[]): Promise<void>;
 }

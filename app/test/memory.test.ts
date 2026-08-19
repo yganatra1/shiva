@@ -221,6 +221,81 @@ test("contradictory preferences supersede rather than delete history", async () 
   assert.equal(replacement?.status, "active");
 });
 
+test("an exclusive preference correction supersedes every conflicting active value", async () => {
+  const { service, repository, extractor } = createMemoryHarness();
+  const existingBlue = memoryResult({
+    id: "20000000-0000-4000-8000-000000000001",
+    semanticType: "preference",
+    content: "The user's favourite color is blue.",
+  });
+  const existingBlack = memoryResult({
+    id: "20000000-0000-4000-8000-000000000002",
+    semanticType: "preference",
+    content: "The user's favourite colour is black.",
+  });
+  const existingCombined = memoryResult({
+    id: "20000000-0000-4000-8000-000000000003",
+    semanticType: "preference",
+    content: "The user's favorite colors are blue and black.",
+  });
+  const unrelatedTravel = memoryResult({
+    id: "20000000-0000-4000-8000-000000000004",
+    semanticType: "preference",
+    content: "Yash loves travelling with his wife Charmi.",
+  });
+  repository.memories.push(
+    existingBlue,
+    existingBlack,
+    existingCombined,
+    unrelatedTravel,
+  );
+  repository.similarSemanticResults = [
+    existingBlue,
+    unrelatedTravel,
+    existingCombined,
+    existingBlack,
+  ];
+  extractor.extracted = [
+    {
+      ...semanticCandidate(),
+      content: "Yash's favourite colour is only blue.",
+    },
+  ];
+  extractor.relationshipResolver = (existing) => {
+    if (existing.id === unrelatedTravel.id) {
+      return { relationship: "unrelated", confidence: 0.99 };
+    }
+    if (existing.id === existingBlue.id) {
+      return { relationship: "duplicate", confidence: 0.99 };
+    }
+    return { relationship: "contradiction", confidence: 0.99 };
+  };
+
+  const [replacement] = await service.rememberInteraction(
+    interaction({
+      ...sourceMessage,
+      content: "Now I am thinking my favourite color is Blue Actually only Blue",
+    }),
+  );
+
+  assert.ok(replacement);
+  for (const id of [existingBlue.id, existingBlack.id, existingCombined.id]) {
+    const historical = repository.memories.find((memory) => memory.id === id);
+    assert.equal(historical?.status, "superseded");
+    assert.equal(historical?.supersededBy, replacement.id);
+  }
+  assert.equal(
+    repository.memories.find((memory) => memory.id === unrelatedTravel.id)
+      ?.status,
+    "active",
+  );
+  const activeColors = repository.memories.filter(
+    (memory) =>
+      memory.status === "active" && /favou?rite color|favou?rite colour/i.test(memory.content),
+  );
+  assert.deepEqual(activeColors.map((memory) => memory.id), [replacement.id]);
+});
+
 test("obvious secrets are rejected from ordinary memory", async () => {
   const { service, repository, extractor } = createMemoryHarness();
   extractor.extracted = [semanticCandidate()];

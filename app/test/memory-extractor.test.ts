@@ -69,3 +69,60 @@ test("explicit extraction audits a compound statement for omitted atomic meaning
     /Remember that I love travelling with my Wife Charmi/,
   );
 });
+
+test("correction audit replaces a merged old preference with only the current value", async () => {
+  const inputs: ChatInput[] = [];
+  const responses = [
+    {
+      memories: [
+        {
+          shouldRemember: true,
+          memoryType: "semantic",
+          semanticType: "preference",
+          content: "The user's favorite colors are blue and black.",
+          importance: 1,
+          confidence: 1,
+        },
+      ],
+    },
+    {
+      memories: [
+        {
+          shouldRemember: true,
+          memoryType: "semantic",
+          semanticType: "preference",
+          content: "Yash's favourite colour is only blue.",
+          importance: 1,
+          confidence: 1,
+        },
+      ],
+    },
+  ];
+  const provider: AIProvider = {
+    async chat(input) {
+      inputs.push(input);
+      const response = responses.shift();
+      assert.ok(response);
+      return { content: JSON.stringify(response) };
+    },
+    async *streamChat() {
+      throw new Error("Extraction must use non-streaming structured output.");
+    },
+  };
+  const extractor = new MemoryExtractor(provider);
+
+  const memories = await extractor.extract({
+    userMessage:
+      "Now I am thinking my favourite color is Blue Actually only Blue",
+    assistantResponse: "",
+    recentMessages: [],
+  });
+
+  assert.deepEqual(
+    memories.map((memory) => memory.content),
+    ["Yash's favourite colour is only blue."],
+  );
+  assert.equal(inputs.length, 2);
+  assert.match(inputs[1]?.messages[0]?.content ?? "", /authoritative/i);
+  assert.doesNotMatch(memories[0]?.content ?? "", /black/i);
+});

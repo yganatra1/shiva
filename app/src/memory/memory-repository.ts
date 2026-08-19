@@ -27,6 +27,7 @@ import type {
   MemorySearchResult,
   MemoryType,
   NewMemoryInput,
+  SemanticMemoryType,
   StoredMessage,
   StoredMessageRole,
 } from "./types.js";
@@ -150,6 +151,7 @@ export class MemoryRepository implements MemoryRepositoryPort {
 
   async findSimilarSemanticMemories(
     userId: string,
+    requestedSemanticType: SemanticMemoryType,
     embedding: readonly number[],
     minimumSimilarity: number,
     limit: number,
@@ -164,6 +166,7 @@ export class MemoryRepository implements MemoryRepositoryPort {
         and(
           eq(memories.userId, userId),
           eq(memories.memoryType, "semantic"),
+          eq(memories.semanticType, requestedSemanticType),
           eq(memories.status, "active"),
           gte(similarity, minimumSimilarity),
         ),
@@ -179,7 +182,7 @@ export class MemoryRepository implements MemoryRepositoryPort {
 
   async saveMemory(
     input: NewMemoryInput,
-    supersedesId?: string,
+    supersedesIds: readonly string[] = [],
   ): Promise<MemoryRecord> {
     return this.db.transaction(async (transaction) => {
       const [inserted] = await transaction
@@ -202,7 +205,8 @@ export class MemoryRepository implements MemoryRepositoryPort {
         .returning();
       const memory = requiredRow(inserted, "memory");
 
-      if (supersedesId) {
+      const uniqueSupersedesIds = [...new Set(supersedesIds)];
+      if (uniqueSupersedesIds.length > 0) {
         const superseded = await transaction
           .update(memories)
           .set({
@@ -212,16 +216,16 @@ export class MemoryRepository implements MemoryRepositoryPort {
           })
           .where(
             and(
-              eq(memories.id, supersedesId),
+              inArray(memories.id, uniqueSupersedesIds),
               eq(memories.userId, input.userId),
               eq(memories.status, "active"),
             ),
           )
           .returning({ id: memories.id });
 
-        if (superseded.length !== 1) {
+        if (superseded.length !== uniqueSupersedesIds.length) {
           throw new Error(
-            "The memory selected for superseding is no longer active.",
+            "One or more memories selected for superseding are no longer active.",
           );
         }
       }

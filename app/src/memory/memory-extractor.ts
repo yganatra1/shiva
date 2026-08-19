@@ -11,6 +11,8 @@ import type {
 
 const extractionSystemPrompt = `You evaluate only information supplied by the user for Shiva's long-term memory.
 
+Persistence acknowledgment invariant: Never claim information has been stored or will be remembered unless the memory subsystem confirms persistence.
+
 Return valid JSON only with this shape:
 {"memories":[...]}
 
@@ -23,6 +25,8 @@ Example: "Remember that I love travelling with my Wife Charmi" contains at least
 - preference: "Yash loves travelling with his wife Charmi."
 
 Ignore greetings, filler, acknowledgements, transient small talk, model-generated claims, and credentials or authentication secrets.
+
+Treat correction language such as "now", "actually", "instead", "no longer", and "only" as a change to the user's current state. Extract the new current meaning only. Do not merge an older value from recent conversation or assistant text into the new memory unless the user explicitly says both values remain true. For example, "Actually, my favourite colour is only blue" means one current blue preference, not "blue and black".
 
 Memory types:
 - episodic: something that happened or a decision/event, with semanticType null
@@ -40,12 +44,22 @@ Split compound statements into atomic memories. Return every materially useful r
 
 For "Remember that I love travelling with my Wife Charmi", coverage requires both the relationship that Charmi is Yash's wife and the preference that Yash loves travelling with his wife Charmi.`;
 
+const correctionAuditSystemPrompt = `Normalize a user correction into the complete authoritative set of current memories.
+
+Return valid JSON only as {"memories":[...]}. Each item uses the standard memory fields: shouldRemember=true, memoryType, semanticType, content, importance, confidence, and optional ISO timestamps.
+
+The current user statement is authoritative. Prior conversation and the initial extraction may resolve references, but they must not contribute an older value that the user is replacing. Words such as "now", "actually", "instead", "no longer", and "only" signal replacement or exclusivity.
+
+Return the complete corrected memory set for all durable meanings in the current statement. Do not return obsolete or merged alternatives. For "Now I am thinking my favourite color is Blue Actually only Blue", return one current blue preference and never a combined "blue and black" preference. Return {"memories":[]} only if the statement has no durable current meaning.`;
+
 const relationshipSystemPrompt = `Classify the relationship between an active semantic memory and a proposed new semantic memory.
 
 Return valid JSON only:
 {"relationship":"duplicate|update|contradiction|unrelated","confidence":0.0}
 
-Use duplicate when they mean the same thing. Use update when the new memory refines or replaces the old information. Use contradiction when both cannot currently be true. Use unrelated when uncertain or about different subjects.`;
+Use duplicate when they mean the same thing. Use update when the new memory refines or replaces the old information. Use contradiction when both cannot currently be true. Use unrelated when uncertain or about different subjects.
+
+Judge the underlying subject and attribute, not spelling or phrasing. "Favorite" and "favourite" are equivalent. A new exclusive value expressed with words such as "only", "now", "actually", "instead", or "no longer" replaces prior alternatives for the same attribute. For example, "favourite colour is only blue" contradicts both "favourite colour is black" and "favourite colours are blue and black".`;
 
 const rememberedMemorySchema = z
   .object({
@@ -126,21 +140,36 @@ export class MemoryExtractor implements MemoryExtractionEngine {
       input.signal,
     );
 
-    if (!input.explicitRequest) {
-      return initiallyExtracted;
+    let extracted = initiallyExtracted;
+
+    if (input.explicitRequest) {
+      const missingMemories = await this.extractWithPrompt(
+        explicitCoverageSystemPrompt,
+        {
+          explicitMemoryRequest: true,
+          fullUserStatement: input.userMessage,
+          alreadyExtractedMemories: extracted,
+        },
+        input.signal,
+      );
+      extracted = deduplicateMemories([...extracted, ...missingMemories]);
     }
 
-    const missingMemories = await this.extractWithPrompt(
-      explicitCoverageSystemPrompt,
-      {
-        explicitMemoryRequest: true,
-        fullUserStatement: input.userMessage,
-        alreadyExtractedMemories: initiallyExtracted,
-      },
-      input.signal,
-    );
+    if (isCorrectionStatement(input.userMessage)) {
+      const correctedMemories = await this.extractWithPrompt(
+        correctionAuditSystemPrompt,
+        {
+          fullUserStatement: input.userMessage,
+          initiallyExtractedMemories: extracted,
+        },
+        input.signal,
+      );
+      if (correctedMemories.length > 0) {
+        return deduplicateMemories(correctedMemories);
+      }
+    }
 
-    return deduplicateMemories([...initiallyExtracted, ...missingMemories]);
+    return extracted;
   }
 
   private async extractWithPrompt(
@@ -255,4 +284,8 @@ function deduplicateMemories(
     seen.add(key);
     return true;
   });
+}
+
+function isCorrectionStatement(message: string): boolean {
+  return /\b(?:now|actually|instead|no longer|only)\b/i.test(message);
 }

@@ -161,6 +161,10 @@ test("explicit compound memory is persisted before acknowledgment and retrieved 
           input.messages.map((message) => message.content).join("\n"),
           /persisted before this response/,
         );
+        assert.match(
+          input.messages.map((message) => message.content).join("\n"),
+          /Never claim information has been stored or will be remembered unless the memory subsystem confirms persistence/,
+        );
         yield { content: "I have remembered that." };
         return;
       }

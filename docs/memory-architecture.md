@@ -16,7 +16,11 @@ For each meaningful request, Shiva embeds the query, retrieves active semantic a
 
 Explicit requests such as “remember that” are processed before response streaming begins. The full meaningful statement is extracted and then audited for omitted atomic meanings, so one compound statement can produce multiple memories. Shiva acknowledges successful memory only after persistence completes; a persistence failure prevents the response model from making that claim.
 
-For non-explicit conversation, Shiva stores the assistant message and schedules automatic extraction after streaming. Automatic extraction failure is logged but does not fail the completed chat. Obvious credentials are rejected. Similar semantic candidates are classified as duplicate, update, contradiction, or unrelated; updates and contradictions supersede the old row without deleting history.
+The governing response invariant is: never claim information has been stored or will be remembered unless the memory subsystem confirms persistence.
+
+For non-explicit conversation, Shiva stores the assistant message and schedules automatic extraction after streaming. Automatic extraction failure is logged but does not fail the completed chat. Correction language such as “now,” “actually,” “only,” and “no longer” receives a second normalization pass so older context is not merged into the new state. Obvious credentials are rejected.
+
+Plausible active memories of the same semantic subtype are each classified as duplicate, update, contradiction, or unrelated. A new canonical memory atomically supersedes every confidently conflicting row; history remains stored with `status = superseded` and `superseded_by` pointing at the replacement. Retrieval uses only active rows.
 
 The boundaries remain:
 
