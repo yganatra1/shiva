@@ -29,7 +29,7 @@ Ignore greetings, filler, acknowledgements, transient small talk, model-generate
 Treat correction language such as "now", "actually", "instead", "no longer", and "only" as a change to the user's current state. Extract the new current meaning only. Do not merge an older value from recent conversation or assistant text into the new memory unless the user explicitly says both values remain true. For example, "Actually, my favourite colour is only blue" means one current blue preference, not "blue and black".
 
 Memory types:
-- episodic: something that happened or a decision/event, with semanticType null
+- episodic: something that happened or a decision/event, with semanticType "none"
 - semantic: a durable fact, preference, relationship, project_fact, or profile item
 
 Each remembered item must contain shouldRemember=true, memoryType, semanticType, content, importance (0..1), confidence (0..1), and optional ISO timestamps occurredAt, validFrom, validUntil. Return {"memories":[]} when nothing should be stored.`;
@@ -38,7 +38,7 @@ const explicitCoverageSystemPrompt = `Audit an explicit memory request for omitt
 
 You receive the full meaningful user statement and memories already extracted from it. Return valid JSON only as {"memories":[...]}.
 
-Each new item must contain shouldRemember=true, memoryType (episodic or semantic), semanticType (null for episodic; fact, preference, relationship, project_fact, or profile for semantic), content, importance (0..1), confidence (0..1), and optional ISO timestamps occurredAt, validFrom, and validUntil.
+Each new item must contain shouldRemember=true, memoryType (episodic or semantic), semanticType ("none" for episodic; fact, preference, relationship, project_fact, or profile for semantic), content, importance (0..1), confidence (0..1), and optional ISO timestamps occurredAt, validFrom, and validUntil.
 
 Split compound statements into atomic memories. Return every materially useful relationship, preference, fact, profile detail, project fact, event, or decision that is NOT already represented. Preserve names and context. Do not repeat or paraphrase an existing extracted memory. Return {"memories":[]} only when all useful meanings are already covered.
 
@@ -76,7 +76,7 @@ const rememberedMemorySchema = z.discriminatedUnion("memoryType", [
   z.object({
     ...commonMemoryShape,
     memoryType: z.literal("episodic"),
-    semanticType: z.null(),
+    semanticType: z.literal("none"),
   }),
   z.object({
     ...commonMemoryShape,
@@ -105,8 +105,59 @@ const relationshipResponseSchema = z.object({
   confidence: z.number().min(0).max(1),
 });
 
-const extractionResponseFormat = z.toJSONSchema(extractionResponseSchema);
-const relationshipResponseFormat = z.toJSONSchema(relationshipResponseSchema);
+const extractionResponseFormat = {
+  type: "object",
+  properties: {
+    memories: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          shouldRemember: { type: "boolean", enum: [true] },
+          memoryType: { type: "string", enum: ["episodic", "semantic"] },
+          semanticType: {
+            type: "string",
+            enum: [
+              "none",
+              "fact",
+              "preference",
+              "relationship",
+              "project_fact",
+              "profile",
+            ],
+          },
+          content: { type: "string" },
+          importance: { type: "number" },
+          confidence: { type: "number" },
+          occurredAt: { type: "string" },
+          validFrom: { type: "string" },
+          validUntil: { type: "string" },
+        },
+        required: [
+          "shouldRemember",
+          "memoryType",
+          "semanticType",
+          "content",
+          "importance",
+          "confidence",
+        ],
+      },
+    },
+  },
+  required: ["memories"],
+} as const;
+
+const relationshipResponseFormat = {
+  type: "object",
+  properties: {
+    relationship: {
+      type: "string",
+      enum: ["duplicate", "update", "contradiction", "unrelated"],
+    },
+    confidence: { type: "number" },
+  },
+  required: ["relationship", "confidence"],
+} as const;
 
 export class MemoryExtractionError extends Error {
   override readonly name = "MemoryExtractionError";

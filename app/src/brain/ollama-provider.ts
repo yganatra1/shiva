@@ -69,7 +69,7 @@ export class OllamaProvider implements AIProvider {
     timeout.unref();
 
     try {
-      const response = await fetch(this.chatEndpoint, {
+      let response = await fetch(this.chatEndpoint, {
         method: "POST",
         headers: {
           accept: "application/x-ndjson",
@@ -83,12 +83,37 @@ export class OllamaProvider implements AIProvider {
           keep_alive: this.options.keepAlive,
           options: {
             num_ctx: this.options.contextLength,
-            ...(input.responseFormat ? { temperature: 0 } : {}),
           },
           ...(input.responseFormat ? { format: input.responseFormat } : {}),
         }),
         signal: requestSignal,
       });
+
+      if (
+        response.status === 400 &&
+        typeof input.responseFormat === "object"
+      ) {
+        await discardResponseBody(response);
+        response = await fetch(this.chatEndpoint, {
+          method: "POST",
+          headers: {
+            accept: "application/x-ndjson",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: this.options.model,
+            messages: input.messages,
+            think: false,
+            stream: true,
+            keep_alive: this.options.keepAlive,
+            options: {
+              num_ctx: this.options.contextLength,
+            },
+            format: "json",
+          }),
+          signal: requestSignal,
+        });
+      }
 
       if (!response.ok) {
         await discardResponseBody(response);

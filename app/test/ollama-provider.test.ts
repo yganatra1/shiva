@@ -88,7 +88,7 @@ test("the provider distinguishes caller cancellation from its deadline", async (
   );
 });
 
-test("the provider forwards JSON Schema with deterministic structured output", async (context) => {
+test("the provider forwards a JSON Schema for structured output", async (context) => {
   let requestBody: unknown;
   const upstream = createServer((request, response) => {
     const bodyParts: Buffer[] = [];
@@ -121,7 +121,50 @@ test("the provider forwards JSON Schema with deterministic structured output", a
   assert.ok(isRecord(requestBody));
   assert.deepEqual(requestBody.format, format);
   assert.ok(isRecord(requestBody.options));
-  assert.equal(requestBody.options.temperature, 0);
+  assert.equal(requestBody.options.temperature, undefined);
+});
+
+test("the provider falls back to JSON mode when Ollama rejects a schema", async (context) => {
+  const formats: unknown[] = [];
+  const upstream = createServer((request, response) => {
+    const bodyParts: Buffer[] = [];
+    request.on("data", (part: Buffer) => bodyParts.push(part));
+    request.on("end", () => {
+      const body = JSON.parse(
+        Buffer.concat(bodyParts).toString("utf8"),
+      ) as unknown;
+      formats.push(isRecord(body) ? body.format : undefined);
+
+      if (formats.length === 1) {
+        response.statusCode = 400;
+        response.end('{"error":"schema unsupported"}');
+        return;
+      }
+
+      response.setHeader("content-type", "application/x-ndjson");
+      response.write(
+        `${JSON.stringify({ done: false, message: { content: '{"memories":[]}' } })}\n`,
+      );
+      response.end(`${JSON.stringify({ done: true })}\n`);
+    });
+  });
+  context.after(() => closeServer(upstream));
+  const format = {
+    type: "object",
+    properties: { memories: { type: "array" } },
+    required: ["memories"],
+  } as const;
+
+  const result = await createProvider(
+    await listenOnRandomPort(upstream),
+    1_000,
+  ).chat({
+    messages: [{ role: "user", content: "Extract memory." }],
+    responseFormat: format,
+  });
+
+  assert.equal(result.content, '{"memories":[]}');
+  assert.deepEqual(formats, [format, "json"]);
 });
 
 test("the provider rejects malformed or incomplete streams", async (context) => {
