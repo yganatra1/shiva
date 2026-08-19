@@ -18,6 +18,7 @@ import type {
   MemoryExtractionEngine,
   MemoryRepositoryPort,
 } from "./memory/types.js";
+import type { ChatPerformanceLogSink } from "./observability/chat-performance.js";
 import { ShivaChatService } from "./services/chat-service.js";
 
 const API_BODY_LIMIT_BYTES = 256 * 1024;
@@ -28,6 +29,7 @@ export interface AppOverrides {
   readonly embeddingProvider?: EmbeddingProvider;
   readonly repository?: MemoryRepositoryPort;
   readonly extractionEngine?: MemoryExtractionEngine;
+  readonly performanceLogSink?: ChatPerformanceLogSink;
 }
 
 export function createApp(config: AppConfig, overrides: AppOverrides = {}): FastifyInstance {
@@ -94,7 +96,12 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
 
   registerErrorHandling(app);
   registerHealthRoute(app, config);
-  registerChatRoute(app, chatService);
+  registerChatRoute(app, chatService, {
+    performanceLogging: config.performanceLogging,
+    ...(overrides.performanceLogSink
+      ? { performanceLogSink: overrides.performanceLogSink }
+      : {}),
+  });
 
   return app;
 }

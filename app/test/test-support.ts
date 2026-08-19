@@ -37,6 +37,7 @@ export const testConfig: AppConfig = {
   embeddingRequestTimeoutMs: 1_000,
   workingMemoryMessageLimit: 20,
   memoryRetrievalLimit: 8,
+  performanceLogging: false,
   nodeEnv: "test",
 };
 

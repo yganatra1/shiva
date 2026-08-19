@@ -4,6 +4,11 @@ import type {
   MemoryRepositoryPort,
   RelevantMemoryContext,
 } from "./types.js";
+import {
+  measureChatPerformance,
+  measureChatPerformanceSync,
+  type ChatPerformanceTrace,
+} from "../observability/chat-performance.js";
 
 export class MemoryRetriever {
   constructor(
@@ -17,35 +22,53 @@ export class MemoryRetriever {
     userId: string,
     query: string,
     signal?: AbortSignal,
+    performance?: ChatPerformanceTrace,
   ): Promise<RelevantMemoryContext> {
-    const embedding = await this.embeddingProvider.embed(
-      signal ? { text: query, signal } : { text: query },
+    const embedding = await measureChatPerformance(
+      performance,
+      "embedding",
+      () =>
+        this.embeddingProvider.embed(
+          signal ? { text: query, signal } : { text: query },
+        ),
     );
     const candidateLimit = Math.max(this.retrievalLimit * 2, 10);
-    const [semantic, episodic] = await Promise.all([
-      this.repository.searchMemories(
-        userId,
-        "semantic",
-        embedding,
-        candidateLimit,
-      ),
-      this.repository.searchMemories(
-        userId,
-        "episodic",
-        embedding,
-        candidateLimit,
-      ),
-    ]);
-    const memories = this.ranker.rank(
-      [...semantic, ...episodic],
-      this.retrievalLimit,
+    const [semantic, episodic] = await measureChatPerformance(
+      performance,
+      "memory-search",
+      () =>
+        Promise.all([
+          this.repository.searchMemories(
+            userId,
+            "semantic",
+            embedding,
+            candidateLimit,
+          ),
+          this.repository.searchMemories(
+            userId,
+            "episodic",
+            embedding,
+            candidateLimit,
+          ),
+        ]),
+    );
+    const memories = measureChatPerformanceSync(
+      performance,
+      "ranking",
+      () =>
+        this.ranker.rank(
+          [...semantic, ...episodic],
+          this.retrievalLimit,
+        ),
     );
 
     if (memories.length === 0) {
       return { memories };
     }
 
-    await this.repository.touchMemories(memories.map((memory) => memory.id));
+    await measureChatPerformance(performance, "memory-touch", () =>
+      this.repository.touchMemories(memories.map((memory) => memory.id)),
+    );
 
     return {
       memories,

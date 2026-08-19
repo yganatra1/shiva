@@ -15,6 +15,11 @@ import type {
   MemoryRepositoryPort,
   StoredMessage,
 } from "../memory/types.js";
+import {
+  measureChatPerformance,
+  measureChatPerformanceSync,
+  type ChatPerformanceTrace,
+} from "../observability/chat-performance.js";
 
 interface ShivaChatServiceOptions {
   readonly provider: AIProvider;
@@ -39,42 +44,63 @@ export class ShivaChatService {
     message: string,
     conversationId?: string,
     signal?: AbortSignal,
+    performance?: ChatPerformanceTrace,
   ): Promise<PreparedChat> {
-    await this.options.repository.ensureUser(
-      this.options.userId,
-      this.options.userName,
+    await measureChatPerformance(performance, "resolve-user", () =>
+      this.options.repository.ensureUser(
+        this.options.userId,
+        this.options.userName,
+      ),
     );
-    const conversation = await this.options.repository.resolveConversation(
-      this.options.userId,
-      conversationId,
+    const conversation = await measureChatPerformance(
+      performance,
+      "conversation",
+      () =>
+        this.options.repository.resolveConversation(
+          this.options.userId,
+          conversationId,
+        ),
     );
-    const userMessage = await this.options.repository.addMessage(
-      conversation.id,
-      "user",
-      message,
+    performance?.setConversationId(conversation.id);
+    const userMessage = await measureChatPerformance(
+      performance,
+      "save-message",
+      () => this.options.repository.addMessage(conversation.id, "user", message),
     );
-    const recentMessages = await this.options.repository.getRecentMessages(
-      conversation.id,
-      this.options.workingMemoryMessageLimit,
+    const recentMessages = await measureChatPerformance(
+      performance,
+      "working-memory",
+      () =>
+        this.options.repository.getRecentMessages(
+          conversation.id,
+          this.options.workingMemoryMessageLimit,
+        ),
     );
     const explicitRequest = isExplicitMemoryRequest(message);
     const explicitMemory = explicitRequest
-      ? await this.options.memoryService.rememberExplicitInteraction({
-          userId: this.options.userId,
-          conversationId: conversation.id,
-          userMessage,
-          assistantResponse: "",
-          recentMessages,
-          ...(signal ? { signal } : {}),
-        })
+      ? await measureChatPerformance(performance, "explicit-memory", () =>
+          this.options.memoryService.rememberExplicitInteraction({
+            userId: this.options.userId,
+            conversationId: conversation.id,
+            userMessage,
+            assistantResponse: "",
+            recentMessages,
+            ...(signal ? { signal } : {}),
+          }),
+        )
       : undefined;
     const relevantMemory = isFillerMessage(message)
       ? { memories: [] }
-      : await this.retrieveMemorySafely(message, signal);
-    const messages = buildMessages(
-      recentMessages,
-      relevantMemory.systemMessage,
-      explicitMemory,
+      : await this.retrieveMemorySafely(message, signal, performance);
+    const messages = measureChatPerformanceSync(
+      performance,
+      "prompt-build",
+      () =>
+        buildMessages(
+          recentMessages,
+          relevantMemory.systemMessage,
+          explicitMemory,
+        ),
     );
 
     return {
@@ -86,6 +112,7 @@ export class ShivaChatService {
         messages,
         !explicitRequest,
         signal,
+        performance,
       ),
     };
   }
@@ -93,12 +120,14 @@ export class ShivaChatService {
   private async retrieveMemorySafely(
     message: string,
     signal?: AbortSignal,
+    performance?: ChatPerformanceTrace,
   ) {
     try {
       return await this.options.memoryRetriever.retrieve(
         this.options.userId,
         message,
         signal,
+        performance,
       );
     } catch (error: unknown) {
       if (signal?.aborted) {
@@ -116,30 +145,43 @@ export class ShivaChatService {
     messages: readonly ChatMessage[],
     deferMemoryExtraction: boolean,
     signal?: AbortSignal,
+    performance?: ChatPerformanceTrace,
   ): AsyncIterable<ChatChunk> {
     let assistantResponse = "";
     const input = signal ? { messages, signal } : { messages };
 
-    for await (const chunk of this.options.provider.streamChat(input)) {
-      assistantResponse += chunk.content;
-      yield chunk;
+    performance?.markBeforeOllama();
+    try {
+      for await (const chunk of this.options.provider.streamChat(input)) {
+        performance?.markOllamaFirstToken();
+        assistantResponse += chunk.content;
+        yield chunk;
+      }
+    } finally {
+      performance?.markOllamaComplete();
     }
 
     if (assistantResponse.trim().length === 0) {
       return;
     }
 
-    await this.options.repository.addMessage(
-      conversationId,
-      "assistant",
-      assistantResponse,
+    await measureChatPerformance(performance, "save-assistant", () =>
+      this.options.repository.addMessage(
+        conversationId,
+        "assistant",
+        assistantResponse,
+      ),
     );
 
     if (!deferMemoryExtraction) {
       return;
     }
 
+    const schedulingStartedAt = performance?.now();
+    const scheduledAt = schedulingStartedAt;
     setImmediate(() => {
+      const extractionStartedAt = performance?.now();
+      let extractionOutcome: "success" | "error" = "success";
       void this.options.memoryService
         .rememberInteraction({
           userId: this.options.userId,
@@ -149,9 +191,30 @@ export class ShivaChatService {
           recentMessages,
         })
         .catch((error: unknown) => {
+          extractionOutcome = "error";
           this.options.onBackgroundError?.(error);
+        })
+        .finally(() => {
+          if (
+            performance &&
+            scheduledAt !== undefined &&
+            extractionStartedAt !== undefined
+          ) {
+            performance.finishAsyncMemory(
+              conversationId,
+              scheduledAt,
+              extractionStartedAt,
+              extractionOutcome,
+            );
+          }
         });
     });
+    if (performance && schedulingStartedAt !== undefined) {
+      performance.record(
+        "memory-schedule",
+        performance.now() - schedulingStartedAt,
+      );
+    }
   }
 }
 

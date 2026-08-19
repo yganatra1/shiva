@@ -116,6 +116,7 @@ const environmentSchema = z.object({
     .min(1)
     .max(50)
     .default(8),
+  SHIVA_PERF_LOG: booleanEnvironmentSchema.default(false),
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
@@ -138,6 +139,7 @@ export interface AppConfig {
   readonly embeddingRequestTimeoutMs: number;
   readonly workingMemoryMessageLimit: number;
   readonly memoryRetrievalLimit: number;
+  readonly performanceLogging: boolean;
   readonly nodeEnv: "development" | "test" | "production";
 }
 
@@ -174,6 +176,7 @@ export function loadConfig(): AppConfig {
     embeddingRequestTimeoutMs: result.data.EMBEDDING_REQUEST_TIMEOUT_MS,
     workingMemoryMessageLimit: result.data.WORKING_MEMORY_MESSAGE_LIMIT,
     memoryRetrievalLimit: result.data.MEMORY_RETRIEVAL_LIMIT,
+    performanceLogging: result.data.SHIVA_PERF_LOG,
     nodeEnv: result.data.NODE_ENV,
   };
 }
