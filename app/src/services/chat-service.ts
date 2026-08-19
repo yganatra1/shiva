@@ -42,12 +42,13 @@ export type ChatInteractionMode = "text" | "voice";
 export interface ChatInteractionContext {
   readonly mode: ChatInteractionMode;
   readonly performance?: ChatPerformanceTrace;
+  readonly waitForVoicePlaybackIdle?: () => Promise<unknown>;
 }
 
 const VOICE_RESPONSE_GUIDANCE: ChatMessage = {
   role: "system",
   content:
-    "This interaction is being spoken aloud. Respond conversationally and concisely in natural speech. Avoid markdown, tables, headings, long lists, and unnecessary formatting. Prefer short sentences and only include detail that is useful when heard.",
+    "This interaction is being spoken aloud. Respond conversationally and concisely in smooth, connected natural speech. Avoid markdown, tables, headings, long lists, choppy fragments, and unnecessary formatting. Use moderately sized spoken phrases and only include detail that is useful when heard.",
 };
 
 export class ShivaChatService {
@@ -126,6 +127,7 @@ export class ShivaChatService {
         recentMessages,
         messages,
         !explicitRequest,
+        interaction.waitForVoicePlaybackIdle,
         signal,
         performance,
       ),
@@ -159,6 +161,7 @@ export class ShivaChatService {
     recentMessages: readonly StoredMessage[],
     messages: readonly ChatMessage[],
     deferMemoryExtraction: boolean,
+    waitForVoicePlaybackIdle?: () => Promise<unknown>,
     signal?: AbortSignal,
     performance?: ChatPerformanceTrace,
   ): AsyncIterable<ChatChunk> {
@@ -195,40 +198,67 @@ export class ShivaChatService {
     const schedulingStartedAt = performance?.now();
     const scheduledAt = schedulingStartedAt;
     setImmediate(() => {
-      const extractionStartedAt = performance?.now();
-      let extractionOutcome: "success" | "error" = "success";
-      void this.options.memoryService
-        .rememberInteraction({
-          userId: this.options.userId,
-          conversationId,
-          userMessage,
-          assistantResponse,
-          recentMessages,
-        })
-        .catch((error: unknown) => {
-          extractionOutcome = "error";
-          this.options.onBackgroundError?.(error);
-        })
-        .finally(() => {
-          if (
-            performance &&
-            scheduledAt !== undefined &&
-            extractionStartedAt !== undefined
-          ) {
-            performance.finishAsyncMemory(
-              conversationId,
-              scheduledAt,
-              extractionStartedAt,
-              extractionOutcome,
-            );
-          }
-        });
+      void this.runDeferredMemoryExtraction({
+        conversationId,
+        userMessage,
+        assistantResponse,
+        recentMessages,
+        ...(waitForVoicePlaybackIdle ? { waitForVoicePlaybackIdle } : {}),
+        ...(performance ? { performance } : {}),
+        ...(scheduledAt !== undefined ? { scheduledAt } : {}),
+      });
     });
     if (performance && schedulingStartedAt !== undefined) {
       performance.record(
         "memory-schedule",
         performance.now() - schedulingStartedAt,
       );
+    }
+  }
+
+  private async runDeferredMemoryExtraction(input: {
+    readonly conversationId: string;
+    readonly userMessage: StoredMessage;
+    readonly assistantResponse: string;
+    readonly recentMessages: readonly StoredMessage[];
+    readonly waitForVoicePlaybackIdle?: () => Promise<unknown>;
+    readonly performance?: ChatPerformanceTrace;
+    readonly scheduledAt?: number;
+  }): Promise<void> {
+    if (input.waitForVoicePlaybackIdle) {
+      try {
+        await input.waitForVoicePlaybackIdle();
+      } catch (error: unknown) {
+        this.options.onBackgroundError?.(error);
+      }
+    }
+
+    const extractionStartedAt = input.performance?.now();
+    let extractionOutcome: "success" | "error" = "success";
+    try {
+      await this.options.memoryService.rememberInteraction({
+        userId: this.options.userId,
+        conversationId: input.conversationId,
+        userMessage: input.userMessage,
+        assistantResponse: input.assistantResponse,
+        recentMessages: input.recentMessages,
+      });
+    } catch (error: unknown) {
+      extractionOutcome = "error";
+      this.options.onBackgroundError?.(error);
+    } finally {
+      if (
+        input.performance &&
+        input.scheduledAt !== undefined &&
+        extractionStartedAt !== undefined
+      ) {
+        input.performance.finishAsyncMemory(
+          input.conversationId,
+          input.scheduledAt,
+          extractionStartedAt,
+          extractionOutcome,
+        );
+      }
     }
   }
 }

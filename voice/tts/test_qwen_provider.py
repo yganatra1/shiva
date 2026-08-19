@@ -38,6 +38,16 @@ class EmptyResultModel:
         return [], 24_000
 
 
+class LoadCountingProvider(QwenTTSProvider):
+    def __init__(self) -> None:
+        super().__init__("mock-model", device="cpu")
+        self.load_calls = 0
+
+    def _load_model(self) -> object:
+        self.load_calls += 1
+        return object()
+
+
 class QwenTTSProviderTest(unittest.TestCase):
     def test_auto_dtype_uses_bfloat16_on_ampere_cuda(self) -> None:
         cuda = FakeCuda(available=True, capability=(8, 6))
@@ -63,6 +73,17 @@ class QwenTTSProviderTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "CUDA is unavailable"):
             resolve_torch_dtype(torch, "cuda:0", "auto")
+
+    def test_warmup_loads_once_without_running_inference(self) -> None:
+        provider = LoadCountingProvider()
+
+        async def warm_twice_concurrently() -> None:
+            await asyncio.gather(provider.warmup(), provider.warmup())
+            await provider.warmup()
+
+        asyncio.run(warm_twice_concurrently())
+
+        self.assertEqual(provider.load_calls, 1)
 
     def test_inference_failure_is_phase_classified(self) -> None:
         provider = QwenTTSProvider("mock-model", device="cpu")

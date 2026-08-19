@@ -27,6 +27,7 @@ import { ShivaChatService } from "./services/chat-service.js";
 import { HttpASRProvider } from "./voice/http-asr-provider.js";
 import { HttpTTSProvider } from "./voice/http-tts-provider.js";
 import type { ASRProvider, TTSProvider } from "./voice/provider.js";
+import { VoicePlaybackCoordinator } from "./voice/playback-coordinator.js";
 import {
   formatVoicePerformanceLog,
   VoicePerformanceTracker,
@@ -45,6 +46,7 @@ export interface AppOverrides {
   readonly asrProvider?: ASRProvider;
   readonly ttsProvider?: TTSProvider;
   readonly voicePerformanceLogSink?: VoicePerformanceLogSink;
+  readonly voicePlaybackCoordinator?: VoicePlaybackCoordinator;
 }
 
 export function createApp(config: AppConfig, overrides: AppOverrides = {}): FastifyInstance {
@@ -104,6 +106,8 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
           }),
       )
     : undefined;
+  const voicePlaybackCoordinator =
+    overrides.voicePlaybackCoordinator ?? new VoicePlaybackCoordinator();
   const memoryRetriever = new MemoryRetriever(
     repository,
     embeddingProvider,
@@ -131,6 +135,9 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
   if (database) {
     app.addHook("onClose", async () => database.pool.end());
   }
+  app.addHook("onClose", async () => {
+    voicePlaybackCoordinator.close();
+  });
 
   registerErrorHandling(app);
   registerHealthRoute(app, config);
@@ -147,10 +154,12 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
       ? { performanceLogSink: overrides.performanceLogSink }
       : {}),
     ...(voicePerformance ? { voicePerformance } : {}),
+    voicePlaybackCoordinator,
   });
   registerVoiceRoutes(app, {
     asrProvider,
     ttsProvider,
+    playbackCoordinator: voicePlaybackCoordinator,
     ...(voicePerformance ? { performance: voicePerformance } : {}),
   });
 

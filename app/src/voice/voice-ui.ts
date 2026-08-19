@@ -1,4 +1,10 @@
 import { VoiceConversationState } from "./conversation-state.js";
+import {
+  findAudibleWindow,
+  planAudioPlayback,
+} from "./audio-scheduling.js";
+import { StreamingSpeechChunker } from "./speech-chunker.js";
+import { SpeechSynthesisQueue } from "./speech-synthesis-queue.js";
 
 export function createVoicePage(): string {
   return `<!doctype html>
@@ -66,7 +72,13 @@ export function createVoicePage(): string {
 }
 
 export function createVoiceClientScript(): string {
-  return `const VoiceConversationState = ${VoiceConversationState.toString()};\n` + String.raw`
+  return [
+    `const VoiceConversationState = ${VoiceConversationState.toString()};`,
+    `const StreamingSpeechChunker = ${StreamingSpeechChunker.toString()};`,
+    `const SpeechSynthesisQueue = ${SpeechSynthesisQueue.toString()};`,
+    `const planAudioPlayback = ${planAudioPlayback.toString()};`,
+    `const findAudibleWindow = ${findAudibleWindow.toString()};`,
+  ].join("\n") + String.raw`
 (() => {
   "use strict";
   const conversation = new VoiceConversationState(sessionStorage);
@@ -85,13 +97,8 @@ export function createVoiceClientScript(): string {
   let recordedChunks = [];
   let pressHeld = false;
   let chatController = null;
-  let speechGeneration = 0;
-  let ttsSequence = 0;
-  let synthesisChain = Promise.resolve();
-  let audioQueue = [];
-  let playing = false;
-  let currentAudioUrl = null;
-  const synthesisControllers = new Set();
+  let audioContext = null;
+  let speechSession = null;
 
   function setStatus(message, isError) {
     status.textContent = message;
@@ -108,8 +115,31 @@ export function createVoiceClientScript(): string {
     return choices.find((choice) => MediaRecorder.isTypeSupported(choice)) || "";
   }
 
+  function primeAudio() {
+    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextConstructor) {
+      audio.hidden = false;
+      return;
+    }
+    try {
+      if (!audioContext) {
+        audioContext = new AudioContextConstructor({ latencyHint: "interactive" });
+      }
+      audio.hidden = true;
+      if (audioContext.state === "suspended") {
+        void audioContext.resume().catch(() => {
+          audio.hidden = false;
+        });
+      }
+    } catch {
+      audioContext = null;
+      audio.hidden = false;
+    }
+  }
+
   async function startRecording() {
     if (recorder && recorder.state === "recording") return;
+    primeAudio();
     if (!navigator.mediaDevices || !window.MediaRecorder) {
       setStatus("This browser does not support microphone recording. Use typed input.", true);
       return;
@@ -175,108 +205,204 @@ export function createVoiceClientScript(): string {
     stopSpeaking();
     if (chatController) chatController.abort();
     chatController = new AbortController();
-    const generation = speechGeneration;
-    ttsSequence = 0;
-    synthesisChain = Promise.resolve();
+    const session = createSpeechSession(turnId);
+    speechSession = session;
     setCopy(transcription, message);
     setCopy(responseText, "");
     setStatus("Shiva is thinking…");
-    let sentenceBuffer = "";
 
-    const result = await fetch("/voice/chat", {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-shiva-voice-turn-id": turnId },
-      body: JSON.stringify(conversation.chatPayload(message)),
-      signal: chatController.signal,
-    });
-    if (!result.ok) throw new Error(await publicError(result));
-    conversation.captureResponse(result.headers);
-    if (!result.body) throw new Error("Shiva returned an empty stream.");
-
-    const reader = result.body.getReader();
-    const decoder = new TextDecoder();
-    let fullResponse = "";
     try {
-      while (true) {
-        const part = await reader.read();
-        if (part.done) break;
-        const text = decoder.decode(part.value, { stream: true });
-        fullResponse += text;
-        sentenceBuffer += text;
-        setCopy(responseText, fullResponse);
-        sentenceBuffer = queueCompleteSentences(sentenceBuffer, turnId, generation);
-        setStatus("Shiva is replying…");
-      }
-      const tail = decoder.decode();
-      fullResponse += tail;
-      sentenceBuffer += tail;
-      setCopy(responseText, fullResponse);
-      if (sentenceBuffer.trim()) queueSpeech(sentenceBuffer.trim(), turnId, generation);
-      setStatus("Ready");
-    } finally {
-      reader.releaseLock();
-    }
-  }
+      const result = await fetch("/voice/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-shiva-voice-turn-id": turnId },
+        body: JSON.stringify(conversation.chatPayload(message)),
+        signal: chatController.signal,
+      });
+      if (!result.ok) throw new Error(await publicError(result));
+      conversation.captureResponse(result.headers);
+      if (!result.body) throw new Error("Shiva returned an empty stream.");
 
-  function queueCompleteSentences(buffer, turnId, generation) {
-    let remaining = buffer;
-    while (true) {
-      const match = remaining.match(/^([\s\S]*?[.!?]+)(?=\s|$)/);
-      if (!match) return remaining;
-      const sentence = match[1].trim();
-      remaining = remaining.slice(match[1].length).trimStart();
-      if (sentence) queueSpeech(sentence, turnId, generation);
-    }
-  }
-
-  function queueSpeech(text, turnId, generation) {
-    const sequence = ttsSequence++;
-    synthesisChain = synthesisChain.then(async () => {
-      if (generation !== speechGeneration) return;
-      const controller = new AbortController();
-      synthesisControllers.add(controller);
+      const reader = result.body.getReader();
+      const decoder = new TextDecoder();
+      let fullResponse = "";
       try {
-        const result = await fetch("/voice/synthesize", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-shiva-voice-turn-id": turnId,
-            "x-shiva-voice-sequence": String(sequence),
-          },
-          body: JSON.stringify({ text }),
-          signal: controller.signal,
-        });
-        if (!result.ok) throw new Error(await publicError(result));
-        const blob = await result.blob();
-        if (generation !== speechGeneration) return;
-        audioQueue.push({ url: URL.createObjectURL(blob), generation });
-        void playAudioQueue();
-      } catch (error) {
-        if (generation === speechGeneration && !(error instanceof DOMException && error.name === "AbortError")) {
+        while (true) {
+          const part = await reader.read();
+          if (part.done) break;
+          const text = decoder.decode(part.value, { stream: true });
+          fullResponse += text;
+          setCopy(responseText, fullResponse);
+          queueSpeechChunks(session, session.chunker.push(text));
+          setStatus("Shiva is replying…");
+        }
+        const tail = decoder.decode();
+        fullResponse += tail;
+        setCopy(responseText, fullResponse);
+        queueSpeechChunks(session, session.chunker.push(tail));
+        queueSpeechChunks(session, session.chunker.finish());
+        session.chatFinished = true;
+        maybeFinishSpeech(session);
+        if (!session.idleReported) setStatus("Shiva is speaking…");
+      } finally {
+        reader.releaseLock();
+      }
+    } catch (error) {
+      cancelSpeechSession(session);
+      throw error;
+    }
+  }
+
+  function createSpeechSession(turnId) {
+    const session = {
+      turnId,
+      chunker: new StreamingSpeechChunker(),
+      queue: null,
+      nextSequence: 0,
+      unsettledChunks: 0,
+      settledSequences: new Set(),
+      sources: new Set(),
+      playbackTimers: new Set(),
+      scheduledUntil: null,
+      fallbackQueue: [],
+      fallbackPlaying: false,
+      currentFallbackUrl: null,
+      telemetryTail: Promise.resolve(),
+      chatFinished: false,
+      cancelled: false,
+      idleReported: false,
+    };
+    session.queue = new SpeechSynthesisQueue({
+      worker: (item, signal) => synthesizeSpeech(session, item, signal),
+      onReady: async (item, wav, signal) => {
+        try {
+          if (!session.cancelled && !signal.aborted) {
+            await scheduleSpeech(session, item, wav, signal);
+          }
+        } finally {
+          settleSpeechChunk(session, item.sequence);
+        }
+      },
+      onError: (error, item) => {
+        settleSpeechChunk(session, item.sequence);
+        if (!session.cancelled && !(error instanceof DOMException && error.name === "AbortError")) {
           setStatus(error instanceof Error ? error.message : "Speech synthesis failed.", true);
         }
-      } finally {
-        synthesisControllers.delete(controller);
-      }
+      },
+      onIdle: () => maybeFinishSpeech(session),
     });
+    return session;
   }
 
-  async function playAudioQueue() {
-    if (playing) return;
-    playing = true;
+  function queueSpeechChunks(session, chunks) {
+    for (const text of chunks) {
+      if (session.cancelled || !text.trim()) continue;
+      const item = {
+        sequence: session.nextSequence++,
+        text: text.trim(),
+        textReadyAt: Date.now(),
+      };
+      session.unsettledChunks += 1;
+      if (!session.queue.enqueue(item)) {
+        settleSpeechChunk(session, item.sequence);
+      }
+    }
+  }
+
+  async function synthesizeSpeech(session, item, signal) {
+    const result = await fetch("/voice/synthesize", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-shiva-voice-turn-id": session.turnId,
+        "x-shiva-voice-sequence": String(item.sequence),
+        "x-shiva-text-ready-at": String(item.textReadyAt),
+      },
+      body: JSON.stringify({ text: item.text }),
+      signal,
+    });
+    if (!result.ok) throw new Error(await publicError(result));
+    return result.arrayBuffer();
+  }
+
+  async function scheduleSpeech(session, item, wav, signal) {
+    if (audioContext) {
+      try {
+        if (audioContext.state === "suspended") await audioContext.resume();
+        const buffer = await audioContext.decodeAudioData(wav.slice(0));
+        if (session.cancelled || signal.aborted) return;
+        scheduleAudioBuffer(session, item.sequence, buffer);
+        return;
+      } catch (error) {
+        if (session.cancelled || signal.aborted) return;
+        console.warn("[SHIVA VOICE] Web Audio decoding failed; using HTML audio fallback.", error);
+        audio.hidden = false;
+      }
+    }
+
+    const url = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
+    session.fallbackQueue.push({ sequence: item.sequence, url });
+    void playFallbackQueue(session);
+  }
+
+  function scheduleAudioBuffer(session, sequence, buffer) {
+    const channels = [];
+    for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+      channels.push(buffer.getChannelData(channel));
+    }
+    const audible = findAudibleWindow(channels, buffer.sampleRate);
+    if (audible.durationSeconds <= 0) return;
+
+    const plan = planAudioPlayback(
+      audioContext.currentTime,
+      session.scheduledUntil,
+      audible.durationSeconds,
+    );
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+    session.sources.add(source);
+    session.scheduledUntil = plan.endAt;
+    source.addEventListener("ended", () => {
+      session.sources.delete(source);
+      if (!session.cancelled) {
+        reportPlayback(session, "ended", sequence);
+        maybeFinishSpeech(session);
+      }
+    }, { once: true });
+    source.start(plan.startAt, audible.offsetSeconds, audible.durationSeconds);
+    reportPlayback(session, "scheduled", sequence);
+    const startDelayMs = Math.max(0, (plan.startAt - audioContext.currentTime) * 1_000);
+    const startTimer = window.setTimeout(() => {
+      session.playbackTimers.delete(startTimer);
+      if (!session.cancelled) reportPlayback(session, "started", sequence);
+    }, startDelayMs);
+    session.playbackTimers.add(startTimer);
+    if (plan.underrunMs > 50) {
+      console.warn("[SHIVA VOICE UNDERRUN]", {
+        turnId: session.turnId,
+        sequence,
+        underrunMs: Math.round(plan.underrunMs),
+      });
+    }
+    setStatus("Shiva is speaking…");
+  }
+
+  async function playFallbackQueue(session) {
+    if (session.fallbackPlaying || session.cancelled) return;
+    session.fallbackPlaying = true;
     try {
-      while (audioQueue.length > 0) {
-        const item = audioQueue.shift();
-        if (item.generation !== speechGeneration) {
-          URL.revokeObjectURL(item.url);
-          continue;
-        }
+      while (!session.cancelled && session.fallbackQueue.length > 0) {
+        const item = session.fallbackQueue.shift();
+        if (!item) break;
         audio.src = item.url;
-        currentAudioUrl = item.url;
+        session.currentFallbackUrl = item.url;
         let played = false;
         try {
+          reportPlayback(session, "scheduled", item.sequence);
           await audio.play();
           played = true;
+          reportPlayback(session, "started", item.sequence);
+          setStatus("Shiva is speaking…");
           await new Promise((resolve) => {
             const finish = () => {
               audio.removeEventListener("ended", finish);
@@ -288,35 +414,102 @@ export function createVoiceClientScript(): string {
             audio.addEventListener("error", finish, { once: true });
             audio.addEventListener("pause", finish, { once: true });
           });
+          if (!session.cancelled) reportPlayback(session, "ended", item.sequence);
         } catch {
-          if (item.generation === speechGeneration) {
+          if (!session.cancelled) {
             setStatus("Audio is ready. Press play to hear Shiva.");
           }
           return;
         } finally {
-          if (played || item.generation !== speechGeneration) {
+          if (played || session.cancelled) {
             URL.revokeObjectURL(item.url);
-            if (currentAudioUrl === item.url) currentAudioUrl = null;
+            if (session.currentFallbackUrl === item.url) session.currentFallbackUrl = null;
           }
         }
       }
     } finally {
-      playing = false;
+      session.fallbackPlaying = false;
+      maybeFinishSpeech(session);
     }
   }
 
-  function stopSpeaking() {
-    speechGeneration += 1;
-    synthesisControllers.forEach((controller) => controller.abort());
-    synthesisControllers.clear();
+  function settleSpeechChunk(session, sequence) {
+    if (session.settledSequences.has(sequence)) return;
+    session.settledSequences.add(sequence);
+    session.unsettledChunks = Math.max(0, session.unsettledChunks - 1);
+    maybeFinishSpeech(session);
+  }
+
+  function maybeFinishSpeech(session) {
+    if (
+      session.cancelled ||
+      !session.chatFinished ||
+      session.unsettledChunks > 0 ||
+      session.sources.size > 0 ||
+      session.fallbackPlaying ||
+      session.fallbackQueue.length > 0
+    ) {
+      return;
+    }
+    reportPlaybackIdle(session);
+    if (speechSession === session) setStatus("Ready");
+  }
+
+  function reportPlayback(session, event, sequence) {
+    if (session.cancelled || session.idleReported) return;
+    queuePlaybackTelemetry(session, { event, sequence, timestampMs: Date.now() });
+  }
+
+  function reportPlaybackIdle(session) {
+    if (session.idleReported) return;
+    session.idleReported = true;
+    queuePlaybackTelemetry(session, { event: "idle", timestampMs: Date.now() });
+  }
+
+  function queuePlaybackTelemetry(session, payload) {
+    session.telemetryTail = session.telemetryTail.then(async () => {
+      try {
+        await fetch("/voice/playback", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-shiva-voice-turn-id": session.turnId,
+          },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        });
+      } catch {
+        // Playback must not depend on optional telemetry delivery.
+      }
+    });
+  }
+
+  function cancelSpeechSession(session) {
+    if (!session || session.cancelled) return;
+    session.cancelled = true;
+    session.chunker.reset();
+    session.queue.cancel();
+    session.playbackTimers.forEach((timer) => window.clearTimeout(timer));
+    session.playbackTimers.clear();
+    session.sources.forEach((source) => {
+      try { source.stop(); } catch { /* Source may already have ended. */ }
+    });
+    session.sources.clear();
     audio.pause();
     audio.removeAttribute("src");
     audio.load();
-    if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
-    currentAudioUrl = null;
-    audioQueue.forEach((item) => URL.revokeObjectURL(item.url));
-    audioQueue = [];
-    playing = false;
+    if (session.currentFallbackUrl) URL.revokeObjectURL(session.currentFallbackUrl);
+    session.currentFallbackUrl = null;
+    session.fallbackQueue.forEach((item) => URL.revokeObjectURL(item.url));
+    session.fallbackQueue = [];
+    session.fallbackPlaying = false;
+    reportPlaybackIdle(session);
+  }
+
+  function stopSpeaking() {
+    const session = speechSession;
+    if (session) cancelSpeechSession(session);
+    speechSession = null;
   }
 
   async function publicError(result) {
@@ -332,6 +525,7 @@ export function createVoiceClientScript(): string {
     event.preventDefault();
     pressHeld = true;
     mic.setPointerCapture(event.pointerId);
+    primeAudio();
     void startRecording();
   });
   mic.addEventListener("pointerup", () => { pressHeld = false; stopRecording(); });
@@ -340,6 +534,7 @@ export function createVoiceClientScript(): string {
     event.preventDefault();
     const message = typedInput.value.trim();
     if (!message) return;
+    primeAudio();
     typedInput.value = "";
     void runChat(message, crypto.randomUUID()).catch((error) => {
       setStatus(error instanceof Error ? error.message : "Chat failed.", true);
@@ -353,6 +548,9 @@ export function createVoiceClientScript(): string {
     setCopy(transcription, "");
     setCopy(responseText, "");
     setStatus("New conversation started");
+  });
+  window.addEventListener("pagehide", () => {
+    if (speechSession) cancelSpeechSession(speechSession);
   });
 })();`;
 }

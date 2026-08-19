@@ -10,6 +10,9 @@ class Transcription:
 
 
 class ASRProvider(Protocol):
+    async def warmup(self) -> None:
+        """Load and prepare the configured ASR model without running inference."""
+
     async def transcribe(self, wav_path: Path) -> Transcription:
         """Transcribe a normalized mono 16 kHz WAV file."""
 

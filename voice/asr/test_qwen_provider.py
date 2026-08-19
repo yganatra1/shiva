@@ -45,7 +45,30 @@ class MissingTextModel:
         return self._results
 
 
+class WarmupTrackingProvider(QwenASRProvider):
+    def __init__(self) -> None:
+        super().__init__("mock-model", device="cpu")
+        self.load_calls = 0
+        self.loaded_model = object()
+
+    def _load_model(self) -> object:
+        self.load_calls += 1
+        return self.loaded_model
+
+
 class QwenASRProviderTest(unittest.TestCase):
+    def test_warmup_preloads_once_without_inference(self) -> None:
+        provider = WarmupTrackingProvider()
+
+        async def warm_twice() -> None:
+            await asyncio.gather(provider.warmup(), provider.warmup())
+            await provider.warmup()
+
+        asyncio.run(warm_twice())
+
+        self.assertEqual(provider.load_calls, 1)
+        self.assertIs(provider._model, provider.loaded_model)
+
     def test_auto_dtype_uses_bfloat16_on_ampere_cuda(self) -> None:
         cuda = FakeCuda(available=True, capability=(8, 6))
         torch = FakeTorch(cuda)

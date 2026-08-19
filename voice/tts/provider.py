@@ -8,6 +8,9 @@ class SynthesizedSpeech:
 
 
 class TTSProvider(Protocol):
+    async def warmup(self) -> None:
+        """Load and initialize resources required for synthesis."""
+
     async def synthesize(self, text: str) -> SynthesizedSpeech:
         """Synthesize text as PCM WAV audio."""
 

@@ -77,6 +77,28 @@ def create_app(
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "asr", "model": model_name}
 
+    @application.post("/warmup")
+    async def warmup() -> dict[str, str]:
+        started_at = monotonic()
+        try:
+            await selected_provider.warmup()
+        except ASRProviderError as error:
+            LOGGER.exception(
+                "ASR warmup failed phase=%s duration_ms=%.2f "
+                "model=%s device=%s dtype=%s",
+                error.phase,
+                (monotonic() - started_at) * 1_000,
+                model_name,
+                device,
+                dtype,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="The ASR model is unavailable.",
+            ) from error
+
+        return {"status": "ready", "service": "asr", "model": model_name}
+
     @application.post("/transcribe")
     async def transcribe(
         file: Annotated[UploadFile, File(...)],

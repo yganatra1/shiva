@@ -46,6 +46,10 @@ class QwenTTSProvider:
         self._load_lock = asyncio.Lock()
         self._inference_lock = asyncio.Lock()
 
+    async def warmup(self) -> None:
+        """Load the model without performing speech synthesis."""
+        await self._get_model()
+
     async def synthesize(self, text: str) -> SynthesizedSpeech:
         model = await self._get_model()
         try:

@@ -172,7 +172,7 @@ Open the lightweight browser UI after starting Shiva:
 http://127.0.0.1:3000/voice
 ```
 
-The UI supports hold-to-talk, immediate transcription display, streamed response text, ordered sentence-level WAV playback, stop speaking, typed fallback, new conversation, and automatic reuse of the existing conversation ID.
+The UI supports hold-to-talk, immediate transcription display, streamed response text, adaptive speech phrases, continuous Web Audio playback, stop speaking, typed fallback, new conversation, and automatic reuse of the existing conversation ID. A single synthesis worker prepares the next phrase while the current audio plays; Qwen TTS inference is never run concurrently by the browser queue.
 
 Gateway endpoints:
 
@@ -197,6 +197,20 @@ python -m voice.tts.server
 ```
 
 They bind only to `127.0.0.1:8101` and `127.0.0.1:8102` by default. Qwen adapters lazy-load on first inference. Installing requirements or running mock tests does not itself perform inference; do not expose either port publicly.
+
+After both services are listening, preload their configured models sequentially:
+
+```bash
+echo "Warming ASR..."
+curl -fsS -X POST http://127.0.0.1:8101/warmup
+echo
+
+echo "Warming TTS..."
+curl -fsS -X POST http://127.0.0.1:8102/warmup
+echo
+```
+
+Successful responses have the form `{"status":"ready","service":"asr|tts","model":"..."}`. Repeat warmup after every Python service restart. The endpoints load and cache model weights but do not run sample inference, so the first real request may still incur one-time inference initialization. Keep `GET /health` as the cheap liveness check; do not use warmup as a recurring health probe.
 
 `ASR_DTYPE=auto` and `TTS_DTYPE=auto` use bfloat16 on Ampere-or-newer CUDA GPUs, float16 on older CUDA GPUs, and float32 when the corresponding device is `cpu`. Handled ASR/TTS load or inference failures are logged inside the owning Python process with their phase, duration, and complete causal traceback while public gateway responses remain sanitized. Both `/health` endpoints are process-liveness checks; successful model readiness is established by an inference or explicit model warm-up.
 
@@ -227,7 +241,9 @@ Deferred automatic memory work emits a separate `[SHIVA PERF ASYNC]` record with
 
 Disable tracing again with `SHIVA_PERF_LOG=false`; it is off by default.
 
-Voice turns additionally emit `[SHIVA VOICE PERF]` with audio upload, ASR, voice-chat TTFT, first TTS request, TTS, and time-to-first-audio measurements.
+Voice turns additionally emit `[SHIVA VOICE PERF]` with audio upload, ASR, voice-chat TTFT, first TTS request, TTS, and time-to-first-audio measurements. Every synthesized phrase emits `[SHIVA VOICE TTS PERF]` after playback with text length, text-ready/synthesis/playback timestamps, synthesis duration, generated audio duration, and real-time factor (`RTF = synthesis duration / audio duration`). Browser console warnings identify playback underruns over 50 ms.
+
+For voice turns, deferred automatic memory extraction waits until the browser reports that queued speech playback is idle, with a 120-second fail-safe. Explicit `remember...` persistence remains synchronous and is never deferred behind playback.
 
 ## Current RunPod direct runtime
 

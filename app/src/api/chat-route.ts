@@ -17,6 +17,7 @@ import {
   parseVoiceTurnId,
   type VoicePerformanceTracker,
 } from "../voice/voice-performance.js";
+import type { VoicePlaybackCoordinator } from "../voice/playback-coordinator.js";
 import { ApiError } from "./api-error.js";
 
 const MAX_MESSAGE_CHARACTERS = 20_000;
@@ -25,6 +26,7 @@ interface ChatRouteOptions {
   readonly performanceLogging: boolean;
   readonly performanceLogSink?: ChatPerformanceLogSink;
   readonly voicePerformance?: VoicePerformanceTracker;
+  readonly voicePlaybackCoordinator?: VoicePlaybackCoordinator;
 }
 
 const chatRequestSchema = z
@@ -69,6 +71,7 @@ function registerStreamingChatRoute(
   options: ChatRouteOptions,
 ): void {
   app.post<{ Body: unknown }>(path, async (request, reply) => {
+    const voicePlaybackCoordinator = options.voicePlaybackCoordinator;
     const voiceTurnId = interactionMode === "voice"
       ? parseVoiceTurnId(request.headers["x-shiva-voice-turn-id"])
       : undefined;
@@ -109,6 +112,10 @@ function registerStreamingChatRoute(
         );
       }
 
+      if (voiceTurnId) {
+        voicePlaybackCoordinator?.beginTurn(voiceTurnId);
+      }
+
       const clientDisconnectController = new AbortController();
       const abortOnPrematureClose = (): void => {
         if (!reply.raw.writableEnded) {
@@ -131,6 +138,12 @@ function registerStreamingChatRoute(
           {
             mode: interactionMode,
             ...(performance ? { performance } : {}),
+            ...(voiceTurnId && voicePlaybackCoordinator
+              ? {
+                  waitForVoicePlaybackIdle: () =>
+                    voicePlaybackCoordinator.waitUntilIdle(voiceTurnId),
+                }
+              : {}),
           },
         );
         reply.header("x-shiva-conversation-id", preparedChat.conversationId);

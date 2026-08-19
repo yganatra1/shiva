@@ -2,7 +2,9 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import type { ASRProvider, TTSProvider } from "../voice/provider.js";
+import type { VoicePlaybackCoordinator } from "../voice/playback-coordinator.js";
 import {
+  parseVoiceTimestamp,
   parseVoiceTurnId,
   type VoicePerformanceTracker,
 } from "../voice/voice-performance.js";
@@ -31,9 +33,27 @@ const synthesisRequestSchema = z
   })
   .strict();
 
+const playbackEventSchema = z
+  .object({
+    event: z.enum(["scheduled", "started", "ended", "idle"]),
+    sequence: z.number().int().nonnegative().optional(),
+    timestampMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.event !== "idle" && value.sequence === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["sequence"],
+        message: "A sequence is required for chunk playback events.",
+      });
+    }
+  });
+
 interface VoiceRouteOptions {
   readonly asrProvider: ASRProvider;
   readonly ttsProvider: TTSProvider;
+  readonly playbackCoordinator: VoicePlaybackCoordinator;
   readonly performance?: VoicePerformanceTracker;
 }
 
@@ -143,8 +163,17 @@ export function registerVoiceRoutes(
       const sequence = parseSequence(
         request.headers["x-shiva-voice-sequence"],
       );
+      const textReadyAtUnixMs = parseVoiceTimestamp(
+        request.headers["x-shiva-text-ready-at"],
+      );
+      if (turnId) {
+        options.playbackCoordinator.markActive(turnId);
+      }
       const startedAt = turnId
-        ? options.performance?.markTtsStarted(turnId, sequence)
+        ? options.performance?.markTtsStarted(turnId, sequence, {
+            textLength: parsed.data.text.length,
+            ...(textReadyAtUnixMs !== undefined ? { textReadyAtUnixMs } : {}),
+          })
         : undefined;
       const result = await withClientCancellation(reply, (signal) =>
         options.ttsProvider.synthesize({
@@ -153,7 +182,12 @@ export function registerVoiceRoutes(
         }),
       );
       if (turnId && startedAt !== undefined) {
-        options.performance?.finishTts(turnId, sequence, startedAt);
+        options.performance?.finishTts(
+          turnId,
+          sequence,
+          startedAt,
+          result.audio,
+        );
       }
 
       return reply
@@ -163,6 +197,44 @@ export function registerVoiceRoutes(
         .send(Buffer.from(result.audio));
     },
   );
+
+  app.post<{ Body: unknown }>("/voice/playback", async (request, reply) => {
+    if (request.mediaType !== "application/json") {
+      throw new ApiError(
+        415,
+        "UNSUPPORTED_MEDIA_TYPE",
+        "Content-Type must be application/json.",
+      );
+    }
+
+    const turnId = parseVoiceTurnId(
+      request.headers["x-shiva-voice-turn-id"],
+    );
+    const parsed = playbackEventSchema.safeParse(request.body);
+    if (!turnId || !parsed.success) {
+      throw new ApiError(
+        400,
+        "INVALID_REQUEST",
+        "A valid voice turn ID and playback event are required.",
+      );
+    }
+
+    const timestampUnixMs = parsed.data.timestampMs ?? Date.now();
+    if (parsed.data.event === "idle") {
+      options.performance?.finishPlaybackTurn(turnId);
+      options.playbackCoordinator.markIdle(turnId);
+    } else {
+      options.playbackCoordinator.markActive(turnId);
+      options.performance?.recordPlaybackEvent(
+        turnId,
+        parsed.data.sequence as number,
+        parsed.data.event,
+        timestampUnixMs,
+      );
+    }
+
+    return reply.code(204).send();
+  });
 }
 
 async function withClientCancellation<T>(

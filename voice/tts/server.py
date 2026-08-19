@@ -50,6 +50,34 @@ def create_app(provider: TTSProvider | None = None) -> FastAPI:
             "speaker": speaker,
         }
 
+    @application.post("/warmup")
+    async def warmup() -> dict[str, str]:
+        provider_started_at = monotonic()
+        try:
+            await selected_provider.warmup()
+        except TTSProviderError as error:
+            LOGGER.exception(
+                "TTS warmup failed phase=%s duration_ms=%.2f "
+                "model=%s device=%s dtype=%s speaker=%s language=%s",
+                error.phase,
+                (monotonic() - provider_started_at) * 1_000,
+                model_name,
+                device,
+                dtype,
+                speaker,
+                language,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="The TTS model is unavailable.",
+            ) from error
+
+        return {
+            "status": "ready",
+            "service": "tts",
+            "model": model_name,
+        }
+
     @application.post("/synthesize", response_class=Response)
     async def synthesize(request: SynthesisRequest) -> Response:
         provider_started_at = monotonic()

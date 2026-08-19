@@ -13,7 +13,7 @@ import {
   type SynthesisInput,
   type TTSProvider,
 } from "../src/voice/provider.js";
-import type { VoicePerformanceLog } from "../src/voice/voice-performance.js";
+import type { VoicePerformanceEntry } from "../src/voice/voice-performance.js";
 import { createTestOverrides, testConfig } from "./test-support.js";
 
 const TURN_ID = "10000000-0000-4000-8000-000000000001";
@@ -59,6 +59,10 @@ test("voice proxy routes use provider abstractions and serve the browser UI", as
   assert.equal(page.statusCode, 200);
   assert.match(page.body, /getUserMedia/);
   assert.match(page.body, /\/voice\/chat/);
+  assert.match(page.body, /AudioContext/);
+  assert.match(page.body, /\/voice\/playback/);
+  assert.match(page.body, /x-shiva-text-ready-at/);
+  assert.doesNotMatch(page.body, /synthesisChain/);
   assert.doesNotMatch(page.body, /fetch\("\/chat"/);
 
   const transcription = await app.inject({
@@ -175,7 +179,11 @@ test("voice chat reuses the shared pipeline and conversation ID with voice guida
   assert.equal(second.headers["x-shiva-conversation-id"], conversationId);
   assert.match(
     prompts[0]?.map((message) => message.content).join("\n") ?? "",
-    /spoken aloud.*conversationally and concisely/s,
+    /spoken aloud.*smooth, connected natural speech/s,
+  );
+  assert.doesNotMatch(
+    prompts[0]?.map((message) => message.content).join("\n") ?? "",
+    /Prefer short sentences/,
   );
 
   await app.inject({
@@ -191,7 +199,7 @@ test("voice chat reuses the shared pipeline and conversation ID with voice guida
 });
 
 test("voice performance tracing correlates upload, chat TTFT, and first audio", async (context) => {
-  const logs: VoicePerformanceLog[] = [];
+  const logs: VoicePerformanceEntry[] = [];
   const app = createApp(
     { ...testConfig, performanceLogging: true },
     {
@@ -233,6 +241,8 @@ test("voice performance tracing correlates upload, chat TTFT, and first audio", 
   });
 
   assert.equal(logs.length, 1);
+  const summary = logs.find((entry) => entry.kind === "voice");
+  assert.ok(summary);
   for (const stage of [
     "audio-upload",
     "asr-duration",
@@ -241,7 +251,7 @@ test("voice performance tracing correlates upload, chat TTFT, and first audio", 
     "tts-duration",
     "time-to-first-audio",
   ] as const) {
-    assert.equal(typeof logs[0]?.timingsMs[stage], "number", stage);
+    assert.equal(typeof summary.timingsMs[stage], "number", stage);
   }
 });
 

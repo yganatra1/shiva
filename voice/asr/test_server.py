@@ -10,6 +10,10 @@ from voice.asr.server import InvalidAudioError, create_app
 class FakeASRProvider:
     def __init__(self) -> None:
         self.normalized_audio_seen = False
+        self.warmup_calls = 0
+
+    async def warmup(self) -> None:
+        self.warmup_calls += 1
 
     async def transcribe(self, wav_path: Path) -> Transcription:
         self.normalized_audio_seen = wav_path.name == "normalized.wav" and wav_path.exists()
@@ -27,6 +31,12 @@ class RejectingNormalizer:
 
 
 class FailingASRProvider:
+    async def warmup(self) -> None:
+        try:
+            raise RuntimeError("private CUDA failure")
+        except RuntimeError as error:
+            raise ASRProviderError("safe provider failure", phase="load") from error
+
     async def transcribe(self, _wav_path: Path) -> Transcription:
         try:
             raise RuntimeError("private CUDA failure")
@@ -35,11 +45,50 @@ class FailingASRProvider:
 
 
 class NoSpeechASRProvider:
+    async def warmup(self) -> None:
+        return None
+
     async def transcribe(self, _wav_path: Path) -> Transcription:
         raise NoSpeechError("empty transcription")
 
 
 class ASRServerTest(unittest.TestCase):
+    def test_health_is_liveness_only_and_does_not_warm_provider(self) -> None:
+        provider = FakeASRProvider()
+        client = TestClient(create_app(provider=provider, normalizer=FakeNormalizer()))
+
+        response = client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(provider.warmup_calls, 0)
+
+    def test_warmup_preloads_provider_and_reports_ready(self) -> None:
+        provider = FakeASRProvider()
+        client = TestClient(create_app(provider=provider, normalizer=FakeNormalizer()))
+
+        response = client.post("/warmup")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {"status": "ready", "service": "asr", "model": "Qwen/Qwen3-ASR-0.6B"},
+        )
+        self.assertEqual(provider.warmup_calls, 1)
+
+    def test_warmup_failure_is_logged_and_returned_safely(self) -> None:
+        client = TestClient(
+            create_app(provider=FailingASRProvider(), normalizer=FakeNormalizer())
+        )
+
+        with self.assertLogs("uvicorn.error", level="ERROR") as logs:
+            response = client.post("/warmup")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"detail": "The ASR model is unavailable."})
+        self.assertIn("ASR warmup failed phase=load", "\n".join(logs.output))
+        self.assertIn("private CUDA failure", "\n".join(logs.output))
+        self.assertNotIn("private CUDA failure", response.text)
+
     def test_mock_provider_receives_normalized_audio(self) -> None:
         provider = FakeASRProvider()
         client = TestClient(create_app(provider=provider, normalizer=FakeNormalizer()))

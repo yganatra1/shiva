@@ -15,7 +15,7 @@ SUPPORTED_DTYPES = {"auto", "bfloat16", "float16", "float32"}
 
 
 class QwenASRProvider:
-    """Lazy Qwen3-ASR adapter; model weights load on first transcription only."""
+    """Lazy Qwen3-ASR adapter loaded by transcription or explicit warmup."""
 
     def __init__(
         self,
@@ -33,6 +33,10 @@ class QwenASRProvider:
         self._model: Any | None = None
         self._load_lock = asyncio.Lock()
         self._inference_lock = asyncio.Lock()
+
+    async def warmup(self) -> None:
+        """Idempotently preload model weights without performing inference."""
+        await self._get_model()
 
     async def transcribe(self, wav_path: Path) -> Transcription:
         model = await self._get_model()
