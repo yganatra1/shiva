@@ -40,6 +40,30 @@ const httpBaseUrlSchema = z
     }
   });
 
+const postgresqlUrlSchema = z
+  .string()
+  .trim()
+  .url()
+  .superRefine((value, context) => {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return;
+    }
+
+    if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
+      context.addIssue({
+        code: "custom",
+        message: "must use the postgres or postgresql protocol",
+      });
+    }
+  });
+
+const booleanEnvironmentSchema = z
+  .enum(["true", "false"])
+  .transform((value) => value === "true");
+
 const environmentSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   HOST: z.string().trim().min(1).max(255).default("127.0.0.1"),
@@ -63,6 +87,35 @@ const environmentSchema = z.object({
     .min(1_000)
     .max(1_800_000)
     .default(300_000),
+  DATABASE_URL: postgresqlUrlSchema.default(
+    "postgresql://shiva:change-me@127.0.0.1:5432/shiva",
+  ),
+  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+  DATABASE_SSL: booleanEnvironmentSchema.default(false),
+  SHIVA_USER_ID: z
+    .string()
+    .uuid()
+    .default("00000000-0000-4000-8000-000000000001"),
+  SHIVA_USER_NAME: z.string().trim().min(1).max(255).default("Yash"),
+  EMBEDDING_MODEL: z.string().trim().min(1).max(255).default("embeddinggemma"),
+  EMBEDDING_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(600_000)
+    .default(60_000),
+  WORKING_MEMORY_MESSAGE_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(2)
+    .max(200)
+    .default(20),
+  MEMORY_RETRIEVAL_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .default(8),
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
@@ -76,6 +129,15 @@ export interface AppConfig {
   readonly contextLength: number;
   readonly keepAlive: string;
   readonly ollamaRequestTimeoutMs: number;
+  readonly databaseUrl: string;
+  readonly databasePoolMax: number;
+  readonly databaseSsl: boolean;
+  readonly userId: string;
+  readonly userName: string;
+  readonly embeddingModel: string;
+  readonly embeddingRequestTimeoutMs: number;
+  readonly workingMemoryMessageLimit: number;
+  readonly memoryRetrievalLimit: number;
   readonly nodeEnv: "development" | "test" | "production";
 }
 
@@ -103,6 +165,15 @@ export function loadConfig(): AppConfig {
     contextLength: result.data.SHIVA_CONTEXT_LENGTH,
     keepAlive: result.data.SHIVA_KEEP_ALIVE,
     ollamaRequestTimeoutMs: result.data.OLLAMA_REQUEST_TIMEOUT_MS,
+    databaseUrl: result.data.DATABASE_URL,
+    databasePoolMax: result.data.DATABASE_POOL_MAX,
+    databaseSsl: result.data.DATABASE_SSL,
+    userId: result.data.SHIVA_USER_ID,
+    userName: result.data.SHIVA_USER_NAME,
+    embeddingModel: result.data.EMBEDDING_MODEL,
+    embeddingRequestTimeoutMs: result.data.EMBEDDING_REQUEST_TIMEOUT_MS,
+    workingMemoryMessageLimit: result.data.WORKING_MEMORY_MESSAGE_LIMIT,
+    memoryRetrievalLimit: result.data.MEMORY_RETRIEVAL_LIMIT,
     nodeEnv: result.data.NODE_ENV,
   };
 }

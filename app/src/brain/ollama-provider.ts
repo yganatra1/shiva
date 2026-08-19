@@ -72,7 +72,7 @@ export class OllamaProvider implements AIProvider {
       const response = await fetch(this.chatEndpoint, {
         method: "POST",
         headers: {
-          accept: "application/json",
+          accept: "application/x-ndjson",
           "content-type": "application/json",
         },
         body: JSON.stringify({
@@ -84,6 +84,7 @@ export class OllamaProvider implements AIProvider {
           options: {
             num_ctx: this.options.contextLength,
           },
+          ...(input.responseFormat ? { format: input.responseFormat } : {}),
         }),
         signal: requestSignal,
       });

@@ -1,0 +1,11 @@
+.git
+.env
+app/node_modules
+app/dist
+coverage
+data
+models
+logs
+backups
+pgdata
+*.log

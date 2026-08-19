@@ -1,31 +1,32 @@
-# Shiva V0.1
+# Shiva V0.2
 
-Shiva is Yash's private personal AI. V0.1 is the portable backend foundation: a Fastify API that gives Shiva an initial identity and delegates local inference to Ollama through a provider-neutral interface.
-
-This milestone intentionally does not implement persistent memory, tools, internet access, authentication, voice, a frontend, or cloud-model fallback.
+Shiva is Yash's private personal AI. V0.2 keeps the Fastify/Ollama streaming foundation and adds persistent working, episodic, and semantic memory with PostgreSQL, pgvector, embeddinggemma, and Drizzle.
 
 ## Architecture
 
 ```text
-Client
-  -> Fastify API (/health, /chat)
-  -> ShivaChatService (system prompt + user message)
-  -> AIProvider
-  -> OllamaProvider
-  -> Ollama POST /api/chat
-  -> configured Gemma model
+Client -> Fastify POST /chat
+       -> conversation + bounded working history
+       -> embeddinggemma -> semantic/episodic retrieval -> ranking
+       -> ShivaChatService -> AIProvider -> Ollama/Gemma stream
+       -> assistant message -> deferred memory extraction
+       -> Drizzle repository -> PostgreSQL + pgvector
 ```
 
-The API never calls Ollama directly. That boundary allows later providers to be added without rewriting the chat layer. Zod validates runtime configuration, client input, and Ollama's response shape. A centralized handler converts internal failures into safe API errors.
+The API does not call Ollama or PostgreSQL directly. Provider and repository interfaces keep model, embedding, and persistence details out of the route layer. See [docs/memory-architecture.md](docs/memory-architecture.md).
+
+V0.2 does not add tools, browser/internet access, voice, authentication, a frontend, cloud fallback, procedural memory, or a knowledge graph.
 
 ## Requirements
 
-- Node.js 24
-- npm
-- Ollama reachable at `OLLAMA_URL` for chat requests
-- the configured model installed in Ollama (the default is `gemma4:26b-a4b-it-q4_K_M`)
+- Node.js 24 and npm
+- PostgreSQL with the pgvector extension available
+- Ollama reachable at `OLLAMA_URL`
+- the configured Gemma model and `embeddinggemma` installed for real `/chat` requests
 
-## Environment setup
+Health, typechecking, building, and mocked tests do not require Ollama or PostgreSQL.
+
+## Environment
 
 From the repository root:
 
@@ -33,7 +34,7 @@ From the repository root:
 cp .env.example .env
 ```
 
-Review the values in `.env` before starting the app:
+Configure these keys without committing `.env`:
 
 ```text
 PORT=3000
@@ -43,12 +44,23 @@ SHIVA_MODEL=gemma4:26b-a4b-it-q4_K_M
 SHIVA_CONTEXT_LENGTH=16384
 SHIVA_KEEP_ALIVE=30m
 OLLAMA_REQUEST_TIMEOUT_MS=300000
+DATABASE_URL=postgresql://shiva:change-me@127.0.0.1:5432/shiva
+DATABASE_POOL_MAX=10
+DATABASE_SSL=false
+SHIVA_USER_ID=00000000-0000-4000-8000-000000000001
+SHIVA_USER_NAME=Yash
+EMBEDDING_MODEL=embeddinggemma
+EMBEDDING_REQUEST_TIMEOUT_MS=60000
+WORKING_MEMORY_MESSAGE_LIMIT=20
+MEMORY_RETRIEVAL_LIMIT=8
 NODE_ENV=development
 ```
 
-The app resolves this root `.env` file whether it is started from the repository root or from `app/`. Real `.env` files are ignored by Git. Production configuration must be provisioned separately and must not contain committed secrets.
+`SHIVA_USER_ID` identifies the single V0.2 owner and must remain stable across restarts. Use a strong database password in real environments. The app deliberately resolves the root `.env` whether commands run from the root or `app/`.
 
-## Local development
+## Local commands
+
+Exact setup and verification commands:
 
 ```bash
 cd /path/to/shiva
@@ -56,76 +68,72 @@ cp .env.example .env
 
 cd app
 npm install
+npm test
+npm run typecheck
+npm run build
+```
+
+If a local PostgreSQL/pgvector database is available and `DATABASE_URL` is configured:
+
+```bash
+npm run db:migrate
+npm start
+```
+
+For source-mode migration and hot reload:
+
+```bash
+npm run db:migrate:dev
 npm run dev
 ```
 
-Useful commands from `app/`:
+Drizzle schema workflow after an intentional schema change:
 
-| Command | Purpose |
-| --- | --- |
-| `npm run dev` | Run with hot reload through `tsx` |
-| `npm test` | Run route cancellation and provider timeout regression tests |
-| `npm run typecheck` | Check strict TypeScript without emitting files |
-| `npm run build` | Compile ESM JavaScript into `app/dist` |
-| `npm start` | Run the compiled server |
+```bash
+npm run db:generate
+npm run db:check
+npm run typecheck
+```
 
-### Development without local Ollama
+Review every generated SQL migration before committing it. `db:migrate` applies committed files from `app/drizzle/`; it does not generate schema changes at deployment time.
 
-Ollama is not required to install dependencies, run the strict typecheck, build the app, or use `/health`. If Ollama is not running on the development machine, `/chat` returns the sanitized `MODEL_UNAVAILABLE` response shown below. Real Gemma inference should be verified on RunPod, where Ollama and the model are installed.
+## API
 
-## API checks
-
-Health is intentionally fast and does not contact Ollama:
+Health is cheap and does not prove database, Ollama, or model availability:
 
 ```bash
 curl http://127.0.0.1:3000/health
 ```
 
-With the default environment values, the response shape is:
+With the default model:
 
 ```json
-{
-  "status": "ok",
-  "name": "Shiva",
-  "version": "0.1.0",
-  "model": "gemma4:26b-a4b-it-q4_K_M"
-}
+{"status":"ok","name":"Shiva","version":"0.2.0","model":"gemma4:26b-a4b-it-q4_K_M"}
 ```
 
-Chat requires Ollama and the configured model to be available:
+Start a streaming conversation:
 
 ```bash
-curl -X POST http://127.0.0.1:3000/chat \
-  -H "Content-Type: application/json" \
+curl --no-buffer -i -X POST http://127.0.0.1:3000/chat \
+  -H 'Content-Type: application/json' \
   -d '{"message":"Who are you and what is your purpose?"}'
 ```
 
-Successful response shape:
+The plain-text response streams as chunks arrive. Its `x-shiva-conversation-id` header contains the generated UUID. Reuse it for working-memory continuity:
 
-```json
-{
-  "response": "..."
-}
+```bash
+curl --no-buffer -i -X POST http://127.0.0.1:3000/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Continue that thought.","conversationId":"PASTE-UUID-HERE"}'
 ```
 
-`message` must be a string with at least one non-whitespace character and no more than 20,000 characters. Unknown request fields are rejected.
+`message` must contain 1–20,000 characters after whitespace validation. `conversationId` is optional but must be a UUID, and unknown fields are rejected. A valid UUID not owned by the configured user returns `CONVERSATION_NOT_FOUND`.
 
-Internal provider details, stack traces, environment values, and Ollama response bodies are never returned to clients. For example, an unreachable Ollama instance produces a safe error:
+Errors before the first streamed chunk use a sanitized JSON envelope. Once streaming headers are committed, a later provider error closes the stream and is logged without exposing upstream response bodies, paths, credentials, or environment values.
 
-```json
-{
-  "error": {
-    "code": "MODEL_UNAVAILABLE",
-    "message": "Shiva's local model is currently unavailable."
-  }
-}
-```
+## Current RunPod direct runtime
 
-## RunPod deployment
-
-Application code is portable and does not depend on a RunPod-specific path. With the repository cloned at `/workspace/shiva/repo`, deploy with:
-
-Before starting, provision `/workspace/shiva/repo/.env` out of band using the keys in `.env.example`, set `NODE_ENV=production`, and do not overwrite an existing production file.
+The current RunPod Pod does not run Docker Compose. Provision PostgreSQL with pgvector, Ollama, the models, and `/workspace/shiva/repo/.env` separately. Do not overwrite the production `.env` during pulls.
 
 ```bash
 cd /workspace/shiva/repo
@@ -133,71 +141,44 @@ git pull --ff-only
 
 cd app
 npm install
+npm test
 npm run typecheck
 npm run build
+npm run db:migrate
 npm start
 ```
 
-Run the health and chat `curl` commands from another shell. `npm start` runs in the foreground in V0.1; production process supervision is a later operational decision.
+Before `/chat` verification, ensure the two configured models exist:
 
-Runtime data stays outside Git, for example:
-
-```text
-/workspace/shiva/
-├── repo/
-├── data/
-├── models/
-├── ollama/
-├── logs/
-├── backups/
-└── config/
+```bash
+ollama pull embeddinggemma
+ollama list
 ```
 
-Do not overwrite the separately provisioned production `.env` during deployment.
+Then, from another shell, run the health and chat curls above. `npm start` is foreground execution; process supervision remains an operational choice. Keep runtime data outside Git, for example under `/workspace/shiva/{data,models,ollama,logs,backups,config}`.
 
-## Project layout
+Do not treat local mocked tests as RunPod integration proof. Real `/chat` succeeds only when PostgreSQL/pgvector, the migration, Ollama, Gemma, and embeddinggemma are available together.
+
+## Future Docker runtime
+
+The future Ubuntu/NVIDIA-server path is:
 
 ```text
-shiva/
-├── app/
-│   ├── src/
-│   │   ├── api/
-│   │   │   ├── api-error.ts
-│   │   │   ├── chat-route.ts
-│   │   │   ├── error-handler.ts
-│   │   │   └── health-route.ts
-│   │   ├── brain/
-│   │   │   ├── ai-provider.ts
-│   │   │   ├── ollama-provider.ts
-│   │   │   └── system-prompt.ts
-│   │   ├── config/
-│   │   │   └── environment.ts
-│   │   ├── memory/
-│   │   │   └── README.md
-│   │   ├── security/
-│   │   │   └── README.md
-│   │   ├── services/
-│   │   │   └── chat-service.ts
-│   │   ├── tools/
-│   │   │   └── README.md
-│   │   ├── types/
-│   │   │   └── README.md
-│   │   ├── app.ts
-│   │   └── server.ts
-│   ├── test/
-│   │   ├── chat-cancellation.test.ts
-│   │   └── ollama-provider.test.ts
-│   ├── package-lock.json
-│   ├── package.json
-│   ├── tsconfig.test.json
-│   └── tsconfig.json
-├── config/
-│   └── README.md
-├── docs/
-│   └── initial.md
-├── scripts/
-│   └── README.md
-├── .env.example
-├── .gitignore
-└── README.md
+Git -> Ubuntu NVIDIA server -> Docker Compose
 ```
+
+The Compose definition runs the API and a pgvector-enabled PostgreSQL database while leaving Ollama externally configurable. See [infra/README.md](infra/README.md).
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Hot-reload the API from TypeScript |
+| `npm test` | Run mocked memory, stream, cancellation, and provider tests |
+| `npm run typecheck` | Strict-check app and tests without emitting |
+| `npm run build` | Compile ESM output into `app/dist` |
+| `npm run db:generate` | Generate a migration from the Drizzle schema |
+| `npm run db:check` | Validate Drizzle migration metadata |
+| `npm run db:migrate:dev` | Apply migrations from TypeScript |
+| `npm run db:migrate` | Apply migrations from compiled output |
+| `npm start` | Run the compiled API |

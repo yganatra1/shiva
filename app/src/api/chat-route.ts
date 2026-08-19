@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { z } from "zod";
 
 import type { ShivaChatService } from "../services/chat-service.js";
+import { ConversationNotFoundError } from "../memory/memory-repository.js";
 import { ApiError } from "./api-error.js";
 
 const MAX_MESSAGE_CHARACTERS = 20_000;
@@ -15,6 +16,7 @@ const chatRequestSchema = z
       .refine((message) => message.trim().length > 0, {
         message: "Message must contain non-whitespace characters.",
       }),
+    conversationId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -56,16 +58,21 @@ export function registerChatRoute(
     let streamStarted = false;
 
     try {
-      for await (const chunk of chatService.streamResponseTo(
+      const preparedChat = await chatService.startResponseTo(
         parsedRequest.data.message,
+        parsedRequest.data.conversationId,
         clientDisconnectController.signal,
-      )) {
+      );
+      reply.header("x-shiva-conversation-id", preparedChat.conversationId);
+
+      for await (const chunk of preparedChat.chunks) {
         if (!streamStarted) {
           reply.hijack();
           reply.raw.writeHead(200, {
             "cache-control": "no-cache, no-transform",
             "content-type": "text/plain; charset=utf-8",
             "x-content-type-options": "nosniff",
+            "x-shiva-conversation-id": preparedChat.conversationId,
           });
           streamStarted = true;
         }
@@ -81,6 +88,14 @@ export function registerChatRoute(
         reply.raw.end();
       }
     } catch (error: unknown) {
+      if (error instanceof ConversationNotFoundError) {
+        throw new ApiError(
+          404,
+          "CONVERSATION_NOT_FOUND",
+          "The requested conversation does not exist.",
+        );
+      }
+
       if (!streamStarted) {
         throw error;
       }
