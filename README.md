@@ -53,10 +53,13 @@ EMBEDDING_MODEL=embeddinggemma
 EMBEDDING_REQUEST_TIMEOUT_MS=60000
 WORKING_MEMORY_MESSAGE_LIMIT=20
 MEMORY_RETRIEVAL_LIMIT=8
+SHIVA_PERF_LOG=false
 NODE_ENV=development
 ```
 
 `SHIVA_USER_ID` identifies the single V0.2 owner and must remain stable across restarts. Use a strong database password in real environments. The app deliberately resolves the root `.env` whether commands run from the root or `app/`.
+
+`SHIVA_KEEP_ALIVE` accepts Ollama duration strings such as `30m` or numeric seconds. Use `SHIVA_KEEP_ALIVE=-1` to keep the chat model loaded indefinitely; Shiva serializes numeric environment values as JSON numbers as required by Ollama.
 
 ## Local commands
 
@@ -130,6 +133,14 @@ curl --no-buffer -i -X POST http://127.0.0.1:3000/chat \
 `message` must contain 1–20,000 characters after whitespace validation. `conversationId` is optional but must be a UUID, and unknown fields are rejected. A valid UUID not owned by the configured user returns `CONVERSATION_NOT_FOUND`.
 
 Errors before the first streamed chunk use a sanitized JSON envelope. Once streaming headers are committed, a later provider error closes the stream and is logged without exposing upstream response bodies, paths, credentials, or environment values.
+
+### Optional performance tracing
+
+Set `SHIVA_PERF_LOG=true` and restart Shiva to emit one `[SHIVA PERF]` structured log for each `/chat` request. It reports the database, working-memory, embedding, pgvector retrieval, ranking, prompt construction, Ollama TTFT/generation, persistence, and total timings in milliseconds. `pre-ollama` and `total-ttft` are elapsed from request entry; the other foreground stages are durations.
+
+Deferred automatic memory work emits a separate `[SHIVA PERF ASYNC]` record with its queue delay and extraction duration. It is intentionally absent from `total-request`. Explicit `remember...` processing remains synchronous and appears as `explicit-memory` in the foreground record.
+
+Disable tracing again with `SHIVA_PERF_LOG=false`; it is off by default.
 
 ## Current RunPod direct runtime
 

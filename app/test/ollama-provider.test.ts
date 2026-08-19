@@ -57,6 +57,33 @@ test("the provider streams NDJSON chunks and chat() collects them", async (conte
   }
 });
 
+test("the provider sends the infinite keep-alive sentinel as a number", async (context) => {
+  let requestBody: unknown;
+  const upstream = createServer((request, response) => {
+    const bodyParts: Buffer[] = [];
+    request.on("data", (part: Buffer) => bodyParts.push(part));
+    request.on("end", () => {
+      requestBody = JSON.parse(
+        Buffer.concat(bodyParts).toString("utf8"),
+      ) as unknown;
+      response.setHeader("content-type", "application/x-ndjson");
+      response.write(
+        `${JSON.stringify({ done: false, message: { content: "Ready" } })}\n`,
+      );
+      response.end(`${JSON.stringify({ done: true })}\n`);
+    });
+  });
+  context.after(() => closeServer(upstream));
+
+  await createProvider(await listenOnRandomPort(upstream), 1_000, -1).chat({
+    messages: [{ role: "user", content: "Hello" }],
+  });
+
+  assert.ok(isRecord(requestBody));
+  assert.equal(requestBody.keep_alive, -1);
+  assert.equal(typeof requestBody.keep_alive, "number");
+});
+
 test("the provider distinguishes caller cancellation from its deadline", async (context) => {
   const upstream = createServer((request, response) => {
     request.resume();
@@ -198,12 +225,16 @@ test("the provider rejects malformed or incomplete streams", async (context) => 
   );
 });
 
-function createProvider(baseUrl: string, requestTimeoutMs: number): OllamaProvider {
+function createProvider(
+  baseUrl: string,
+  requestTimeoutMs: number,
+  keepAlive: string | number = "30m",
+): OllamaProvider {
   return new OllamaProvider({
     baseUrl,
     model: "test-model",
     contextLength: 16_384,
-    keepAlive: "30m",
+    keepAlive,
     requestTimeoutMs,
   });
 }

@@ -12,7 +12,7 @@ interface OllamaProviderOptions {
   readonly baseUrl: string;
   readonly model: string;
   readonly contextLength: number;
-  readonly keepAlive: string;
+  readonly keepAlive: string | number;
   readonly requestTimeoutMs: number;
 }
 

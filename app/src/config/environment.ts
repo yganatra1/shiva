@@ -64,6 +64,16 @@ const booleanEnvironmentSchema = z
   .enum(["true", "false"])
   .transform((value) => value === "true");
 
+const numericEnvironmentValue = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+const ollamaKeepAliveSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .transform((value): string | number =>
+    numericEnvironmentValue.test(value) ? Number(value) : value,
+  );
+
 const environmentSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   HOST: z.string().trim().min(1).max(255).default("127.0.0.1"),
@@ -80,7 +90,7 @@ const environmentSchema = z.object({
     .min(1)
     .max(1_000_000)
     .default(16_384),
-  SHIVA_KEEP_ALIVE: z.string().trim().min(1).max(64).default("30m"),
+  SHIVA_KEEP_ALIVE: ollamaKeepAliveSchema.default("30m"),
   OLLAMA_REQUEST_TIMEOUT_MS: z.coerce
     .number()
     .int()
@@ -128,7 +138,7 @@ export interface AppConfig {
   readonly ollamaUrl: string;
   readonly model: string;
   readonly contextLength: number;
-  readonly keepAlive: string;
+  readonly keepAlive: string | number;
   readonly ollamaRequestTimeoutMs: number;
   readonly databaseUrl: string;
   readonly databasePoolMax: number;
