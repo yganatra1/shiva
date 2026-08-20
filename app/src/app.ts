@@ -85,7 +85,10 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
       requestTimeoutMs: config.embeddingRequestTimeoutMs,
     });
   const extractionEngine =
-    overrides.extractionEngine ?? new MemoryExtractor(provider);
+    overrides.extractionEngine ??
+    new MemoryExtractor(provider, (detail, message) => {
+      app.log.warn(detail, message);
+    });
   const asrProvider =
     overrides.asrProvider ??
     new HttpASRProvider({

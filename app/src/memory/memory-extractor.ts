@@ -95,9 +95,20 @@ const rememberedMemorySchema = z.discriminatedUnion("memoryType", [
   }),
 ]);
 
-const extractionResponseSchema = z.object({
-  memories: z.array(rememberedMemorySchema).max(10),
+export const MAX_EXTRACTED_MEMORIES = 20;
+
+/**
+ * The envelope is validated strictly, the items are not.
+ *
+ * A local model occasionally mislabels or overproduces one entry, and losing an
+ * entire turn's memories because of a single bad field is far worse than
+ * dropping that entry. Items are therefore repaired and filtered individually.
+ */
+const extractionEnvelopeSchema = z.object({
+  memories: z.array(z.unknown()),
 });
+
+type RememberedMemory = z.infer<typeof rememberedMemorySchema>;
 
 const relationshipResponseSchema = z.object({
   relationship: z.enum([
@@ -114,6 +125,7 @@ const extractionResponseFormat = {
   properties: {
     memories: {
       type: "array",
+      maxItems: MAX_EXTRACTED_MEMORIES,
       items: {
         type: "object",
         properties: {
@@ -179,8 +191,16 @@ export class MemoryExtractionError extends Error {
   override readonly name = "MemoryExtractionError";
 }
 
+export type MemoryExtractionWarning = (
+  detail: Readonly<Record<string, unknown>>,
+  message: string,
+) => void;
+
 export class MemoryExtractor implements MemoryExtractionEngine {
-  constructor(private readonly provider: AIProvider) {}
+  constructor(
+    private readonly provider: AIProvider,
+    private readonly onWarning: MemoryExtractionWarning = () => {},
+  ) {}
 
   async extract(
     input: MemoryExtractionInput,
@@ -249,9 +269,29 @@ export class MemoryExtractor implements MemoryExtractionEngine {
         signal,
       ),
     );
-    const parsed = parseJson(result.content, extractionResponseSchema);
+    const envelope = parseJson(result.content, extractionEnvelopeSchema);
+    const accepted: RememberedMemory[] = [];
+    let discarded = 0;
+    for (const candidate of envelope.memories) {
+      if (accepted.length >= MAX_EXTRACTED_MEMORIES) {
+        discarded += 1;
+        continue;
+      }
+      const memory = coerceRememberedMemory(candidate);
+      if (memory) {
+        accepted.push(memory);
+      } else {
+        discarded += 1;
+      }
+    }
+    if (discarded > 0) {
+      this.onWarning(
+        { discarded, kept: accepted.length },
+        "Discarded unusable extracted memories",
+      );
+    }
 
-    return parsed.memories.map((memory) => {
+    return accepted.map((memory) => {
       const occurredAt = parseDate(memory.occurredAt);
       let validFrom = parseDate(memory.validFrom);
       let validUntil = parseDate(memory.validUntil);
@@ -309,12 +349,54 @@ export class MemoryExtractor implements MemoryExtractionEngine {
       ),
     );
 
-    return parseJson(result.content, relationshipResponseSchema);
+    const parsed = relationshipResponseSchema.safeParse(
+      safeJsonValue(result.content),
+    );
+    if (parsed.success) {
+      return parsed.data;
+    }
+
+    // "unrelated" is the documented uncertainty answer, so a malformed
+    // classification stores the new memory instead of failing the whole turn.
+    this.onWarning(
+      { memoryId: existing.id },
+      "Falling back to an unrelated memory classification",
+    );
+    return { relationship: "unrelated", confidence: 0 };
   }
+}
+
+/**
+ * Accepts one model-produced memory, repairing the type/label mismatch the
+ * local model makes most often. Returns null when the entry is unusable.
+ */
+function coerceRememberedMemory(value: unknown): RememberedMemory | null {
+  const direct = rememberedMemorySchema.safeParse(value);
+  if (direct.success) {
+    return direct.data;
+  }
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const repaired = rememberedMemorySchema.safeParse({
+    ...record,
+    semanticType: record.memoryType === "episodic" ? "none" : "fact",
+  });
+  return repaired.success ? repaired.data : null;
 }
 
 function withOptionalSignal(input: ChatInput, signal?: AbortSignal): ChatInput {
   return signal ? { ...input, signal } : input;
+}
+
+function safeJsonValue(content: string): unknown {
+  try {
+    return JSON.parse(content) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseJson<T>(content: string, schema: z.ZodType<T>): T {

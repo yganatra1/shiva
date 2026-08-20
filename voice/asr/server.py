@@ -122,6 +122,16 @@ def create_app(
                 provider_started_at = monotonic()
                 result = await selected_provider.transcribe(normalized)
         except InvalidAudioError as error:
+            # Without this the gateway only sees an opaque 400, which makes a
+            # broken capture format indistinguishable from silence.
+            LOGGER.warning(
+                "ASR rejected an upload filename=%s suffix=%s bytes=%d reason=%s",
+                file.filename,
+                suffix,
+                len(audio),
+                error,
+                exc_info=True,
+            )
             raise HTTPException(
                 status_code=400,
                 detail="The uploaded audio could not be decoded.",
@@ -146,6 +156,11 @@ def create_app(
                 detail="The ASR model is unavailable.",
             ) from error
         except NoSpeechError as error:
+            LOGGER.info(
+                "ASR found no speech filename=%s bytes=%d",
+                file.filename,
+                len(audio),
+            )
             raise HTTPException(
                 status_code=400,
                 detail="No speech could be recognized in the uploaded audio.",

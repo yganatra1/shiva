@@ -28,10 +28,13 @@ export const StreamingSpeechChunker = (() => class {
   private readonly hardMaxChars: number;
 
   constructor(options: StreamingSpeechChunkerOptions = {}) {
-    this.firstMinChars = Math.max(1, options.firstMinChars ?? 40);
+    // The opening phrase is deliberately short: with the current Qwen TTS
+    // real-time factor above 1, every extra character of chunk 0 directly delays
+    // the first spoken word.
+    this.firstMinChars = Math.max(1, options.firstMinChars ?? 24);
     this.firstTargetChars = Math.max(
       this.firstMinChars,
-      options.firstTargetChars ?? 80,
+      options.firstTargetChars ?? 48,
     );
     this.subsequentMinChars = Math.max(
       this.firstMinChars,
@@ -101,8 +104,16 @@ export const StreamingSpeechChunker = (() => class {
         : this.subsequentTargetChars;
 
     const terminalCut = this.findTerminalCut(minimum);
-    if (terminalCut !== null && terminalCut <= this.hardMaxChars) {
+    if (terminalCut !== null && terminalCut <= target) {
       return terminalCut;
+    }
+
+    // A sentence ending past the target is still the best boundary for prosody,
+    // but speech should not wait for it when a clause boundary inside the target
+    // can start audio sooner. This matters most for the first phrase.
+    if (terminalCut !== null && terminalCut <= this.hardMaxChars) {
+      const clauseCut = this.findClauseCut(minimum, target);
+      return clauseCut !== null && clauseCut <= target ? clauseCut : terminalCut;
     }
 
     if (this.buffer.length >= target) {

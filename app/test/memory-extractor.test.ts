@@ -236,7 +236,8 @@ test("valid RFC 3339 temporal values survive while unreliable windows are cleare
   );
 });
 
-test("temporal tolerance does not weaken required memory validation", async () => {
+test("an unusable memory is dropped without discarding its siblings", async () => {
+  const warnings: string[] = [];
   const extractor = new MemoryExtractor(
     extractionProvider({
       memories: [
@@ -249,18 +250,113 @@ test("temporal tolerance does not weaken required memory validation", async () =
           confidence: "high",
           validFrom: "not-a-timestamp",
         },
+        {
+          shouldRemember: true,
+          memoryType: "semantic",
+          semanticType: "relationship",
+          content: "Charmi is Yash's wife.",
+          importance: 0.9,
+          confidence: 0.95,
+        },
+      ],
+    }),
+    (_detail, message) => warnings.push(message),
+  );
+
+  const extracted = await extractor.extract({
+    userMessage: "I prefer aisle seats.",
+    assistantResponse: "Understood.",
+    recentMessages: [],
+  });
+
+  assert.equal(extracted.length, 1);
+  assert.equal(extracted[0]?.content, "Charmi is Yash's wife.");
+  assert.equal(warnings.length, 1);
+});
+
+test("a mislabelled semantic type is repaired instead of failing the batch", async () => {
+  const extractor = new MemoryExtractor(
+    extractionProvider({
+      memories: [
+        {
+          shouldRemember: true,
+          memoryType: "episodic",
+          semanticType: "fact",
+          content: "Yash booked a flight to Tokyo.",
+          importance: 0.6,
+          confidence: 0.8,
+        },
+        {
+          shouldRemember: true,
+          memoryType: "semantic",
+          semanticType: "none",
+          content: "Yash lives in Ahmedabad.",
+          importance: 0.7,
+          confidence: 0.9,
+        },
       ],
     }),
   );
 
-  await assert.rejects(
-    extractor.extract({
-      userMessage: "I prefer aisle seats.",
-      assistantResponse: "Understood.",
-      recentMessages: [],
-    }),
-    MemoryExtractionError,
+  const extracted = await extractor.extract({
+    userMessage: "I booked a flight to Tokyo. I live in Ahmedabad.",
+    assistantResponse: "Noted.",
+    recentMessages: [],
+  });
+
+  assert.deepEqual(
+    extracted.map((memory) => [memory.memoryType, memory.semanticType]),
+    [
+      ["episodic", null],
+      ["semantic", "fact"],
+    ],
   );
+});
+
+test("more memories than the cap are truncated rather than rejected", async () => {
+  const extractor = new MemoryExtractor(
+    extractionProvider({
+      memories: Array.from({ length: MAX_EXTRACTED_MEMORIES + 4 }, (_v, i) => ({
+        shouldRemember: true,
+        memoryType: "semantic",
+        semanticType: "fact",
+        content: `Fact number ${i}.`,
+        importance: 0.5,
+        confidence: 0.5,
+      })),
+    }),
+  );
+
+  const extracted = await extractor.extract({
+    userMessage: "Remember all of this.",
+    assistantResponse: "Noted.",
+    recentMessages: [],
+  });
+
+  assert.equal(extracted.length, MAX_EXTRACTED_MEMORIES);
+});
+
+test("a malformed relationship classification falls back to unrelated", async () => {
+  const extractor = new MemoryExtractor(
+    extractionProvider({ relationship: "maybe", confidence: 2 }),
+  );
+
+  const result = await extractor.classifyRelationship(
+    memoryResult({ content: "Yash prefers window seats." }),
+    {
+      memoryType: "semantic",
+      semanticType: "preference",
+      content: "Yash prefers aisle seats.",
+      importance: 0.8,
+      confidence: 0.9,
+      occurredAt: null,
+      validFrom: null,
+      validUntil: null,
+      metadata: {},
+    },
+  );
+
+  assert.deepEqual(result, { relationship: "unrelated", confidence: 0 });
 });
 
 function extractionProvider(response: unknown): AIProvider {

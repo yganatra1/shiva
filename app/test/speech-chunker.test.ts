@@ -118,16 +118,28 @@ test("finish emits an incomplete tail exactly once", () => {
 
 test("default thresholds prioritize a small first phrase then larger later ones", () => {
   const chunker = new StreamingSpeechChunker();
-  const first =
-    "India has a huge and young population that is already reshaping demand.";
-  const second =
-    " That creates enormous economic potential, but it also puts real pressure on housing, transport, and public services in the largest cities across the country.";
+  const answer =
+    "India has a huge and young population, which is already reshaping demand. " +
+    "That creates enormous economic potential, but it also puts real pressure on " +
+    "housing, transport, and public services in the largest cities.";
 
-  assert.deepEqual(chunker.push(first), [first]);
-  const later = chunker.push(second);
-  assert.ok(later.length >= 1);
-  assert.ok((later[0]?.length ?? 0) >= 100);
-  assert.ok((later[0]?.length ?? 0) <= 200);
+  const chunks = [...chunker.push(answer), ...chunker.finish()];
+  const first = chunks[0] ?? "";
+  assert.ok(first.length >= 24 && first.length <= 48, first);
+  for (const later of chunks.slice(1, -1)) {
+    assert.ok(later.length >= 100 && later.length <= 200, later);
+  }
+});
+
+test("a long opening sentence does not delay speech past the first target", () => {
+  const chunker = new StreamingSpeechChunker();
+
+  const chunks = chunker.push(
+    "India has a huge and young population, and that reshapes everything else.",
+  );
+
+  assert.equal(chunks.length, 1);
+  assert.equal(chunks[0], "India has a huge and young population,");
 });
 
 test("reset discards cancelled text and restores first-chunk behavior", () => {
