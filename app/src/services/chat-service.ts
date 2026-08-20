@@ -29,7 +29,20 @@ interface ShivaChatServiceOptions {
   readonly userId: string;
   readonly userName: string;
   readonly workingMemoryMessageLimit: number;
+  readonly automaticMemoryGate?: {
+    waitUntilReady(): Promise<boolean>;
+    isClosed(): boolean;
+  };
   readonly onBackgroundError?: (error: unknown) => void;
+}
+
+interface DeferredMemoryJob {
+  readonly conversationId: string;
+  readonly userMessage: StoredMessage;
+  readonly assistantResponse: string;
+  readonly recentMessages: readonly StoredMessage[];
+  readonly performance?: ChatPerformanceTrace;
+  readonly scheduledAt?: number;
 }
 
 export interface PreparedChat {
@@ -42,7 +55,6 @@ export type ChatInteractionMode = "text" | "voice";
 export interface ChatInteractionContext {
   readonly mode: ChatInteractionMode;
   readonly performance?: ChatPerformanceTrace;
-  readonly waitForVoicePlaybackIdle?: () => Promise<unknown>;
 }
 
 const VOICE_RESPONSE_GUIDANCE: ChatMessage = {
@@ -52,7 +64,13 @@ const VOICE_RESPONSE_GUIDANCE: ChatMessage = {
 };
 
 export class ShivaChatService {
+  private backgroundMemoryTail: Promise<void> = Promise.resolve();
+
   constructor(private readonly options: ShivaChatServiceOptions) {}
+
+  async drainBackgroundMemory(): Promise<void> {
+    await this.backgroundMemoryTail;
+  }
 
   async startResponseTo(
     message: string,
@@ -127,7 +145,6 @@ export class ShivaChatService {
         recentMessages,
         messages,
         !explicitRequest,
-        interaction.waitForVoicePlaybackIdle,
         signal,
         performance,
       ),
@@ -161,7 +178,6 @@ export class ShivaChatService {
     recentMessages: readonly StoredMessage[],
     messages: readonly ChatMessage[],
     deferMemoryExtraction: boolean,
-    waitForVoicePlaybackIdle?: () => Promise<unknown>,
     signal?: AbortSignal,
     performance?: ChatPerformanceTrace,
   ): AsyncIterable<ChatChunk> {
@@ -198,12 +214,11 @@ export class ShivaChatService {
     const schedulingStartedAt = performance?.now();
     const scheduledAt = schedulingStartedAt;
     setImmediate(() => {
-      void this.runDeferredMemoryExtraction({
+      this.enqueueDeferredMemoryExtraction({
         conversationId,
         userMessage,
         assistantResponse,
         recentMessages,
-        ...(waitForVoicePlaybackIdle ? { waitForVoicePlaybackIdle } : {}),
         ...(performance ? { performance } : {}),
         ...(scheduledAt !== undefined ? { scheduledAt } : {}),
       });
@@ -216,20 +231,29 @@ export class ShivaChatService {
     }
   }
 
-  private async runDeferredMemoryExtraction(input: {
-    readonly conversationId: string;
-    readonly userMessage: StoredMessage;
-    readonly assistantResponse: string;
-    readonly recentMessages: readonly StoredMessage[];
-    readonly waitForVoicePlaybackIdle?: () => Promise<unknown>;
-    readonly performance?: ChatPerformanceTrace;
-    readonly scheduledAt?: number;
-  }): Promise<void> {
-    if (input.waitForVoicePlaybackIdle) {
+  private enqueueDeferredMemoryExtraction(input: DeferredMemoryJob): void {
+    const job = this.backgroundMemoryTail.then(() =>
+      this.runDeferredMemoryExtraction(input),
+    );
+    this.backgroundMemoryTail = job.catch((error: unknown) => {
+      this.options.onBackgroundError?.(error);
+    });
+  }
+
+  private async runDeferredMemoryExtraction(
+    input: DeferredMemoryJob,
+  ): Promise<void> {
+    const gate = this.options.automaticMemoryGate;
+    if (gate) {
+      let ready = false;
       try {
-        await input.waitForVoicePlaybackIdle();
+        ready = await gate.waitUntilReady();
       } catch (error: unknown) {
         this.options.onBackgroundError?.(error);
+        return;
+      }
+      if (!ready || gate.isClosed()) {
+        return;
       }
     }
 

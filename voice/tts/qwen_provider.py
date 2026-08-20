@@ -1,4 +1,6 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from importlib.metadata import PackageNotFoundError, version
 from io import BytesIO
 import logging
@@ -12,6 +14,15 @@ from .provider import SynthesizedSpeech, TTSProviderError
 
 LOGGER = logging.getLogger("uvicorn.error")
 SUPPORTED_DTYPES = {"auto", "bfloat16", "float16", "float32"}
+
+# asyncio cancellation cannot stop a function that is already running through
+# to_thread/run_in_executor. A process-wide, single-worker executor therefore
+# remains the final serialization boundary even if the request coroutine is
+# cancelled and releases its asyncio lock while Qwen is still generating.
+_TTS_INFERENCE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="shiva-tts-inference",
+)
 
 
 DEFAULT_SPEAKING_INSTRUCTION = (
@@ -54,12 +65,16 @@ class QwenTTSProvider:
         model = await self._get_model()
         try:
             async with self._inference_lock:
-                wavs, sample_rate = await asyncio.to_thread(
+                generate = partial(
                     model.generate_custom_voice,
                     text=text,
                     language=self._language,
                     speaker=self._speaker,
                     instruct=self._instruction,
+                )
+                wavs, sample_rate = await asyncio.get_running_loop().run_in_executor(
+                    _TTS_INFERENCE_EXECUTOR,
+                    generate,
                 )
         except Exception as error:
             raise TTSProviderError(

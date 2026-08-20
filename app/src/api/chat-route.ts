@@ -138,12 +138,6 @@ function registerStreamingChatRoute(
           {
             mode: interactionMode,
             ...(performance ? { performance } : {}),
-            ...(voiceTurnId && voicePlaybackCoordinator
-              ? {
-                  waitForVoicePlaybackIdle: () =>
-                    voicePlaybackCoordinator.waitUntilIdle(voiceTurnId),
-                }
-              : {}),
           },
         );
         reply.header("x-shiva-conversation-id", preparedChat.conversationId);

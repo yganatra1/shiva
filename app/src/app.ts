@@ -127,16 +127,24 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     userId: config.userId,
     userName: config.userName,
     workingMemoryMessageLimit: config.workingMemoryMessageLimit,
+    automaticMemoryGate: {
+      waitUntilReady: async () =>
+        (await voicePlaybackCoordinator.waitUntilAllIdle()) !== "closed",
+      isClosed: () => voicePlaybackCoordinator.isClosed(),
+    },
     onBackgroundError: (error) => {
       app.log.error({ err: error }, "Non-critical memory processing failed");
     },
   });
 
-  if (database) {
-    app.addHook("onClose", async () => database.pool.end());
-  }
-  app.addHook("onClose", async () => {
+  app.addHook("preClose", async () => {
     voicePlaybackCoordinator.close();
+  });
+  app.addHook("onClose", async () => {
+    await chatService.drainBackgroundMemory();
+    if (database) {
+      await database.pool.end();
+    }
   });
 
   registerErrorHandling(app);

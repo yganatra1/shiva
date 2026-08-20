@@ -19,12 +19,14 @@ import {
 
 const TURN_ID = "20000000-0000-4000-8000-000000000002";
 
-test("playback coordinator waits for explicit idle and has a bounded fallback", async () => {
+test("playback coordinator waits for global idle and has a bounded fallback", async () => {
   const coordinator = new VoicePlaybackCoordinator(20);
   coordinator.beginTurn(TURN_ID);
+  const secondTurn = "20000000-0000-4000-8000-000000000004";
+  coordinator.beginTurn(secondTurn);
 
   let settled = false;
-  const idle = coordinator.waitUntilIdle(TURN_ID).then((outcome) => {
+  const idle = coordinator.waitUntilAllIdle().then((outcome) => {
     settled = true;
     return outcome;
   });
@@ -32,14 +34,75 @@ test("playback coordinator waits for explicit idle and has a bounded fallback", 
   assert.equal(settled, false);
 
   coordinator.markIdle(TURN_ID);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, "one active turn must keep the global gate closed");
+  coordinator.markIdle(secondTurn);
   assert.equal(await idle, "idle");
   coordinator.markActive(TURN_ID);
-  assert.equal(await coordinator.waitUntilIdle(TURN_ID), "idle");
+  assert.equal(await coordinator.waitUntilAllIdle(), "idle");
 
   const timeoutTurn = "20000000-0000-4000-8000-000000000003";
   coordinator.beginTurn(timeoutTurn);
-  assert.equal(await coordinator.waitUntilIdle(timeoutTurn), "timeout");
+  assert.equal(
+    await withTimeout(
+      coordinator.waitUntilAllIdle(),
+      200,
+      "The unref'ed playback fail-safe did not retire the active turn.",
+    ),
+    "timeout",
+  );
+  assert.equal(await coordinator.waitUntilAllIdle(), "idle");
   coordinator.close();
+  assert.equal(await coordinator.waitUntilAllIdle(), "closed");
+});
+
+test("all automatic memory extraction waits behind global voice playback", async (context) => {
+  let extractionCount = 0;
+  let signalExtraction: (() => void) | undefined;
+  const extractionStarted = new Promise<void>((resolve) => {
+    signalExtraction = resolve;
+  });
+  class SignalingExtractionEngine extends FakeExtractionEngine {
+    override async extract() {
+      extractionCount += 1;
+      signalExtraction?.();
+      return [];
+    }
+  }
+  const provider: AIProvider = {
+    async chat() {
+      throw new Error("The fake extraction engine handles extraction.");
+    },
+    async *streamChat() {
+      yield { content: "A text response." };
+    },
+  };
+  const coordinator = new VoicePlaybackCoordinator(1_000);
+  coordinator.beginTurn(TURN_ID);
+  const app = createApp(testConfig, {
+    ...createTestOverrides(
+      provider,
+      new InMemoryRepository(),
+      undefined,
+      new SignalingExtractionEngine(),
+    ),
+    voicePlaybackCoordinator: coordinator,
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/chat",
+    headers: { "content-type": "application/json" },
+    payload: { message: "This is an ordinary text interaction." },
+  });
+  assert.equal(response.statusCode, 200);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(extractionCount, 0);
+
+  coordinator.markIdle(TURN_ID);
+  await withTimeout(extractionStarted, 500, "Text memory did not resume.");
+  assert.equal(extractionCount, 1);
 });
 
 test("automatic voice memory extraction waits for playback idle", async (context) => {
@@ -160,6 +223,177 @@ test("explicit voice memory processing does not wait for playback idle", async (
   assert.equal(extractionCount, 1);
 });
 
+test("automatic memory jobs run one at a time in interaction order", async (context) => {
+  let signalFirstStarted: (() => void) | undefined;
+  let releaseFirst: (() => void) | undefined;
+  let signalSecondStarted: (() => void) | undefined;
+  const firstStarted = new Promise<void>((resolve) => {
+    signalFirstStarted = resolve;
+  });
+  const firstRelease = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const secondStarted = new Promise<void>((resolve) => {
+    signalSecondStarted = resolve;
+  });
+  const starts: string[] = [];
+
+  class OrderedExtractionEngine extends FakeExtractionEngine {
+    override async extract(input: Parameters<FakeExtractionEngine["extract"]>[0]) {
+      starts.push(input.userMessage);
+      if (starts.length === 1) {
+        signalFirstStarted?.();
+        await firstRelease;
+      } else {
+        signalSecondStarted?.();
+      }
+      return [];
+    }
+  }
+  const provider: AIProvider = {
+    async chat() {
+      throw new Error("The fake extraction engine handles extraction.");
+    },
+    async *streamChat() {
+      yield { content: "Response." };
+    },
+  };
+  const app = createApp(
+    testConfig,
+    createTestOverrides(
+      provider,
+      new InMemoryRepository(),
+      undefined,
+      new OrderedExtractionEngine(),
+    ),
+  );
+  context.after(() => app.close());
+
+  for (const message of ["First interaction.", "Second interaction."]) {
+    const response = await app.inject({
+      method: "POST",
+      url: "/chat",
+      headers: { "content-type": "application/json" },
+      payload: { message },
+    });
+    assert.equal(response.statusCode, 200);
+  }
+
+  await withTimeout(firstStarted, 500, "The first memory job did not start.");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts, ["First interaction."]);
+
+  releaseFirst?.();
+  await withTimeout(secondStarted, 500, "The second memory job did not start.");
+  assert.deepEqual(starts, ["First interaction.", "Second interaction."]);
+});
+
+test("coordinator shutdown skips automatic memory jobs waiting on playback", async (context) => {
+  let extractionCount = 0;
+  class CountingExtractionEngine extends FakeExtractionEngine {
+    override async extract() {
+      extractionCount += 1;
+      return [];
+    }
+  }
+  const provider: AIProvider = {
+    async chat() {
+      throw new Error("The fake extraction engine handles extraction.");
+    },
+    async *streamChat() {
+      yield { content: "Response." };
+    },
+  };
+  const coordinator = new VoicePlaybackCoordinator(1_000);
+  coordinator.beginTurn(TURN_ID);
+  const app = createApp(testConfig, {
+    ...createTestOverrides(
+      provider,
+      new InMemoryRepository(),
+      undefined,
+      new CountingExtractionEngine(),
+    ),
+    voicePlaybackCoordinator: coordinator,
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/chat",
+    headers: { "content-type": "application/json" },
+    payload: { message: "Do not extract this during shutdown." },
+  });
+  assert.equal(response.statusCode, 200);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  await app.close();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(extractionCount, 0);
+});
+
+test("shutdown drains an automatic memory job already using persistence", async (context) => {
+  let signalExtractionStarted: (() => void) | undefined;
+  let releaseExtraction: (() => void) | undefined;
+  const extractionStarted = new Promise<void>((resolve) => {
+    signalExtractionStarted = resolve;
+  });
+  const extractionRelease = new Promise<void>((resolve) => {
+    releaseExtraction = resolve;
+  });
+  class BlockingExtractionEngine extends FakeExtractionEngine {
+    override async extract() {
+      signalExtractionStarted?.();
+      await extractionRelease;
+      return [];
+    }
+  }
+  const provider: AIProvider = {
+    async chat() {
+      throw new Error("The fake extraction engine handles extraction.");
+    },
+    async *streamChat() {
+      yield { content: "Response." };
+    },
+  };
+  const app = createApp(
+    testConfig,
+    createTestOverrides(
+      provider,
+      new InMemoryRepository(),
+      undefined,
+      new BlockingExtractionEngine(),
+    ),
+  );
+  context.after(async () => {
+    releaseExtraction?.();
+    await app.close();
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/chat",
+    headers: { "content-type": "application/json" },
+    payload: { message: "Finish persisting this before shutdown." },
+  });
+  assert.equal(response.statusCode, 200);
+  await withTimeout(
+    extractionStarted,
+    500,
+    "The background memory job did not start.",
+  );
+
+  let closeSettled = false;
+  const closing = app.close().then(() => {
+    closeSettled = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(closeSettled, false, "shutdown did not drain active memory work");
+
+  releaseExtraction?.();
+  await withTimeout(closing, 500, "Shutdown did not finish after memory drained.");
+  assert.equal(closeSettled, true);
+});
+
 test("every synthesized WAV chunk logs synthesis, RTF, and browser playback telemetry", () => {
   const entries: VoicePerformanceEntry[] = [];
   let monotonicNow = 100;
@@ -212,7 +446,8 @@ test("every synthesized WAV chunk logs synthesis, RTF, and browser playback tele
   assert.match(formatVoicePerformanceLog(chunk), /rtf=0\.250/);
 });
 
-test("playback telemetry rejects missing turn IDs and chunk sequences", async (context) => {
+test("voice routes reject missing telemetry identity and malformed TTS sequences", async (context) => {
+  let synthesisCount = 0;
   const provider: AIProvider = {
     async chat() {
       return { content: '{"memories":[]}' };
@@ -221,7 +456,18 @@ test("playback telemetry rejects missing turn IDs and chunk sequences", async (c
       yield { content: "Hello." };
     },
   };
-  const app = createApp(testConfig, createTestOverrides(provider));
+  const app = createApp(testConfig, {
+    ...createTestOverrides(provider),
+    ttsProvider: {
+      async synthesize() {
+        synthesisCount += 1;
+        return {
+          audio: wavWithDuration(100),
+          contentType: "audio/wav" as const,
+        };
+      },
+    },
+  });
   context.after(() => app.close());
 
   const missingTurn = await app.inject({
@@ -242,6 +488,36 @@ test("playback telemetry rejects missing turn IDs and chunk sequences", async (c
     payload: { event: "started" },
   });
   assert.equal(missingSequence.statusCode, 400);
+
+  for (const sequence of [undefined, "invalid", "-1", "1.5", "1e2"]) {
+    const response = await app.inject({
+      method: "POST",
+      url: "/voice/synthesize",
+      headers: {
+        "content-type": "application/json",
+        "x-shiva-voice-turn-id": TURN_ID,
+        ...(sequence === undefined
+          ? {}
+          : { "x-shiva-voice-sequence": sequence }),
+      },
+      payload: { text: "Hello." },
+    });
+    assert.equal(response.statusCode, 400, String(sequence));
+  }
+  assert.equal(synthesisCount, 0);
+
+  const validSequence = await app.inject({
+    method: "POST",
+    url: "/voice/synthesize",
+    headers: {
+      "content-type": "application/json",
+      "x-shiva-voice-turn-id": TURN_ID,
+      "x-shiva-voice-sequence": "0",
+    },
+    payload: { text: "Hello." },
+  });
+  assert.equal(validSequence.statusCode, 200);
+  assert.equal(synthesisCount, 1);
 });
 
 function wavWithDuration(durationMs: number): Uint8Array {

@@ -103,6 +103,13 @@ export const StreamingSpeechChunker = (() => class {
     if (this.buffer.length >= target) {
       const clauseCut = this.findClauseCut(minimum, target);
       if (clauseCut !== null) return clauseCut;
+
+      const hasCompleteTrailingWord = /\s$/.test(this.buffer);
+      const targetLookahead = Math.min(this.hardMaxChars, target + 12);
+      if (hasCompleteTrailingWord || this.buffer.length >= targetLookahead) {
+        const wordCut = this.findTargetWordCut(minimum, target);
+        if (wordCut !== null) return wordCut;
+      }
     }
 
     if (this.buffer.length > this.hardMaxChars) {
@@ -146,6 +153,25 @@ export const StreamingSpeechChunker = (() => class {
     }
 
     return bestCut ?? firstAfterTarget;
+  }
+
+  private findTargetWordCut(minimum: number, target: number): number | null {
+    const lastCandidate = Math.min(target, this.buffer.length - 1);
+    for (let index = lastCandidate; index >= minimum; index -= 1) {
+      if (/\s/.test(this.buffer[index] ?? "")) return index;
+    }
+
+    // A large streaming delta can already contain the end of the word that
+    // crossed the target. Prefer that nearby boundary to waiting for the hard
+    // maximum, while never treating the buffer's unfinished final word as a
+    // safe cut.
+    const firstCandidate = Math.max(target + 1, minimum);
+    const upperBound = Math.min(this.hardMaxChars, this.buffer.length - 1);
+    for (let index = firstCandidate; index <= upperBound; index += 1) {
+      if (/\s/.test(this.buffer[index] ?? "")) return index;
+    }
+
+    return null;
   }
 
   private findHardCut(): number {

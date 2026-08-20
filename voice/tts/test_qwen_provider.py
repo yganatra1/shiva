@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import unittest
 
 from voice.tts.provider import TTSProviderError
@@ -38,6 +39,38 @@ class EmptyResultModel:
         return [], 24_000
 
 
+class CancellationOverlapModel:
+    def __init__(self) -> None:
+        self.first_started = threading.Event()
+        self.second_started = threading.Event()
+        self.release_first = threading.Event()
+        self._state_lock = threading.Lock()
+        self._active = 0
+        self.max_active = 0
+
+    def generate_custom_voice(
+        self,
+        *,
+        text: str,
+        **_arguments: object,
+    ) -> tuple[list[object], int]:
+        with self._state_lock:
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+
+        try:
+            if text == "first":
+                self.first_started.set()
+                if not self.release_first.wait(timeout=2):
+                    raise RuntimeError("Timed out waiting to release first inference.")
+            else:
+                self.second_started.set()
+            return [object()], 24_000
+        finally:
+            with self._state_lock:
+                self._active -= 1
+
+
 class LoadCountingProvider(QwenTTSProvider):
     def __init__(self) -> None:
         super().__init__("mock-model", device="cpu")
@@ -46,6 +79,12 @@ class LoadCountingProvider(QwenTTSProvider):
     def _load_model(self) -> object:
         self.load_calls += 1
         return object()
+
+
+class TestEncodingProvider(QwenTTSProvider):
+    @staticmethod
+    def _encode_wav(_samples: object, _sample_rate: int) -> bytes:
+        return b"RIFF" + (b"\x00" * 4) + b"WAVE" + (b"\x00" * 36)
 
 
 class QwenTTSProviderTest(unittest.TestCase):
@@ -102,6 +141,47 @@ class QwenTTSProviderTest(unittest.TestCase):
             asyncio.run(provider.synthesize("Hello"))
 
         self.assertEqual(caught.exception.phase, "response")
+
+    def test_cancelled_request_cannot_overlap_following_inference(self) -> None:
+        model = CancellationOverlapModel()
+        provider = TestEncodingProvider("mock-model", device="cpu")
+        provider._model = model
+
+        async def cancel_then_start_another() -> None:
+            first = asyncio.create_task(provider.synthesize("first"))
+            second = None
+            try:
+                first_started = await asyncio.to_thread(
+                    model.first_started.wait,
+                    1,
+                )
+                self.assertTrue(first_started)
+
+                first.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await first
+
+                second = asyncio.create_task(provider.synthesize("second"))
+                await asyncio.sleep(0.05)
+                self.assertFalse(
+                    model.second_started.is_set(),
+                    "Second inference overlapped the cancelled worker thread.",
+                )
+            finally:
+                model.release_first.set()
+                if second is None:
+                    await asyncio.gather(first, return_exceptions=True)
+                else:
+                    await asyncio.gather(
+                        first,
+                        second,
+                        return_exceptions=True,
+                    )
+
+            self.assertTrue(model.second_started.is_set())
+            self.assertEqual(model.max_active, 1)
+
+        asyncio.run(cancel_then_start_another())
 
 
 if __name__ == "__main__":

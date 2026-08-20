@@ -73,6 +73,10 @@ export function createVoicePage(): string {
 
 export function createVoiceClientScript(): string {
   return [
+    // tsx/esbuild can preserve a generated class-name helper inside
+    // Function#toString during development. Define the tiny helper in the
+    // standalone browser script; production tsc output simply leaves it idle.
+    `const __name = (target, value) => Object.defineProperty(target, "name", { value, configurable: true });`,
     `const VoiceConversationState = ${VoiceConversationState.toString()};`,
     `const StreamingSpeechChunker = ${StreamingSpeechChunker.toString()};`,
     `const SpeechSynthesisQueue = ${SpeechSynthesisQueue.toString()};`,
@@ -204,7 +208,8 @@ export function createVoiceClientScript(): string {
     if (!message || !message.trim()) return;
     stopSpeaking();
     if (chatController) chatController.abort();
-    chatController = new AbortController();
+    const controller = new AbortController();
+    chatController = controller;
     const session = createSpeechSession(turnId);
     speechSession = session;
     setCopy(transcription, message);
@@ -216,7 +221,7 @@ export function createVoiceClientScript(): string {
         method: "POST",
         headers: { "content-type": "application/json", "x-shiva-voice-turn-id": turnId },
         body: JSON.stringify(conversation.chatPayload(message)),
-        signal: chatController.signal,
+        signal: controller.signal,
       });
       if (!result.ok) throw new Error(await publicError(result));
       conversation.captureResponse(result.headers);
@@ -231,24 +236,30 @@ export function createVoiceClientScript(): string {
           if (part.done) break;
           const text = decoder.decode(part.value, { stream: true });
           fullResponse += text;
-          setCopy(responseText, fullResponse);
+          if (chatController === controller) setCopy(responseText, fullResponse);
           queueSpeechChunks(session, session.chunker.push(text));
-          setStatus("Shiva is replying…");
+          if (chatController === controller) setStatus("Shiva is replying…");
         }
         const tail = decoder.decode();
         fullResponse += tail;
-        setCopy(responseText, fullResponse);
+        if (chatController === controller) setCopy(responseText, fullResponse);
         queueSpeechChunks(session, session.chunker.push(tail));
         queueSpeechChunks(session, session.chunker.finish());
         session.chatFinished = true;
         maybeFinishSpeech(session);
-        if (!session.idleReported) setStatus("Shiva is speaking…");
+        if (speechSession === session && !session.idleReported) {
+          setStatus("Shiva is speaking…");
+        }
       } finally {
         reader.releaseLock();
       }
     } catch (error) {
+      const shouldSurfaceError =
+        chatController === controller && !controller.signal.aborted;
       cancelSpeechSession(session);
-      throw error;
+      if (shouldSurfaceError) throw error;
+    } finally {
+      if (chatController === controller) chatController = null;
     }
   }
 
@@ -263,8 +274,11 @@ export function createVoiceClientScript(): string {
       sources: new Set(),
       playbackTimers: new Set(),
       scheduledUntil: null,
+      playbackMode: audioContext ? "web-audio" : "fallback",
       fallbackQueue: [],
       fallbackPlaying: false,
+      fallbackBlocked: false,
+      cancelFallbackWait: null,
       currentFallbackUrl: null,
       telemetryTail: Promise.resolve(),
       chatFinished: false,
@@ -284,7 +298,11 @@ export function createVoiceClientScript(): string {
       },
       onError: (error, item) => {
         settleSpeechChunk(session, item.sequence);
-        if (!session.cancelled && !(error instanceof DOMException && error.name === "AbortError")) {
+        if (
+          speechSession === session &&
+          !session.cancelled &&
+          !(error instanceof DOMException && error.name === "AbortError")
+        ) {
           setStatus(error instanceof Error ? error.message : "Speech synthesis failed.", true);
         }
       },
@@ -325,7 +343,7 @@ export function createVoiceClientScript(): string {
   }
 
   async function scheduleSpeech(session, item, wav, signal) {
-    if (audioContext) {
+    if (session.playbackMode === "web-audio" && audioContext) {
       try {
         if (audioContext.state === "suspended") await audioContext.resume();
         const buffer = await audioContext.decodeAudioData(wav.slice(0));
@@ -334,9 +352,12 @@ export function createVoiceClientScript(): string {
         return;
       } catch (error) {
         if (session.cancelled || signal.aborted) return;
-        console.warn("[SHIVA VOICE] Web Audio decoding failed; using HTML audio fallback.", error);
+        session.playbackMode = "fallback";
+        console.warn("[SHIVA VOICE] Web Audio playback preparation failed; using HTML audio fallback for this turn.", error);
         audio.hidden = false;
       }
+    } else {
+      session.playbackMode = "fallback";
     }
 
     const url = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
@@ -357,6 +378,7 @@ export function createVoiceClientScript(): string {
       session.scheduledUntil,
       audible.durationSeconds,
     );
+    const previousScheduledUntil = session.scheduledUntil;
     const source = audioContext.createBufferSource();
     source.buffer = buffer;
     source.connect(audioContext.destination);
@@ -366,10 +388,24 @@ export function createVoiceClientScript(): string {
       session.sources.delete(source);
       if (!session.cancelled) {
         reportPlayback(session, "ended", sequence);
+        if (
+          session.playbackMode === "fallback" &&
+          session.sources.size === 0 &&
+          session.fallbackQueue.length > 0
+        ) {
+          void playFallbackQueue(session);
+        }
         maybeFinishSpeech(session);
       }
     }, { once: true });
-    source.start(plan.startAt, audible.offsetSeconds, audible.durationSeconds);
+    try {
+      source.start(plan.startAt, audible.offsetSeconds, audible.durationSeconds);
+    } catch (error) {
+      session.sources.delete(source);
+      session.scheduledUntil = previousScheduledUntil;
+      try { source.disconnect(); } catch { /* Nothing remains connected. */ }
+      throw error;
+    }
     reportPlayback(session, "scheduled", sequence);
     const startDelayMs = Math.max(0, (plan.startAt - audioContext.currentTime) * 1_000);
     const startTimer = window.setTimeout(() => {
@@ -388,49 +424,112 @@ export function createVoiceClientScript(): string {
   }
 
   async function playFallbackQueue(session) {
-    if (session.fallbackPlaying || session.cancelled) return;
+    if (
+      session.fallbackPlaying ||
+      session.cancelled ||
+      session.sources.size > 0
+    ) {
+      return;
+    }
     session.fallbackPlaying = true;
     try {
       while (!session.cancelled && session.fallbackQueue.length > 0) {
-        const item = session.fallbackQueue.shift();
+        const item = session.fallbackQueue[0];
         if (!item) break;
         audio.src = item.url;
         session.currentFallbackUrl = item.url;
-        let played = false;
-        try {
-          reportPlayback(session, "scheduled", item.sequence);
-          await audio.play();
-          played = true;
-          reportPlayback(session, "started", item.sequence);
-          setStatus("Shiva is speaking…");
-          await new Promise((resolve) => {
-            const finish = () => {
-              audio.removeEventListener("ended", finish);
-              audio.removeEventListener("error", finish);
-              audio.removeEventListener("pause", finish);
-              resolve();
-            };
-            audio.addEventListener("ended", finish, { once: true });
-            audio.addEventListener("error", finish, { once: true });
-            audio.addEventListener("pause", finish, { once: true });
-          });
-          if (!session.cancelled) reportPlayback(session, "ended", item.sequence);
-        } catch {
-          if (!session.cancelled) {
-            setStatus("Audio is ready. Press play to hear Shiva.");
-          }
-          return;
-        } finally {
-          if (played || session.cancelled) {
-            URL.revokeObjectURL(item.url);
-            if (session.currentFallbackUrl === item.url) session.currentFallbackUrl = null;
-          }
+        reportPlayback(session, "scheduled", item.sequence);
+        const outcome = await playFallbackItem(session, item);
+        if (session.cancelled || outcome === "cancelled") return;
+
+        if (outcome === "ended") {
+          reportPlayback(session, "ended", item.sequence);
+        } else if (speechSession === session) {
+          setStatus("This audio chunk could not be played.", true);
         }
+
+        if (session.fallbackQueue[0] === item) session.fallbackQueue.shift();
+        URL.revokeObjectURL(item.url);
+        if (session.currentFallbackUrl === item.url) session.currentFallbackUrl = null;
+        session.fallbackBlocked = false;
       }
     } finally {
       session.fallbackPlaying = false;
+      session.cancelFallbackWait = null;
       maybeFinishSpeech(session);
     }
+  }
+
+  function playFallbackItem(session, item) {
+    return new Promise((resolve) => {
+      let settled = false;
+      let started = false;
+
+      const cleanup = () => {
+        audio.removeEventListener("playing", onPlaying);
+        audio.removeEventListener("ended", onEnded);
+        audio.removeEventListener("error", onError);
+        audio.removeEventListener("pause", onPause);
+        if (session.cancelFallbackWait === cancelWait) {
+          session.cancelFallbackWait = null;
+        }
+      };
+      const finish = (outcome) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(outcome);
+      };
+      const onPlaying = () => {
+        session.fallbackBlocked = false;
+        if (!started) {
+          started = true;
+          reportPlayback(session, "started", item.sequence);
+        }
+        if (speechSession === session) setStatus("Shiva is speaking…");
+      };
+      const onEnded = () => finish("ended");
+      const onError = () => finish("error");
+      const onPause = () => {
+        if (session.cancelled) {
+          finish("cancelled");
+          return;
+        }
+        if (!audio.ended) {
+          session.fallbackBlocked = true;
+          if (speechSession === session) {
+            setStatus("Audio is paused. Press play to continue.");
+          }
+        }
+      };
+      const cancelWait = () => finish("cancelled");
+
+      audio.addEventListener("playing", onPlaying);
+      audio.addEventListener("ended", onEnded);
+      audio.addEventListener("error", onError);
+      audio.addEventListener("pause", onPause);
+      session.cancelFallbackWait = cancelWait;
+
+      try {
+        const playAttempt = audio.play();
+        void Promise.resolve(playAttempt)
+          .then(() => {
+            if (!settled && !session.cancelled && !started) onPlaying();
+          })
+          .catch(() => {
+            if (settled || session.cancelled || started) return;
+            session.fallbackBlocked = true;
+            if (speechSession === session) {
+              setStatus("Audio is ready. Press play to hear Shiva.");
+            }
+          });
+      } catch {
+        session.fallbackBlocked = true;
+        if (speechSession === session) {
+          setStatus("Audio is ready. Press play to hear Shiva.");
+        }
+      }
+    });
   }
 
   function settleSpeechChunk(session, sequence) {
@@ -447,6 +546,7 @@ export function createVoiceClientScript(): string {
       session.unsettledChunks > 0 ||
       session.sources.size > 0 ||
       session.fallbackPlaying ||
+      session.fallbackBlocked ||
       session.fallbackQueue.length > 0
     ) {
       return;
@@ -495,6 +595,8 @@ export function createVoiceClientScript(): string {
       try { source.stop(); } catch { /* Source may already have ended. */ }
     });
     session.sources.clear();
+    session.cancelFallbackWait?.();
+    session.cancelFallbackWait = null;
     audio.pause();
     audio.removeAttribute("src");
     audio.load();
@@ -503,6 +605,7 @@ export function createVoiceClientScript(): string {
     session.fallbackQueue.forEach((item) => URL.revokeObjectURL(item.url));
     session.fallbackQueue = [];
     session.fallbackPlaying = false;
+    session.fallbackBlocked = false;
     reportPlaybackIdle(session);
   }
 
@@ -542,7 +645,9 @@ export function createVoiceClientScript(): string {
   });
   stopButton.addEventListener("click", stopSpeaking);
   newButton.addEventListener("click", () => {
-    if (chatController) chatController.abort();
+    const controller = chatController;
+    chatController = null;
+    controller?.abort();
     stopSpeaking();
     conversation.clear();
     setCopy(transcription, "");

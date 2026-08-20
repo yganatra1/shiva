@@ -160,9 +160,17 @@ export function registerVoiceRoutes(
       const turnId = parseVoiceTurnId(
         request.headers["x-shiva-voice-turn-id"],
       );
-      const sequence = parseSequence(
+      const parsedSequence = parseSequence(
         request.headers["x-shiva-voice-sequence"],
       );
+      if (turnId && parsedSequence === undefined) {
+        throw new ApiError(
+          400,
+          "INVALID_REQUEST",
+          "A valid voice chunk sequence is required for this turn.",
+        );
+      }
+      const sequence = parsedSequence ?? 0;
       const textReadyAtUnixMs = parseVoiceTimestamp(
         request.headers["x-shiva-text-ready-at"],
       );
@@ -260,12 +268,15 @@ async function withClientCancellation<T>(
   }
 }
 
-function parseSequence(value: unknown): number {
-  if (typeof value !== "string") {
-    return 0;
+function parseSequence(value: unknown): number | undefined {
+  if (
+    typeof value !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/.test(value)
+  ) {
+    return undefined;
   }
   const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function audioFilename(contentType: string): string {

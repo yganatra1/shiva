@@ -64,6 +64,26 @@ test("uses a clause boundary when punctuation-free text reaches its target", () 
   assert.deepEqual(chunker.finish(), ["and the explanation continues"]);
 });
 
+test("uses a target word boundary when streamed prose has no punctuation", () => {
+  const chunker = new StreamingSpeechChunker({
+    firstMinChars: 10,
+    firstTargetChars: 30,
+    subsequentMinChars: 20,
+    subsequentTargetChars: 42,
+    hardMaxChars: 70,
+  });
+
+  assert.deepEqual(chunker.push("This opening thought keeps"), []);
+  assert.deepEqual(
+    chunker.push(" flowing naturally without punctuation and continues onward"),
+    [
+      "This opening thought keeps",
+      "flowing naturally without punctuation and",
+    ],
+  );
+  assert.deepEqual(chunker.finish(), ["continues onward"]);
+});
+
 test("enforces the hard maximum at a word boundary", () => {
   const chunker = new StreamingSpeechChunker({
     firstMinChars: 10,
@@ -72,8 +92,7 @@ test("enforces the hard maximum at a word boundary", () => {
     subsequentTargetChars: 40,
     hardMaxChars: 45,
   });
-  const prose =
-    "one two three four five six seven eight nine ten eleven twelve thirteen";
+  const prose = `${"x".repeat(46)} remaining words`;
 
   const chunks = chunker.push(prose);
 
@@ -81,8 +100,8 @@ test("enforces the hard maximum at a word boundary", () => {
   const firstChunk = chunks[0];
   assert.ok(firstChunk);
   assert.ok(firstChunk.length <= 45);
-  assert.equal(firstChunk, "one two three four five six seven eight nine");
-  assert.deepEqual(chunker.finish(), ["ten eleven twelve thirteen"]);
+  assert.equal(firstChunk, "x".repeat(45));
+  assert.deepEqual(chunker.finish(), ["x remaining words"]);
 });
 
 test("finish emits an incomplete tail exactly once", () => {
