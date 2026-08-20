@@ -32,3 +32,5 @@ pgdata/
 .DS_Store
 *.swp
 *.swo
+
+.tmp

@@ -4,51 +4,86 @@ Voice is an input/output layer around the existing Shiva brain. It does not own 
 
 ```text
 Browser GET /voice
-  ├─ microphone recording (MediaRecorder, push-to-talk)
-  ├─ POST /voice/transcribe ── Fastify gateway ── internal ASR :8101
-  ├─ POST /voice/chat ──────── shared ShivaChatService
-  │                            ├─ conversation + working memory
-  │                            ├─ semantic/episodic retrieval
-  │                            ├─ AIProvider / Gemma streaming
-  │                            └─ message persistence + memory extraction
-  └─ adaptive speech phrases ─ POST /voice/synthesize ── internal TTS :8102
-       └─ persistent Web Audio timeline
+  └─ one WebSocket /voice/chat
+       ⇅ session / turn control JSON
+       ⇅ microphone bytes (binary)
+       ⇅ speech audio frames (binary PCM16 or WAV)
+            │
+            ▼
+       VoiceSession orchestrator
+            ├── ASR (internal Qwen service :8101)
+            ├── ShivaChatService / Gemma stream
+            ├── StreamingSpeechChunker
+            ├── SpeechSynthesisQueue (serial TTS)
+            └── TTS (internal Qwen service :8102)
+                 └─ WAV → strip to PCM16 when possible → binary WS frames
 ```
 
-`/chat` and `/voice/chat` use the same validation, streaming transport, conversation ID contract, cancellation flow, `ShivaChatService`, memory pipeline, and model provider. Their only intentional difference is interaction mode. Voice mode adds a system-level response-style instruction asking for concise, conversational, speech-friendly output without unnecessary markdown. It does not alter or bypass the main Shiva system prompt.
+The browser keeps a single persistent voice connection. It never calls `/voice/synthesize` or `/voice/transcribe` for the live UI. Those REST endpoints remain for diagnostics and benchmarks only. `POST /voice/chat` remains as a diagnostic text-streaming endpoint with voice response guidance; realtime voice turns use the WebSocket upgrade on the same path.
 
-The browser stores `x-shiva-conversation-id` in `sessionStorage`, sends it as the existing `conversationId` field on later `/voice/chat` calls, and clears it for **New conversation**. There is no second session implementation.
+`/chat` and the voice session both use `ShivaChatService`, conversation IDs, working memory, semantic/episodic retrieval, persistence, cancellation, and the same Gemma provider. Voice mode only adds a system-level speech-friendly response style instruction.
 
-## ASR boundary
+The browser stores the conversation ID in `sessionStorage`, sends it on `session_start` after reconnect, and clears it for **New conversation**. There is no second AI conversation implementation.
 
-The internal FastAPI ASR service defaults to `127.0.0.1:8101`. `POST /transcribe` accepts multipart audio. Every upload, including WebM/Opus, is decoded by ffmpeg and normalized to mono 16 kHz PCM WAV before the `ASRProvider` sees it. The production adapter lazy-loads `Qwen/Qwen3-ASR-0.6B`; tests use a fake provider.
+## WebSocket protocol
 
-The ASR process logs model-load and inference failures with a phase, elapsed time, and chained traceback, but returns only a generic 503 to the gateway. Valid audio with no recognizable speech is classified as invalid input instead of model unavailability. `GET /health` is deliberately liveness-only because the model is lazy-loaded. Internal `POST /warmup` synchronously loads and caches the configured model through `ASRProvider`; it performs no transcription and returns readiness only after loading succeeds.
+Control messages are JSON. Audio is never base64.
 
-## TTS boundary
+**Client → server**
 
-The internal FastAPI TTS service defaults to `127.0.0.1:8102`. `POST /synthesize` accepts `{ "text": "..." }` and returns `audio/wav`. The production adapter lazy-loads `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`, defaults to English and `Aiden`, and supplies a natural conversational instruction. Voice cloning is absent.
+| type | role |
+| --- | --- |
+| `session_start` | open/resume; optional `conversationId` |
+| `user_text` | typed turn |
+| `audio_start` / binary frames / `audio_end` | push-to-talk mic capture |
+| `interrupt` | stop speaking / cancel active turn |
+| `playback` | browser telemetry (`received`, `scheduled`, `started`, `ended`, `underrun`, `idle`) |
+| `session_end` | close the socket |
 
-Like ASR, TTS logs phase-aware load/inference failures and their chained traceback only inside its private service while returning a sanitized 503 through Fastify. Its health endpoint is also liveness-only while the model remains lazy-loaded. Internal `POST /warmup` synchronously loads and caches the configured model through `TTSProvider` without generating sample speech.
+**Server → client**
 
-Both warmup operations are idempotent and concurrency-safe. They should be called sequentially after each voice-service restart, not used as recurring health probes. A successful warmup removes lazy weight-loading latency but does not prove the complete audio pipeline or eliminate every first-inference CUDA/kernel initialization cost.
+| type | role |
+| --- | --- |
+| `session_ready` | protocol version, conversation id, preferred `pcm16` |
+| `transcript_partial` / `transcript_final` | ASR result |
+| `assistant_text_delta` / `assistant_text_done` | streamed Gemma text |
+| `audio_start` / `audio_end` | speech frame boundaries |
+| `turn_done` | `completed` / `interrupted` / `error` |
+| `error` | safe public error codes |
 
-As `/voice/chat` text streams into the browser, an adaptive chunker emits a smaller first phrase, combines tiny sentences, and uses moderately larger later phrases. One synthesis worker keeps Qwen generation strictly serial while running independently from playback, allowing phrase N+1 to generate while phrase N plays. The final incomplete phrase is flushed exactly once.
+Binary speech frames use a fixed 24-byte little-endian header (`SHVA` magic, version, format, channels, sample rate, turn sequence, chunk id, audio duration ms) followed by PCM16 or WAV bytes.
 
-Each complete WAV is decoded once and scheduled as an `AudioBufferSourceNode` on a persistent `AudioContext` timeline. Ready buffers are placed in order with a small boundary overlap and silent edges are conservatively trimmed. This removes the decode/source-switch pause caused by replacing one HTML audio element for every sentence. The HTML audio path remains only as a compatibility fallback. If TTS real-time factor is 1 or higher, the queue can still underrun; genuinely gap-free low-latency playback then requires faster or truly streaming TTS inference.
+## Speech pipeline
 
-The browser reports scheduled, started, ended, and whole-turn idle playback events to the internal Fastify route. Deferred automatic memory extraction for a voice turn waits for whole-turn idle, with a bounded timeout so abandoned tabs cannot block it indefinitely. Explicit memory requests remain synchronous and unchanged.
+Gemma already streams. As soon as the chunker has a natural first phrase (roughly 40–80 characters), the server enqueues TTS while generation continues. Later phrases target roughly 100–200 characters at sentence/clause boundaries. Tiny fragments are not synthesized alone.
 
-## Security and failures
+Only one Qwen TTS inference runs at a time. While the browser plays chunk N, the server synthesizes N+1 and pushes completed audio immediately. Qwen itself remains batch-per-chunk; the architecture streams each finished chunk, it does not pretend the model is token-streaming audio.
 
-ASR and TTS bind to localhost by default and must not have public host ports. The browser talks only to Fastify. The gateway applies upload limits, request timeouts, caller cancellation, response-shape checks, and safe public errors: `INVALID_AUDIO`, `ASR_UNAVAILABLE`, and `TTS_UNAVAILABLE`. Internal URLs, response bodies, stacks, and model details are not returned to clients.
+The browser keeps one `AudioContext`, decodes PCM synchronously when possible, and schedules `AudioBufferSourceNode`s on a continuous timeline so ordinary multi-sentence answers play without artificial JS gaps when TTS stays ahead of playback.
+
+## Interruption
+
+`interrupt`, a new user turn, or disconnect abandons the active turn: abort Gemma, cancel the TTS queue, bump turn generation so stale frames never emit, and stop browser playback. Turn IDs and monotonic turn sequences keep old audio/text from leaking into a newer turn.
+
+## Memory gating
+
+Deferred automatic memory extraction waits until the browser reports playback `idle` for that turn (or the session closes / a bounded fail-safe expires). Explicit “remember this” persistence stays synchronous and is never deferred behind playback.
+
+## ASR / TTS boundaries
+
+Unchanged internal FastAPI services:
+
+- ASR `:8101` — multipart audio, ffmpeg normalize to mono 16 kHz WAV, `Qwen3-ASR-0.6B`
+- TTS `:8102` — `{ "text": "..." }` → `audio/wav`, `Qwen3-TTS-12Hz-0.6B-CustomVoice`
+
+Both bind to localhost. The browser talks only to Fastify. Warmup endpoints remain available after each Python restart.
 
 ## Performance tracing
 
-When `SHIVA_PERF_LOG=true`, the existing chat log remains available and a correlated `[SHIVA VOICE PERF]` record reports `audio-upload`, `asr-duration`, `chat-ttft`, `first-tts-request`, `tts-duration`, and `time-to-first-audio`. Each phrase also emits `[SHIVA VOICE TTS PERF]` with text length, text-ready time, synthesis start/end and duration, generated WAV duration, RTF, and browser playback scheduled/start/end timestamps. The UI supplies an observability-only UUID header per voice turn. It is not a conversation or authentication identifier. Client and server timestamps are Unix milliseconds but can reflect clock skew between the browser device and Shiva host.
+With `SHIVA_PERF_LOG=true`, each turn emits `[SHIVA VOICE PERF]` (`audio-upload`, `asr-duration`, `chat-ttft`, `first-tts-request`, `tts-duration`, `time-to-first-audio`) and each speech chunk emits `[SHIVA VOICE TTS PERF]` with text length, queue/synthesis/websocket/receive/playback timestamps, synthesis duration, audio duration, RTF, decode duration, and underrun ms.
 
 ## Deliberate V0.3 limits
 
-No wake word, always-listening mode, streaming ASR, VAD, barge-in, speaker recognition, face recognition, voice cloning, Gujarati/Hindi TTS, tools/internet access, or replacement of Gemma is included.
+No wake word, always-listening mode, streaming ASR, VAD, barge-in, speaker recognition, face recognition, voice cloning, Gujarati/Hindi TTS, tools/internet access, or replacement of Gemma.
 
-Qwen adapter calls follow the official [Qwen3-ASR package API](https://github.com/QwenLM/Qwen3-ASR) and [Qwen3-TTS CustomVoice model API](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice).
+Qwen TTS remains batch-per-request: one completed WAV (then PCM strip) per speech chunk. Truly streaming TTS inference is out of scope for this architecture pass.

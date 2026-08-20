@@ -4,10 +4,10 @@ interface SessionStoragePort {
   removeItem(key: string): void;
 }
 
-interface HeaderReader {
-  get(name: string): string | null;
-}
-
+/**
+ * Remembers the Shiva conversation ID for one browser tab so a reconnect, or a
+ * later turn, continues the same conversation instead of starting a new one.
+ */
 export class VoiceConversationState {
   private conversationId: string | null;
 
@@ -18,30 +18,21 @@ export class VoiceConversationState {
     this.conversationId = storage.getItem(storageKey);
   }
 
-  chatPayload(message: string): {
-    readonly message: string;
-    readonly conversationId?: string;
-  } {
-    return this.conversationId
-      ? { message, conversationId: this.conversationId }
-      : { message };
+  current(): string | null {
+    return this.conversationId;
   }
 
-  captureResponse(headers: HeaderReader): string | null {
-    const conversationId = headers.get("x-shiva-conversation-id");
-    if (conversationId) {
-      this.conversationId = conversationId;
-      this.storage.setItem(this.storageKey, conversationId);
+  /** Stores a server-assigned ID; a null value leaves the current one intact. */
+  remember(conversationId: string | null | undefined): void {
+    if (!conversationId || conversationId === this.conversationId) {
+      return;
     }
-    return this.conversationId;
+    this.conversationId = conversationId;
+    this.storage.setItem(this.storageKey, conversationId);
   }
 
   clear(): void {
     this.conversationId = null;
     this.storage.removeItem(this.storageKey);
-  }
-
-  current(): string | null {
-    return this.conversationId;
   }
 }

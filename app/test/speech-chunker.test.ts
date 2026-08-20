@@ -116,6 +116,20 @@ test("finish emits an incomplete tail exactly once", () => {
   );
 });
 
+test("default thresholds prioritize a small first phrase then larger later ones", () => {
+  const chunker = new StreamingSpeechChunker();
+  const first =
+    "India has a huge and young population that is already reshaping demand.";
+  const second =
+    " That creates enormous economic potential, but it also puts real pressure on housing, transport, and public services in the largest cities across the country.";
+
+  assert.deepEqual(chunker.push(first), [first]);
+  const later = chunker.push(second);
+  assert.ok(later.length >= 1);
+  assert.ok((later[0]?.length ?? 0) >= 100);
+  assert.ok((later[0]?.length ?? 0) <= 200);
+});
+
 test("reset discards cancelled text and restores first-chunk behavior", () => {
   const chunker = new StreamingSpeechChunker({
     firstMinChars: 12,

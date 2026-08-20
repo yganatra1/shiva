@@ -1,12 +1,14 @@
+import fastifyWebsocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import {
   registerChatRoute,
-  registerVoiceChatRoute,
+  registerVoiceChatDiagnosticRoute,
 } from "./api/chat-route.js";
 import { registerErrorHandling } from "./api/error-handler.js";
 import { registerHealthRoute } from "./api/health-route.js";
 import { registerVoiceRoutes } from "./api/voice-route.js";
+import { registerVoiceSocketRoute } from "./api/voice-socket-route.js";
 import type { AIProvider } from "./brain/ai-provider.js";
 import type { EmbeddingProvider } from "./brain/embedding-provider.js";
 import { OllamaEmbeddingProvider } from "./brain/ollama-embedding-provider.js";
@@ -36,6 +38,7 @@ import {
 
 const API_BODY_LIMIT_BYTES = 256 * 1024;
 const API_REQUEST_TIMEOUT_MS = 30_000;
+const VOICE_SOCKET_MAX_FRAME_BYTES = 4 * 1024 * 1024;
 
 export interface AppOverrides {
   readonly provider?: AIProvider;
@@ -149,26 +152,27 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
 
   registerErrorHandling(app);
   registerHealthRoute(app, config);
-  registerChatRoute(app, chatService, {
+  const chatRouteOptions = {
     performanceLogging: config.performanceLogging,
     ...(overrides.performanceLogSink
       ? { performanceLogSink: overrides.performanceLogSink }
       : {}),
-    ...(voicePerformance ? { voicePerformance } : {}),
+  };
+  registerChatRoute(app, chatService, chatRouteOptions);
+  registerVoiceChatDiagnosticRoute(app, chatService, chatRouteOptions);
+  registerVoiceRoutes(app, { asrProvider, ttsProvider });
+
+  app.register(fastifyWebsocket, {
+    options: { maxPayload: VOICE_SOCKET_MAX_FRAME_BYTES },
   });
-  registerVoiceChatRoute(app, chatService, {
-    performanceLogging: config.performanceLogging,
-    ...(overrides.performanceLogSink
-      ? { performanceLogSink: overrides.performanceLogSink }
-      : {}),
-    ...(voicePerformance ? { voicePerformance } : {}),
-    voicePlaybackCoordinator,
-  });
-  registerVoiceRoutes(app, {
-    asrProvider,
-    ttsProvider,
-    playbackCoordinator: voicePlaybackCoordinator,
-    ...(voicePerformance ? { performance: voicePerformance } : {}),
+  app.register(async (instance) => {
+    registerVoiceSocketRoute(instance, {
+      chatService,
+      asrProvider,
+      ttsProvider,
+      playbackCoordinator: voicePlaybackCoordinator,
+      ...(voicePerformance ? { performance: voicePerformance } : {}),
+    });
   });
 
   return app;

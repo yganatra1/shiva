@@ -105,83 +105,6 @@ test("all automatic memory extraction waits behind global voice playback", async
   assert.equal(extractionCount, 1);
 });
 
-test("automatic voice memory extraction waits for playback idle", async (context) => {
-  let extractionCount = 0;
-  let signalExtraction: (() => void) | undefined;
-  const extractionStarted = new Promise<void>((resolve) => {
-    signalExtraction = resolve;
-  });
-  class SignalingExtractionEngine extends FakeExtractionEngine {
-    override async extract() {
-      extractionCount += 1;
-      signalExtraction?.();
-      return [];
-    }
-  }
-
-  const provider: AIProvider = {
-    async chat() {
-      throw new Error("The fake extraction engine handles extraction.");
-    },
-    async *streamChat() {
-      yield { content: "A short spoken response." };
-    },
-  };
-  const coordinator = new VoicePlaybackCoordinator(1_000);
-  const app = createApp(testConfig, {
-    ...createTestOverrides(
-      provider,
-      new InMemoryRepository(),
-      undefined,
-      new SignalingExtractionEngine(),
-    ),
-    voicePlaybackCoordinator: coordinator,
-  });
-  context.after(() => app.close());
-
-  const response = await app.inject({
-    method: "POST",
-    url: "/voice/chat",
-    headers: {
-      "content-type": "application/json",
-      "x-shiva-voice-turn-id": TURN_ID,
-    },
-    payload: { message: "Tell me something interesting." },
-  });
-  assert.equal(response.statusCode, 200);
-
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(extractionCount, 0);
-
-  for (const event of ["scheduled", "started", "ended"] as const) {
-    const telemetry = await app.inject({
-      method: "POST",
-      url: "/voice/playback",
-      headers: {
-        "content-type": "application/json",
-        "x-shiva-voice-turn-id": TURN_ID,
-      },
-      payload: { event, sequence: 0, timestampMs: Date.now() },
-    });
-    assert.equal(telemetry.statusCode, 204);
-  }
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(extractionCount, 0, "chunk end must not imply whole-turn idle");
-
-  const idle = await app.inject({
-    method: "POST",
-    url: "/voice/playback",
-    headers: {
-      "content-type": "application/json",
-      "x-shiva-voice-turn-id": TURN_ID,
-    },
-    payload: { event: "idle", timestampMs: Date.now() },
-  });
-  assert.equal(idle.statusCode, 204);
-  await withTimeout(extractionStarted, 500, "Memory extraction did not resume.");
-  assert.equal(extractionCount, 1);
-});
-
 test("explicit voice memory processing does not wait for playback idle", async (context) => {
   const extraction = new FakeExtractionEngine();
   let extractionCount = 0;
@@ -212,10 +135,7 @@ test("explicit voice memory processing does not wait for playback idle", async (
   const response = await app.inject({
     method: "POST",
     url: "/voice/chat",
-    headers: {
-      "content-type": "application/json",
-      "x-shiva-voice-turn-id": TURN_ID,
-    },
+    headers: { "content-type": "application/json" },
     payload: { message: "Remember that." },
   });
 
@@ -394,7 +314,7 @@ test("shutdown drains an automatic memory job already using persistence", async 
   assert.equal(closeSettled, true);
 });
 
-test("every synthesized WAV chunk logs synthesis, RTF, and browser playback telemetry", () => {
+test("every synthesized chunk logs synthesis, RTF, and browser playback telemetry", () => {
   const entries: VoicePerformanceEntry[] = [];
   let monotonicNow = 100;
   let unixNow = 1_000;
@@ -407,141 +327,41 @@ test("every synthesized WAV chunk logs synthesis, RTF, and browser playback tele
   tracker.markChatStarted(TURN_ID);
   monotonicNow = 150;
   tracker.markChatFirstToken(TURN_ID);
-  monotonicNow = 200;
-  unixNow = 1_100;
-  const startedAt = tracker.markTtsStarted(TURN_ID, 0, {
-    textLength: 12,
+  tracker.markChunkQueued(TURN_ID, 0, {
+    textChars: 12,
     textReadyAtUnixMs: 1_050,
   });
+  monotonicNow = 200;
+  unixNow = 1_100;
+  const startedAt = tracker.markTtsStarted(TURN_ID, 0);
   monotonicNow = 700;
   unixNow = 1_600;
-  tracker.finishTts(TURN_ID, 0, startedAt, wavWithDuration(2_000));
-  tracker.recordPlaybackEvent(TURN_ID, 0, "scheduled", 1_650);
+  tracker.finishTts(TURN_ID, 0, startedAt, 2_000);
+  tracker.markAudioSent(TURN_ID, 0);
+  tracker.recordPlaybackEvent(TURN_ID, 0, "received", 1_620);
+  tracker.recordPlaybackEvent(TURN_ID, 0, "scheduled", 1_650, {
+    decodeDurationMs: 2,
+  });
   tracker.recordPlaybackEvent(TURN_ID, 0, "started", 1_700);
   tracker.recordPlaybackEvent(TURN_ID, 0, "ended", 3_700);
   tracker.finishPlaybackTurn(TURN_ID);
 
-  assert.equal(entries[0]?.kind, "voice");
+  assert.ok(entries.some((entry) => entry.kind === "voice"));
   const chunk = entries.find(
     (entry): entry is VoiceTtsChunkPerformanceLog =>
       entry.kind === "voice-tts-chunk",
   );
-  assert.deepEqual(chunk, {
-    kind: "voice-tts-chunk",
-    turnId: TURN_ID,
-    sequence: 0,
-    textLength: 12,
-    timestampsUnixMs: {
-      textReady: 1_050,
-      synthesisStarted: 1_100,
-      synthesisEnded: 1_600,
-      playbackScheduled: 1_650,
-      playbackStarted: 1_700,
-      playbackEnded: 3_700,
-    },
-    synthesisDurationMs: 500,
-    audioDurationMs: 2_000,
-    rtf: 0.25,
-  });
+  assert.ok(chunk);
+  assert.equal(chunk.chunkId, 0);
+  assert.equal(chunk.textChars, 12);
+  assert.equal(chunk.audioDurationMs, 2_000);
+  assert.equal(chunk.synthesisDurationMs, 500);
+  assert.equal(chunk.realtimeFactor, 0.25);
+  assert.equal(chunk.decodeDurationMs, 2);
+  assert.equal(chunk.timestampsUnixMs.textReady, 1_050);
+  assert.equal(chunk.timestampsUnixMs.audioReceived, 1_620);
   assert.match(formatVoicePerformanceLog(chunk), /rtf=0\.250/);
 });
-
-test("voice routes reject missing telemetry identity and malformed TTS sequences", async (context) => {
-  let synthesisCount = 0;
-  const provider: AIProvider = {
-    async chat() {
-      return { content: '{"memories":[]}' };
-    },
-    async *streamChat() {
-      yield { content: "Hello." };
-    },
-  };
-  const app = createApp(testConfig, {
-    ...createTestOverrides(provider),
-    ttsProvider: {
-      async synthesize() {
-        synthesisCount += 1;
-        return {
-          audio: wavWithDuration(100),
-          contentType: "audio/wav" as const,
-        };
-      },
-    },
-  });
-  context.after(() => app.close());
-
-  const missingTurn = await app.inject({
-    method: "POST",
-    url: "/voice/playback",
-    headers: { "content-type": "application/json" },
-    payload: { event: "idle" },
-  });
-  assert.equal(missingTurn.statusCode, 400);
-
-  const missingSequence = await app.inject({
-    method: "POST",
-    url: "/voice/playback",
-    headers: {
-      "content-type": "application/json",
-      "x-shiva-voice-turn-id": TURN_ID,
-    },
-    payload: { event: "started" },
-  });
-  assert.equal(missingSequence.statusCode, 400);
-
-  for (const sequence of [undefined, "invalid", "-1", "1.5", "1e2"]) {
-    const response = await app.inject({
-      method: "POST",
-      url: "/voice/synthesize",
-      headers: {
-        "content-type": "application/json",
-        "x-shiva-voice-turn-id": TURN_ID,
-        ...(sequence === undefined
-          ? {}
-          : { "x-shiva-voice-sequence": sequence }),
-      },
-      payload: { text: "Hello." },
-    });
-    assert.equal(response.statusCode, 400, String(sequence));
-  }
-  assert.equal(synthesisCount, 0);
-
-  const validSequence = await app.inject({
-    method: "POST",
-    url: "/voice/synthesize",
-    headers: {
-      "content-type": "application/json",
-      "x-shiva-voice-turn-id": TURN_ID,
-      "x-shiva-voice-sequence": "0",
-    },
-    payload: { text: "Hello." },
-  });
-  assert.equal(validSequence.statusCode, 200);
-  assert.equal(synthesisCount, 1);
-});
-
-function wavWithDuration(durationMs: number): Uint8Array {
-  const sampleRate = 16_000;
-  const bytesPerSample = 2;
-  const dataLength = Math.round(
-    (sampleRate * bytesPerSample * durationMs) / 1_000,
-  );
-  const wav = Buffer.alloc(44 + dataLength);
-  wav.write("RIFF", 0, "ascii");
-  wav.writeUInt32LE(36 + dataLength, 4);
-  wav.write("WAVE", 8, "ascii");
-  wav.write("fmt ", 12, "ascii");
-  wav.writeUInt32LE(16, 16);
-  wav.writeUInt16LE(1, 20);
-  wav.writeUInt16LE(1, 22);
-  wav.writeUInt32LE(sampleRate, 24);
-  wav.writeUInt32LE(sampleRate * bytesPerSample, 28);
-  wav.writeUInt16LE(bytesPerSample, 32);
-  wav.writeUInt16LE(16, 34);
-  wav.write("data", 36, "ascii");
-  wav.writeUInt32LE(dataLength, 40);
-  return wav;
-}
 
 async function withTimeout<T>(
   operation: Promise<T>,

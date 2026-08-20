@@ -1,10 +1,11 @@
-import { VoiceConversationState } from "./conversation-state.js";
 import {
   findAudibleWindow,
   planAudioPlayback,
 } from "./audio-scheduling.js";
-import { StreamingSpeechChunker } from "./speech-chunker.js";
-import { SpeechSynthesisQueue } from "./speech-synthesis-queue.js";
+import { decodeVoiceAudioFrame } from "./audio-frame.js";
+import { VoiceAudioPlayer } from "./client/voice-audio-player.js";
+import { VoiceSocketClient } from "./client/voice-socket-client.js";
+import { VoiceConversationState } from "./conversation-state.js";
 
 export function createVoicePage(): string {
   return `<!doctype html>
@@ -19,33 +20,36 @@ export function createVoicePage(): string {
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; color: #f5f1ff; background: radial-gradient(circle at 20% 15%, #352263 0, transparent 34%), radial-gradient(circle at 85% 85%, #113d4a 0, transparent 30%), #090b13; display: grid; place-items: center; padding: 24px; }
     main { width: min(760px, 100%); background: rgba(16, 18, 31, .84); border: 1px solid rgba(255,255,255,.1); border-radius: 28px; padding: clamp(22px, 5vw, 42px); box-shadow: 0 28px 80px rgba(0,0,0,.4); backdrop-filter: blur(20px); }
-    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
-    h1 { margin: 0; font-size: clamp(1.8rem, 5vw, 2.8rem); letter-spacing: -.04em; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: clamp(1.6rem, 4.4vw, 2.4rem); letter-spacing: -.04em; }
     .eyebrow { margin: 0 0 5px; color: #ac9ae9; font-size: .72rem; font-weight: 750; letter-spacing: .18em; text-transform: uppercase; }
     button { border: 0; color: inherit; font: inherit; cursor: pointer; }
     .secondary { border: 1px solid rgba(255,255,255,.14); border-radius: 12px; padding: 10px 14px; background: rgba(255,255,255,.06); }
     .secondary:hover { background: rgba(255,255,255,.11); }
-    .mic-wrap { display: grid; place-items: center; padding: 14px 0 28px; }
-    #mic { width: 148px; aspect-ratio: 1; border-radius: 50%; background: linear-gradient(145deg, #8d67ff, #4a2fbb); box-shadow: 0 18px 50px rgba(105,74,225,.4), inset 0 1px rgba(255,255,255,.28); display: grid; place-items: center; transition: transform .18s ease, box-shadow .18s ease; touch-action: none; user-select: none; }
-    #mic:hover { transform: translateY(-2px) scale(1.02); }
-    #mic.recording { transform: scale(.94); background: linear-gradient(145deg, #ff657d, #c8244b); box-shadow: 0 0 0 12px rgba(255,76,112,.12), 0 18px 55px rgba(204,36,75,.4); animation: pulse 1.4s infinite; }
-    #mic:disabled { opacity: .45; cursor: not-allowed; }
-    #mic svg { width: 48px; height: 48px; }
-    @keyframes pulse { 50% { box-shadow: 0 0 0 20px rgba(255,76,112,.04), 0 18px 55px rgba(204,36,75,.38); } }
-    #status { min-height: 24px; text-align: center; color: #bdb6d5; margin: 0 0 22px; }
-    #status.error { color: #ff9dae; }
-    .panel { background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.08); border-radius: 17px; padding: 16px 18px; margin-top: 12px; }
-    .label { color: #8f87aa; font-size: .7rem; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; margin-bottom: 7px; }
-    .copy { min-height: 24px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
-    .placeholder { color: #68647a; }
-    form { display: flex; gap: 10px; margin-top: 18px; }
+    .statusbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; font-size: .82rem; }
+    #phase { display: inline-flex; align-items: center; gap: 8px; color: #d6cffb; font-weight: 700; }
+    #phase::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: #8d67ff; }
+    #phase[data-phase="listening"]::before { background: #ff657d; }
+    #phase[data-phase="speaking"]::before { background: #4ad6a4; }
+    #phase[data-phase="thinking"]::before, #phase[data-phase="transcribing"]::before { background: #f2c14b; }
+    #connection { color: #8f87aa; }
+    #connection[data-state="reconnecting"], #connection[data-state="connecting"] { color: #f2c14b; }
+    #connection[data-state="closed"] { color: #ff9dae; }
+    #transcript { display: flex; flex-direction: column; gap: 10px; max-height: 46vh; overflow-y: auto; padding: 14px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); border-radius: 17px; }
+    .turn { display: flex; flex-direction: column; gap: 3px; }
+    .turn .who { color: #8f87aa; font-size: .66rem; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+    .turn .what { line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .turn.user .what { color: #cfc7f0; }
+    .empty { color: #68647a; }
+    #error { margin: 12px 0 0; min-height: 20px; color: #ff9dae; font-size: .85rem; }
+    form { display: flex; gap: 10px; margin-top: 16px; }
     input { min-width: 0; flex: 1; border: 1px solid rgba(255,255,255,.12); border-radius: 13px; padding: 13px 15px; color: #fff; background: rgba(4,5,10,.5); font: inherit; outline: none; }
     input:focus { border-color: #8669e8; box-shadow: 0 0 0 3px rgba(134,105,232,.15); }
     .send { border-radius: 13px; padding: 0 18px; background: #7559d7; font-weight: 750; }
-    .controls { display: flex; align-items: center; gap: 10px; margin-top: 15px; }
-    audio { flex: 1; height: 38px; min-width: 0; }
-    .hint { color: #716b85; text-align: center; font-size: .78rem; margin: 14px 0 0; }
-    @media (max-width: 560px) { header { align-items: flex-start; } .controls { flex-wrap: wrap; } audio { flex-basis: 100%; } }
+    .controls { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+    #mic { border-radius: 13px; padding: 11px 18px; background: linear-gradient(145deg, #8d67ff, #4a2fbb); font-weight: 750; touch-action: none; user-select: none; }
+    #mic.recording { background: linear-gradient(145deg, #ff657d, #c8244b); }
+    #mic:disabled { opacity: .45; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -54,17 +58,17 @@ export function createVoicePage(): string {
       <div><p class="eyebrow">Private personal AI</p><h1>Talk with Shiva</h1></div>
       <button id="newConversation" class="secondary" type="button">New conversation</button>
     </header>
-    <div class="mic-wrap">
-      <button id="mic" type="button" aria-label="Hold to talk" title="Hold to talk">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8.5 21h7"></path></svg>
-      </button>
+    <div class="statusbar">
+      <span id="phase" data-phase="connecting">Connecting…</span>
+      <span id="connection" data-state="connecting">Connecting…</span>
     </div>
-    <p id="status" role="status" aria-live="polite">Hold the microphone to speak</p>
-    <section class="panel"><div class="label">You</div><div id="transcription" class="copy placeholder">Your words will appear here.</div></section>
-    <section class="panel"><div class="label">Shiva</div><div id="response" class="copy placeholder">Shiva's answer will stream here.</div></section>
-    <form id="typedForm"><input id="typedInput" maxlength="20000" autocomplete="off" placeholder="Or type a message…" aria-label="Message"><button class="send" type="submit">Send</button></form>
-    <div class="controls"><button id="stopSpeaking" class="secondary" type="button">Stop speaking</button><audio id="audio" controls></audio></div>
-    <p class="hint">Conversation continuity is kept only for this browser tab.</p>
+    <section id="transcript" aria-live="polite"><div class="empty">Say something or type a message to start.</div></section>
+    <p id="error" role="status" aria-live="assertive"></p>
+    <form id="typedForm"><input id="typedInput" maxlength="20000" autocomplete="off" placeholder="Type a message…" aria-label="Message"><button class="send" type="submit">Send</button></form>
+    <div class="controls">
+      <button id="mic" type="button">Hold to talk</button>
+      <button id="stopSpeaking" class="secondary" type="button">Stop speaking</button>
+    </div>
   </main>
   <script>${createVoiceClientScript()}</script>
 </body>
@@ -78,584 +82,464 @@ export function createVoiceClientScript(): string {
     // standalone browser script; production tsc output simply leaves it idle.
     `const __name = (target, value) => Object.defineProperty(target, "name", { value, configurable: true });`,
     `const VoiceConversationState = ${VoiceConversationState.toString()};`,
-    `const StreamingSpeechChunker = ${StreamingSpeechChunker.toString()};`,
-    `const SpeechSynthesisQueue = ${SpeechSynthesisQueue.toString()};`,
+    `const VoiceAudioPlayer = ${VoiceAudioPlayer.toString()};`,
+    `const VoiceSocketClient = ${VoiceSocketClient.toString()};`,
     `const planAudioPlayback = ${planAudioPlayback.toString()};`,
     `const findAudibleWindow = ${findAudibleWindow.toString()};`,
+    `const decodeVoiceAudioFrame = ${decodeVoiceAudioFrame.toString()};`,
   ].join("\n") + String.raw`
 (() => {
   "use strict";
   const conversation = new VoiceConversationState(sessionStorage);
-  const mic = document.getElementById("mic");
-  const status = document.getElementById("status");
-  const transcription = document.getElementById("transcription");
-  const responseText = document.getElementById("response");
+  const transcript = document.getElementById("transcript");
+  const phaseLabel = document.getElementById("phase");
+  const connectionLabel = document.getElementById("connection");
+  const errorLabel = document.getElementById("error");
   const typedForm = document.getElementById("typedForm");
   const typedInput = document.getElementById("typedInput");
-  const audio = document.getElementById("audio");
+  const micButton = document.getElementById("mic");
   const stopButton = document.getElementById("stopSpeaking");
   const newButton = document.getElementById("newConversation");
 
+  const PHASE_LABELS = {
+    connecting: "Connecting…",
+    ready: "Ready",
+    listening: "Listening",
+    transcribing: "Transcribing",
+    thinking: "Thinking",
+    speaking: "Speaking",
+  };
+  const CONNECTION_LABELS = {
+    connecting: "Connecting…",
+    open: "Connected",
+    reconnecting: "Reconnecting…",
+    closed: "Disconnected",
+  };
+
+  let audioContext = null;
+  let player = null;
+  let phase = "connecting";
+  let connectionState = "connecting";
+  let turn = null;
   let recorder = null;
   let mediaStream = null;
-  let recordedChunks = [];
   let pressHeld = false;
-  let chatController = null;
-  let audioContext = null;
-  let speechSession = null;
+  let uploadChain = Promise.resolve();
 
-  function setStatus(message, isError) {
-    status.textContent = message;
-    status.classList.toggle("error", Boolean(isError));
+  const client = new VoiceSocketClient({
+    url: socketUrl(),
+    createSocket: (url) => new WebSocket(url),
+    decodeAudioFrame: decodeVoiceAudioFrame,
+    setTimer: (callback, delay) => window.setTimeout(callback, delay),
+    clearTimer: (timer) => window.clearTimeout(timer),
+    onStateChange: handleConnectionState,
+    onControl: handleControlMessage,
+    onAudio: handleAudioFrame,
+  });
+
+  function socketUrl() {
+    const url = new URL("/voice/chat", window.location.href);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    return url.toString();
   }
 
-  function setCopy(element, value) {
-    element.textContent = value;
-    element.classList.toggle("placeholder", value.length === 0);
+  function setPhase(next) {
+    phase = next;
+    phaseLabel.dataset.phase = next;
+    phaseLabel.textContent = PHASE_LABELS[next] || next;
+  }
+
+  function setError(message) {
+    errorLabel.textContent = message || "";
+  }
+
+  function handleConnectionState(state) {
+    connectionState = state;
+    connectionLabel.dataset.state = state;
+    connectionLabel.textContent = CONNECTION_LABELS[state] || state;
+    if (state === "open") {
+      setError("");
+      const current = conversation.current();
+      client.send(current
+        ? { type: "session_start", conversationId: current }
+        : { type: "session_start" });
+      return;
+    }
+    if (state !== "closed") stopPlayback();
+    if (phase !== "connecting") setPhase("connecting");
+  }
+
+  function handleControlMessage(message) {
+    switch (message.type) {
+      case "session_ready":
+        conversation.remember(message.conversationId);
+        setPhase("ready");
+        return;
+      case "transcript_partial":
+        setTranscriptText(ensureUserEntry(message.turnId), message.text);
+        return;
+      case "transcript_final":
+        setTranscriptText(ensureUserEntry(message.turnId), message.text);
+        if (phase === "listening" || phase === "transcribing") setPhase("thinking");
+        return;
+      case "assistant_text_delta":
+        appendAssistantText(message.turnId, message.text);
+        return;
+      case "assistant_text_done":
+        appendAssistantText(message.turnId, "");
+        return;
+      case "audio_start":
+        startTurnPlayback(message);
+        return;
+      case "audio_end":
+        if (turn && turn.turnId === message.turnId) {
+          turn.audioEnded = true;
+          reportIdleWhenFinished();
+        }
+        return;
+      case "turn_done":
+        conversation.remember(message.conversationId);
+        if (message.reason === "interrupted") {
+          if (turn && turn.turnId === message.turnId) stopPlayback();
+          if (phase !== "listening") setPhase("ready");
+          return;
+        }
+        if (turn && turn.turnId === message.turnId) {
+          turn.done = true;
+          reportIdleWhenFinished();
+          return;
+        }
+        if (phase !== "listening") setPhase("ready");
+        return;
+      case "error":
+        setError(message.message);
+        return;
+      default:
+        return;
+    }
+  }
+
+  function ensureAudio() {
+    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextConstructor) return null;
+    if (!audioContext) {
+      try {
+        audioContext = new AudioContextConstructor({ latencyHint: "interactive" });
+      } catch {
+        audioContext = null;
+        return null;
+      }
+    }
+    if (audioContext.state === "suspended") void audioContext.resume().catch(() => {});
+    if (!player) {
+      player = new VoiceAudioPlayer({
+        context: audioContext,
+        planPlayback: planAudioPlayback,
+        findAudible: findAudibleWindow,
+        onEvent: handlePlayerEvent,
+        unixNow: () => Date.now(),
+        monotonicNow: () => performance.now(),
+        setTimer: (callback, delay) => window.setTimeout(callback, delay),
+        clearTimer: (timer) => window.clearTimeout(timer),
+      });
+    }
+    return player;
+  }
+
+  function startTurnPlayback(message) {
+    const active = ensureAudio();
+    if (!active) {
+      setError("This browser cannot play Shiva's voice.");
+      return;
+    }
+    if (!turn || turn.turnId !== message.turnId) {
+      turn = createTurnState(message.turnId);
+    }
+    turn.turnSequence = message.turnSequence;
+    turn.audioStarted = true;
+    active.beginTurn(message.turnSequence);
+  }
+
+  function handleAudioFrame(frame) {
+    const active = player;
+    if (!active || !turn || frame.header.turnSequence !== turn.turnSequence) return;
+    const receivedAt = Date.now();
+    reportPlayback({
+      event: "received",
+      chunkId: frame.header.chunkId,
+      timestampMs: receivedAt,
+    });
+    console.debug("[SHIVA VOICE AUDIO]", {
+      turnId: turn.turnId,
+      chunkId: frame.header.chunkId,
+      format: frame.header.format,
+      bytes: frame.audio.byteLength,
+      audioDurationMs: frame.header.audioDurationMs,
+      receivedAt,
+    });
+    active.enqueue({
+      turnSequence: frame.header.turnSequence,
+      chunkId: frame.header.chunkId,
+      format: frame.header.format,
+      sampleRate: frame.header.sampleRate,
+      channels: frame.header.channels,
+      audio: frame.audio,
+    });
+  }
+
+  function handlePlayerEvent(event) {
+    if (!turn || event.turnSequence !== turn.turnSequence) return;
+    if (event.type === "drained") {
+      reportIdleWhenFinished();
+      return;
+    }
+    if (event.type === "error") {
+      setError(event.message);
+      return;
+    }
+    if (event.type === "started") setPhase("speaking");
+    if (event.type === "underrun") {
+      console.warn("[SHIVA VOICE UNDERRUN]", {
+        turnId: turn.turnId,
+        chunkId: event.chunkId,
+        underrunMs: Math.round(event.underrunMs),
+      });
+    }
+    if (event.type === "scheduled") {
+      console.debug("[SHIVA VOICE PLAYBACK]", {
+        turnId: turn.turnId,
+        chunkId: event.chunkId,
+        decodeDurationMs: Math.round(event.decodeDurationMs * 100) / 100,
+        startAtSeconds: event.startAtSeconds,
+        underrunMs: Math.round(event.underrunMs),
+      });
+    }
+    reportPlayback({
+      event: event.type,
+      chunkId: event.chunkId,
+      timestampMs: event.timestampMs,
+      decodeDurationMs: event.type === "scheduled" ? event.decodeDurationMs : undefined,
+      underrunMs: event.type === "underrun" ? event.underrunMs : undefined,
+    });
+  }
+
+  function reportPlayback(detail) {
+    if (!turn) return;
+    const payload = {
+      type: "playback",
+      turnId: turn.turnId,
+      event: detail.event,
+      chunkId: detail.chunkId,
+      timestampMs: detail.timestampMs,
+    };
+    if (detail.decodeDurationMs !== undefined) {
+      payload.decodeDurationMs = Math.round(detail.decodeDurationMs * 100) / 100;
+    }
+    if (detail.underrunMs !== undefined) {
+      payload.underrunMs = Math.round(detail.underrunMs * 100) / 100;
+    }
+    client.send(payload);
+  }
+
+  function reportIdleWhenFinished() {
+    if (!turn || turn.idleSent || !turn.done) return;
+    if (turn.audioStarted && (!turn.audioEnded || (player && !player.isIdle()))) return;
+    turn.idleSent = true;
+    client.send({ type: "playback", turnId: turn.turnId, event: "idle", timestampMs: Date.now() });
+    if (phase !== "listening") setPhase("ready");
+  }
+
+  function createTurnState(turnId) {
+    return {
+      turnId,
+      turnSequence: -1,
+      userEntry: null,
+      assistantEntry: null,
+      assistantText: "",
+      audioStarted: false,
+      audioEnded: false,
+      done: false,
+      idleSent: false,
+    };
+  }
+
+  function beginLocalTurn() {
+    stopPlayback();
+    turn = null;
+    setError("");
+  }
+
+  function stopPlayback() {
+    if (player) player.stop();
+  }
+
+  function clearPlaceholder() {
+    const placeholder = transcript.querySelector(".empty");
+    if (placeholder) placeholder.remove();
+  }
+
+  function addEntry(role, text) {
+    clearPlaceholder();
+    const entry = document.createElement("div");
+    entry.className = "turn " + role;
+    const who = document.createElement("div");
+    who.className = "who";
+    who.textContent = role === "user" ? "You" : "Shiva";
+    const what = document.createElement("div");
+    what.className = "what";
+    what.textContent = text;
+    entry.appendChild(who);
+    entry.appendChild(what);
+    transcript.appendChild(entry);
+    transcript.scrollTop = transcript.scrollHeight;
+    return what;
+  }
+
+  function setTranscriptText(element, text) {
+    if (!element) return;
+    element.textContent = text;
+    transcript.scrollTop = transcript.scrollHeight;
+  }
+
+  function ensureUserEntry(turnId) {
+    if (!turn || turn.turnId !== turnId) {
+      turn = createTurnState(turnId);
+    }
+    if (!turn.userEntry) turn.userEntry = addEntry("user", "");
+    return turn.userEntry;
+  }
+
+  function appendAssistantText(turnId, text) {
+    if (!turn || turn.turnId !== turnId) {
+      turn = createTurnState(turnId);
+    }
+    if (!turn.assistantEntry) turn.assistantEntry = addEntry("assistant", "");
+    turn.assistantText += text;
+    setTranscriptText(turn.assistantEntry, turn.assistantText);
+    if (phase === "thinking" || phase === "transcribing") setPhase("thinking");
+  }
+
+  function sendTypedMessage(text) {
+    if (!text) return;
+    if (connectionState !== "open") {
+      setError("Shiva's voice connection is not available yet.");
+      return;
+    }
+    ensureAudio();
+    beginLocalTurn();
+    addEntry("user", text);
+    client.send({ type: "user_text", text: text });
+    setPhase("thinking");
   }
 
   function selectedMimeType() {
     const choices = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
-    return choices.find((choice) => MediaRecorder.isTypeSupported(choice)) || "";
-  }
-
-  function primeAudio() {
-    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextConstructor) {
-      audio.hidden = false;
-      return;
+    for (const choice of choices) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(choice)) return choice;
     }
-    try {
-      if (!audioContext) {
-        audioContext = new AudioContextConstructor({ latencyHint: "interactive" });
-      }
-      audio.hidden = true;
-      if (audioContext.state === "suspended") {
-        void audioContext.resume().catch(() => {
-          audio.hidden = false;
-        });
-      }
-    } catch {
-      audioContext = null;
-      audio.hidden = false;
-    }
+    return "";
   }
 
   async function startRecording() {
-    if (recorder && recorder.state === "recording") return;
-    primeAudio();
-    if (!navigator.mediaDevices || !window.MediaRecorder) {
-      setStatus("This browser does not support microphone recording. Use typed input.", true);
+    if (recorder) return;
+    if (connectionState !== "open") {
+      setError("Shiva's voice connection is not available yet.");
       return;
     }
-    try {
-      setStatus("Requesting microphone…");
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = selectedMimeType();
-      recorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
-      recordedChunks = [];
-      recorder.addEventListener("dataavailable", (event) => {
-        if (event.data.size > 0) recordedChunks.push(event.data);
-      });
-      recorder.addEventListener("stop", handleRecording);
-      recorder.start();
-      mic.classList.add("recording");
-      setStatus("Listening… release to send");
-      if (!pressHeld) stopRecording();
-    } catch (error) {
-      stopMediaTracks();
-      setStatus(error instanceof Error ? error.message : "Microphone access failed.", true);
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      setError("This browser cannot record audio. Use the text input instead.");
+      return;
     }
+
+    ensureAudio();
+    beginLocalTurn();
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Microphone access failed.");
+      return;
+    }
+
+    const mimeType = selectedMimeType();
+    recorder = mimeType
+      ? new MediaRecorder(mediaStream, { mimeType: mimeType })
+      : new MediaRecorder(mediaStream);
+    uploadChain = Promise.resolve();
+    client.send({ type: "audio_start", mimeType: recorder.mimeType || mimeType || "audio/webm" });
+    recorder.addEventListener("dataavailable", (event) => {
+      if (!event.data || event.data.size === 0) return;
+      uploadChain = uploadChain.then(async () => {
+        const buffer = await event.data.arrayBuffer();
+        client.sendAudio(new Uint8Array(buffer));
+      });
+    });
+    recorder.addEventListener("stop", () => {
+      recorder = null;
+      releaseMicrophone();
+      uploadChain.then(() => {
+        client.send({ type: "audio_end" });
+        setPhase("transcribing");
+      }).catch(() => {
+        setError("The recording could not be sent.");
+      });
+    });
+    recorder.start(200);
+    micButton.classList.add("recording");
+    setPhase("listening");
+    if (!pressHeld) stopRecording();
   }
 
   function stopRecording() {
-    if (recorder && recorder.state === "recording") recorder.stop();
-    mic.classList.remove("recording");
-    stopMediaTracks();
+    micButton.classList.remove("recording");
+    if (recorder) {
+      recorder.stop();
+      return;
+    }
+    releaseMicrophone();
   }
 
-  function stopMediaTracks() {
+  function releaseMicrophone() {
     if (mediaStream) mediaStream.getTracks().forEach((track) => track.stop());
     mediaStream = null;
   }
 
-  async function handleRecording() {
-    const type = recorder && recorder.mimeType ? recorder.mimeType : "audio/webm";
-    const blob = new Blob(recordedChunks, { type });
-    recorder = null;
-    if (blob.size === 0) {
-      setStatus("No audio was recorded. Please try again.", true);
-      return;
-    }
-    const turnId = crypto.randomUUID();
-    try {
-      setStatus("Transcribing…");
-      const result = await fetch("/voice/transcribe", {
-        method: "POST",
-        headers: { "content-type": type, "x-shiva-voice-turn-id": turnId },
-        body: blob,
-      });
-      if (!result.ok) throw new Error(await publicError(result));
-      const transcript = await result.json();
-      setCopy(transcription, transcript.text);
-      await runChat(transcript.text, turnId);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Voice transcription failed.", true);
-    }
-  }
-
-  async function runChat(message, turnId) {
-    if (!message || !message.trim()) return;
-    stopSpeaking();
-    if (chatController) chatController.abort();
-    const controller = new AbortController();
-    chatController = controller;
-    const session = createSpeechSession(turnId);
-    speechSession = session;
-    setCopy(transcription, message);
-    setCopy(responseText, "");
-    setStatus("Shiva is thinking…");
-
-    try {
-      const result = await fetch("/voice/chat", {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-shiva-voice-turn-id": turnId },
-        body: JSON.stringify(conversation.chatPayload(message)),
-        signal: controller.signal,
-      });
-      if (!result.ok) throw new Error(await publicError(result));
-      conversation.captureResponse(result.headers);
-      if (!result.body) throw new Error("Shiva returned an empty stream.");
-
-      const reader = result.body.getReader();
-      const decoder = new TextDecoder();
-      let fullResponse = "";
-      try {
-        while (true) {
-          const part = await reader.read();
-          if (part.done) break;
-          const text = decoder.decode(part.value, { stream: true });
-          fullResponse += text;
-          if (chatController === controller) setCopy(responseText, fullResponse);
-          queueSpeechChunks(session, session.chunker.push(text));
-          if (chatController === controller) setStatus("Shiva is replying…");
-        }
-        const tail = decoder.decode();
-        fullResponse += tail;
-        if (chatController === controller) setCopy(responseText, fullResponse);
-        queueSpeechChunks(session, session.chunker.push(tail));
-        queueSpeechChunks(session, session.chunker.finish());
-        session.chatFinished = true;
-        maybeFinishSpeech(session);
-        if (speechSession === session && !session.idleReported) {
-          setStatus("Shiva is speaking…");
-        }
-      } finally {
-        reader.releaseLock();
-      }
-    } catch (error) {
-      const shouldSurfaceError =
-        chatController === controller && !controller.signal.aborted;
-      cancelSpeechSession(session);
-      if (shouldSurfaceError) throw error;
-    } finally {
-      if (chatController === controller) chatController = null;
-    }
-  }
-
-  function createSpeechSession(turnId) {
-    const session = {
-      turnId,
-      chunker: new StreamingSpeechChunker(),
-      queue: null,
-      nextSequence: 0,
-      unsettledChunks: 0,
-      settledSequences: new Set(),
-      sources: new Set(),
-      playbackTimers: new Set(),
-      scheduledUntil: null,
-      playbackMode: audioContext ? "web-audio" : "fallback",
-      fallbackQueue: [],
-      fallbackPlaying: false,
-      fallbackBlocked: false,
-      cancelFallbackWait: null,
-      currentFallbackUrl: null,
-      telemetryTail: Promise.resolve(),
-      chatFinished: false,
-      cancelled: false,
-      idleReported: false,
-    };
-    session.queue = new SpeechSynthesisQueue({
-      worker: (item, signal) => synthesizeSpeech(session, item, signal),
-      onReady: async (item, wav, signal) => {
-        try {
-          if (!session.cancelled && !signal.aborted) {
-            await scheduleSpeech(session, item, wav, signal);
-          }
-        } finally {
-          settleSpeechChunk(session, item.sequence);
-        }
-      },
-      onError: (error, item) => {
-        settleSpeechChunk(session, item.sequence);
-        if (
-          speechSession === session &&
-          !session.cancelled &&
-          !(error instanceof DOMException && error.name === "AbortError")
-        ) {
-          setStatus(error instanceof Error ? error.message : "Speech synthesis failed.", true);
-        }
-      },
-      onIdle: () => maybeFinishSpeech(session),
-    });
-    return session;
-  }
-
-  function queueSpeechChunks(session, chunks) {
-    for (const text of chunks) {
-      if (session.cancelled || !text.trim()) continue;
-      const item = {
-        sequence: session.nextSequence++,
-        text: text.trim(),
-        textReadyAt: Date.now(),
-      };
-      session.unsettledChunks += 1;
-      if (!session.queue.enqueue(item)) {
-        settleSpeechChunk(session, item.sequence);
-      }
-    }
-  }
-
-  async function synthesizeSpeech(session, item, signal) {
-    const result = await fetch("/voice/synthesize", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-shiva-voice-turn-id": session.turnId,
-        "x-shiva-voice-sequence": String(item.sequence),
-        "x-shiva-text-ready-at": String(item.textReadyAt),
-      },
-      body: JSON.stringify({ text: item.text }),
-      signal,
-    });
-    if (!result.ok) throw new Error(await publicError(result));
-    return result.arrayBuffer();
-  }
-
-  async function scheduleSpeech(session, item, wav, signal) {
-    if (session.playbackMode === "web-audio" && audioContext) {
-      try {
-        if (audioContext.state === "suspended") await audioContext.resume();
-        const buffer = await audioContext.decodeAudioData(wav.slice(0));
-        if (session.cancelled || signal.aborted) return;
-        scheduleAudioBuffer(session, item.sequence, buffer);
-        return;
-      } catch (error) {
-        if (session.cancelled || signal.aborted) return;
-        session.playbackMode = "fallback";
-        console.warn("[SHIVA VOICE] Web Audio playback preparation failed; using HTML audio fallback for this turn.", error);
-        audio.hidden = false;
-      }
-    } else {
-      session.playbackMode = "fallback";
-    }
-
-    const url = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
-    session.fallbackQueue.push({ sequence: item.sequence, url });
-    void playFallbackQueue(session);
-  }
-
-  function scheduleAudioBuffer(session, sequence, buffer) {
-    const channels = [];
-    for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
-      channels.push(buffer.getChannelData(channel));
-    }
-    const audible = findAudibleWindow(channels, buffer.sampleRate);
-    if (audible.durationSeconds <= 0) return;
-
-    const plan = planAudioPlayback(
-      audioContext.currentTime,
-      session.scheduledUntil,
-      audible.durationSeconds,
-    );
-    const previousScheduledUntil = session.scheduledUntil;
-    const source = audioContext.createBufferSource();
-    source.buffer = buffer;
-    source.connect(audioContext.destination);
-    session.sources.add(source);
-    session.scheduledUntil = plan.endAt;
-    source.addEventListener("ended", () => {
-      session.sources.delete(source);
-      if (!session.cancelled) {
-        reportPlayback(session, "ended", sequence);
-        if (
-          session.playbackMode === "fallback" &&
-          session.sources.size === 0 &&
-          session.fallbackQueue.length > 0
-        ) {
-          void playFallbackQueue(session);
-        }
-        maybeFinishSpeech(session);
-      }
-    }, { once: true });
-    try {
-      source.start(plan.startAt, audible.offsetSeconds, audible.durationSeconds);
-    } catch (error) {
-      session.sources.delete(source);
-      session.scheduledUntil = previousScheduledUntil;
-      try { source.disconnect(); } catch { /* Nothing remains connected. */ }
-      throw error;
-    }
-    reportPlayback(session, "scheduled", sequence);
-    const startDelayMs = Math.max(0, (plan.startAt - audioContext.currentTime) * 1_000);
-    const startTimer = window.setTimeout(() => {
-      session.playbackTimers.delete(startTimer);
-      if (!session.cancelled) reportPlayback(session, "started", sequence);
-    }, startDelayMs);
-    session.playbackTimers.add(startTimer);
-    if (plan.underrunMs > 50) {
-      console.warn("[SHIVA VOICE UNDERRUN]", {
-        turnId: session.turnId,
-        sequence,
-        underrunMs: Math.round(plan.underrunMs),
-      });
-    }
-    setStatus("Shiva is speaking…");
-  }
-
-  async function playFallbackQueue(session) {
-    if (
-      session.fallbackPlaying ||
-      session.cancelled ||
-      session.sources.size > 0
-    ) {
-      return;
-    }
-    session.fallbackPlaying = true;
-    try {
-      while (!session.cancelled && session.fallbackQueue.length > 0) {
-        const item = session.fallbackQueue[0];
-        if (!item) break;
-        audio.src = item.url;
-        session.currentFallbackUrl = item.url;
-        reportPlayback(session, "scheduled", item.sequence);
-        const outcome = await playFallbackItem(session, item);
-        if (session.cancelled || outcome === "cancelled") return;
-
-        if (outcome === "ended") {
-          reportPlayback(session, "ended", item.sequence);
-        } else if (speechSession === session) {
-          setStatus("This audio chunk could not be played.", true);
-        }
-
-        if (session.fallbackQueue[0] === item) session.fallbackQueue.shift();
-        URL.revokeObjectURL(item.url);
-        if (session.currentFallbackUrl === item.url) session.currentFallbackUrl = null;
-        session.fallbackBlocked = false;
-      }
-    } finally {
-      session.fallbackPlaying = false;
-      session.cancelFallbackWait = null;
-      maybeFinishSpeech(session);
-    }
-  }
-
-  function playFallbackItem(session, item) {
-    return new Promise((resolve) => {
-      let settled = false;
-      let started = false;
-
-      const cleanup = () => {
-        audio.removeEventListener("playing", onPlaying);
-        audio.removeEventListener("ended", onEnded);
-        audio.removeEventListener("error", onError);
-        audio.removeEventListener("pause", onPause);
-        if (session.cancelFallbackWait === cancelWait) {
-          session.cancelFallbackWait = null;
-        }
-      };
-      const finish = (outcome) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve(outcome);
-      };
-      const onPlaying = () => {
-        session.fallbackBlocked = false;
-        if (!started) {
-          started = true;
-          reportPlayback(session, "started", item.sequence);
-        }
-        if (speechSession === session) setStatus("Shiva is speaking…");
-      };
-      const onEnded = () => finish("ended");
-      const onError = () => finish("error");
-      const onPause = () => {
-        if (session.cancelled) {
-          finish("cancelled");
-          return;
-        }
-        if (!audio.ended) {
-          session.fallbackBlocked = true;
-          if (speechSession === session) {
-            setStatus("Audio is paused. Press play to continue.");
-          }
-        }
-      };
-      const cancelWait = () => finish("cancelled");
-
-      audio.addEventListener("playing", onPlaying);
-      audio.addEventListener("ended", onEnded);
-      audio.addEventListener("error", onError);
-      audio.addEventListener("pause", onPause);
-      session.cancelFallbackWait = cancelWait;
-
-      try {
-        const playAttempt = audio.play();
-        void Promise.resolve(playAttempt)
-          .then(() => {
-            if (!settled && !session.cancelled && !started) onPlaying();
-          })
-          .catch(() => {
-            if (settled || session.cancelled || started) return;
-            session.fallbackBlocked = true;
-            if (speechSession === session) {
-              setStatus("Audio is ready. Press play to hear Shiva.");
-            }
-          });
-      } catch {
-        session.fallbackBlocked = true;
-        if (speechSession === session) {
-          setStatus("Audio is ready. Press play to hear Shiva.");
-        }
-      }
-    });
-  }
-
-  function settleSpeechChunk(session, sequence) {
-    if (session.settledSequences.has(sequence)) return;
-    session.settledSequences.add(sequence);
-    session.unsettledChunks = Math.max(0, session.unsettledChunks - 1);
-    maybeFinishSpeech(session);
-  }
-
-  function maybeFinishSpeech(session) {
-    if (
-      session.cancelled ||
-      !session.chatFinished ||
-      session.unsettledChunks > 0 ||
-      session.sources.size > 0 ||
-      session.fallbackPlaying ||
-      session.fallbackBlocked ||
-      session.fallbackQueue.length > 0
-    ) {
-      return;
-    }
-    reportPlaybackIdle(session);
-    if (speechSession === session) setStatus("Ready");
-  }
-
-  function reportPlayback(session, event, sequence) {
-    if (session.cancelled || session.idleReported) return;
-    queuePlaybackTelemetry(session, { event, sequence, timestampMs: Date.now() });
-  }
-
-  function reportPlaybackIdle(session) {
-    if (session.idleReported) return;
-    session.idleReported = true;
-    queuePlaybackTelemetry(session, { event: "idle", timestampMs: Date.now() });
-  }
-
-  function queuePlaybackTelemetry(session, payload) {
-    session.telemetryTail = session.telemetryTail.then(async () => {
-      try {
-        await fetch("/voice/playback", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-shiva-voice-turn-id": session.turnId,
-          },
-          body: JSON.stringify(payload),
-          keepalive: true,
-        });
-      } catch {
-        // Playback must not depend on optional telemetry delivery.
-      }
-    });
-  }
-
-  function cancelSpeechSession(session) {
-    if (!session || session.cancelled) return;
-    session.cancelled = true;
-    session.chunker.reset();
-    session.queue.cancel();
-    session.playbackTimers.forEach((timer) => window.clearTimeout(timer));
-    session.playbackTimers.clear();
-    session.sources.forEach((source) => {
-      try { source.stop(); } catch { /* Source may already have ended. */ }
-    });
-    session.sources.clear();
-    session.cancelFallbackWait?.();
-    session.cancelFallbackWait = null;
-    audio.pause();
-    audio.removeAttribute("src");
-    audio.load();
-    if (session.currentFallbackUrl) URL.revokeObjectURL(session.currentFallbackUrl);
-    session.currentFallbackUrl = null;
-    session.fallbackQueue.forEach((item) => URL.revokeObjectURL(item.url));
-    session.fallbackQueue = [];
-    session.fallbackPlaying = false;
-    session.fallbackBlocked = false;
-    reportPlaybackIdle(session);
-  }
-
-  function stopSpeaking() {
-    const session = speechSession;
-    if (session) cancelSpeechSession(session);
-    speechSession = null;
-  }
-
-  async function publicError(result) {
-    try {
-      const payload = await result.json();
-      return payload.error && payload.error.message ? payload.error.message : "Request failed.";
-    } catch {
-      return "Request failed.";
-    }
-  }
-
-  mic.addEventListener("pointerdown", (event) => {
-    event.preventDefault();
-    pressHeld = true;
-    mic.setPointerCapture(event.pointerId);
-    primeAudio();
-    void startRecording();
-  });
-  mic.addEventListener("pointerup", () => { pressHeld = false; stopRecording(); });
-  mic.addEventListener("pointercancel", () => { pressHeld = false; stopRecording(); });
   typedForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    const message = typedInput.value.trim();
-    if (!message) return;
-    primeAudio();
+    const text = typedInput.value.trim();
     typedInput.value = "";
-    void runChat(message, crypto.randomUUID()).catch((error) => {
-      setStatus(error instanceof Error ? error.message : "Chat failed.", true);
-    });
+    sendTypedMessage(text);
   });
-  stopButton.addEventListener("click", stopSpeaking);
+  micButton.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    pressHeld = true;
+    if (micButton.setPointerCapture) micButton.setPointerCapture(event.pointerId);
+    void startRecording();
+  });
+  micButton.addEventListener("pointerup", () => { pressHeld = false; stopRecording(); });
+  micButton.addEventListener("pointercancel", () => { pressHeld = false; stopRecording(); });
+  stopButton.addEventListener("click", () => {
+    stopPlayback();
+    client.send({ type: "interrupt" });
+    if (phase !== "listening") setPhase("ready");
+  });
   newButton.addEventListener("click", () => {
-    const controller = chatController;
-    chatController = null;
-    controller?.abort();
-    stopSpeaking();
+    stopPlayback();
+    client.send({ type: "interrupt" });
     conversation.clear();
-    setCopy(transcription, "");
-    setCopy(responseText, "");
-    setStatus("New conversation started");
+    client.send({ type: "session_start" });
+    turn = null;
+    transcript.textContent = "";
+    const placeholder = document.createElement("div");
+    placeholder.className = "empty";
+    placeholder.textContent = "Say something or type a message to start.";
+    transcript.appendChild(placeholder);
+    setError("");
   });
   window.addEventListener("pagehide", () => {
-    if (speechSession) cancelSpeechSession(speechSession);
+    stopPlayback();
+    client.close();
   });
+
+  client.connect();
 })();`;
 }

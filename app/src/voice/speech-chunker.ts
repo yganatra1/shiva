@@ -9,8 +9,13 @@ export interface StreamingSpeechChunkerOptions {
 /**
  * Turns incrementally streamed text into TTS-sized phrases.
  *
- * The implementation deliberately has no runtime dependencies. The browser
- * voice page embeds this class with `StreamingSpeechChunker.toString()`.
+ * The first phrase stays small so speech can start while Gemma is still
+ * generating; later phrases are larger so synthesis stays ahead of playback
+ * and prosody spans a full clause instead of a fragment.
+ *
+ * The implementation deliberately has no runtime dependencies so it can run
+ * unchanged inside the voice session and, if ever needed, in a browser through
+ * `StreamingSpeechChunker.toString()`.
  */
 export const StreamingSpeechChunker = (() => class {
   private buffer = "";
@@ -23,23 +28,23 @@ export const StreamingSpeechChunker = (() => class {
   private readonly hardMaxChars: number;
 
   constructor(options: StreamingSpeechChunkerOptions = {}) {
-    this.firstMinChars = Math.max(1, options.firstMinChars ?? 28);
+    this.firstMinChars = Math.max(1, options.firstMinChars ?? 40);
     this.firstTargetChars = Math.max(
       this.firstMinChars,
-      options.firstTargetChars ?? 56,
+      options.firstTargetChars ?? 80,
     );
     this.subsequentMinChars = Math.max(
       this.firstMinChars,
-      options.subsequentMinChars ?? 64,
+      options.subsequentMinChars ?? 100,
     );
     this.subsequentTargetChars = Math.max(
       this.subsequentMinChars,
-      options.subsequentTargetChars ?? 112,
+      options.subsequentTargetChars ?? 160,
     );
     this.hardMaxChars = Math.max(
       this.firstTargetChars,
       this.subsequentTargetChars,
-      options.hardMaxChars ?? 176,
+      options.hardMaxChars ?? 200,
     );
   }
 

@@ -6,6 +6,16 @@ export interface SpeechSynthesisQueueItem {
 
 export type SpeechSynthesisQueuePhase = "synthesis" | "delivery";
 
+/** The behaviour a voice turn depends on, without the generic class shape. */
+export interface SpeechSynthesisQueuePort<
+  TItem extends SpeechSynthesisQueueItem,
+> {
+  enqueue(item: TItem, signal?: AbortSignal): boolean;
+  cancel(reason?: unknown): void;
+  isIdle(): boolean;
+  whenIdle(): Promise<void>;
+}
+
 export interface SpeechSynthesisQueueOptions<
   TItem extends SpeechSynthesisQueueItem,
   TResult,

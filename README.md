@@ -5,18 +5,17 @@ Shiva is Yash's private personal AI. V0.3 preserves the Fastify/Ollama streaming
 ## Architecture
 
 ```text
-Text client  -> POST /chat -------┐
-Voice UI     -> POST /voice/chat -┴-> shared ShivaChatService
-                                      -> conversation + bounded working history
-                                      -> embeddinggemma -> memory retrieval/ranking
-                                      -> AIProvider -> Ollama/Gemma stream
-                                      -> persistence + memory extraction
-
-Voice UI -> /voice/transcribe -> internal Qwen ASR service
-Voice UI <- /voice/synthesize -> internal Qwen TTS service
+Text client  -> POST /chat ----------------┐
+Voice UI     -> WS   /voice/chat ----------┴-> shared ShivaChatService
+                                              -> conversation + bounded working history
+                                              -> embeddinggemma -> memory retrieval/ranking
+                                              -> AIProvider -> Ollama/Gemma stream
+                                              -> persistence + memory extraction
+                 VoiceSession also owns:
+                   ASR -> chunker -> serial Qwen TTS -> binary audio frames
 ```
 
-The API does not put model, embedding, or persistence details in route handlers. Provider and repository interfaces keep those boundaries explicit. `/chat` and `/voice/chat` share the same conversation, memory, persistence, cancellation, and model path; voice mode only adds speech-friendly response guidance. See [docs/memory-architecture.md](docs/memory-architecture.md) and [docs/voice-architecture.md](docs/voice-architecture.md).
+The API does not put model, embedding, or persistence details in route handlers. Provider and repository interfaces keep those boundaries explicit. `/chat` and the voice WebSocket share the same conversation, memory, persistence, cancellation, and model path; voice mode only adds speech-friendly response guidance. The live voice UI uses one persistent WebSocket and never calls `/voice/synthesize` directly. See [docs/memory-architecture.md](docs/memory-architecture.md) and [docs/voice-architecture.md](docs/voice-architecture.md).
 
 V0.3 does not add wake words, always-listening mode, streaming ASR, VAD, barge-in, speaker recognition, face recognition, voice cloning, tools/browser access, authentication, cloud fallback, procedural memory, or a knowledge graph.
 
@@ -172,13 +171,13 @@ Open the lightweight browser UI after starting Shiva:
 http://127.0.0.1:3000/voice
 ```
 
-The UI supports hold-to-talk, immediate transcription display, streamed response text, adaptive speech phrases, continuous Web Audio playback, stop speaking, typed fallback, new conversation, and automatic reuse of the existing conversation ID. A single synthesis worker prepares the next phrase while the current audio plays; Qwen TTS inference is never run concurrently by the browser queue.
+The UI supports hold-to-talk, a conversation transcript, streamed response text, continuous Web Audio playback, stop speaking, typed fallback, reconnect state, new conversation, and automatic reuse of the existing conversation ID over one persistent WebSocket. The backend owns ASR, Gemma streaming, speech chunking, and serial Qwen TTS; the browser only captures mic audio, renders text, and plays binary speech frames.
 
 Gateway endpoints:
 
-- `POST /voice/transcribe` accepts a supported audio body such as `audio/webm` and returns `{ "text": "...", "language": "English" }`.
-- `POST /voice/chat` has the same JSON body, streaming response, and `x-shiva-conversation-id` contract as `/chat`, but selects voice response style.
-- `POST /voice/synthesize` accepts `{ "text": "..." }` and returns `audio/wav`.
+- `WS /voice/chat` is the realtime voice session (JSON control both ways; binary mic and speech audio).
+- `POST /voice/transcribe` and `POST /voice/synthesize` remain for diagnostics/benchmarks only; the live UI does not call them.
+- `POST /voice/chat` remains a diagnostic text stream with voice response style and the same `x-shiva-conversation-id` contract as `/chat`.
 
 The Python services remain internal. In two separate shells from the repository root, after installing their isolated requirements on the GPU host:
 
@@ -241,9 +240,9 @@ Deferred automatic memory work emits a separate `[SHIVA PERF ASYNC]` record with
 
 Disable tracing again with `SHIVA_PERF_LOG=false`; it is off by default.
 
-Voice turns additionally emit `[SHIVA VOICE PERF]` with audio upload, ASR, voice-chat TTFT, first TTS request, TTS, and time-to-first-audio measurements. Every synthesized phrase emits `[SHIVA VOICE TTS PERF]` after playback with text length, text-ready/synthesis/playback timestamps, synthesis duration, generated audio duration, and real-time factor (`RTF = synthesis duration / audio duration`). Browser console warnings identify playback underruns over 50 ms.
+Voice turns additionally emit `[SHIVA VOICE PERF]` with audio upload, ASR, voice-chat TTFT, first TTS request, TTS, and time-to-first-audio measurements. Every synthesized phrase emits `[SHIVA VOICE TTS PERF]` with text length, queue/synthesis/websocket/receive/playback timestamps, synthesis duration, generated audio duration, real-time factor (`RTF = synthesis duration / audio duration`), decode duration, and underrun ms. Browser console warnings identify playback underruns over 50 ms.
 
-For voice turns, deferred automatic memory extraction waits until the browser reports that queued speech playback is idle, with a 120-second fail-safe. Explicit `remember...` persistence remains synchronous and is never deferred behind playback.
+For voice turns, deferred automatic memory extraction waits until the browser reports playback idle over the voice WebSocket, with a 120-second fail-safe. Explicit `remember...` persistence remains synchronous and is never deferred behind playback.
 
 ## Current RunPod direct runtime
 

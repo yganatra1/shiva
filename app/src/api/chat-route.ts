@@ -13,11 +13,6 @@ import {
   type ChatPerformanceLogSink,
   type ChatPerformanceOutcome,
 } from "../observability/chat-performance.js";
-import {
-  parseVoiceTurnId,
-  type VoicePerformanceTracker,
-} from "../voice/voice-performance.js";
-import type { VoicePlaybackCoordinator } from "../voice/playback-coordinator.js";
 import { ApiError } from "./api-error.js";
 
 const MAX_MESSAGE_CHARACTERS = 20_000;
@@ -25,8 +20,6 @@ const MAX_MESSAGE_CHARACTERS = 20_000;
 interface ChatRouteOptions {
   readonly performanceLogging: boolean;
   readonly performanceLogSink?: ChatPerformanceLogSink;
-  readonly voicePerformance?: VoicePerformanceTracker;
-  readonly voicePlaybackCoordinator?: VoicePlaybackCoordinator;
 }
 
 const chatRequestSchema = z
@@ -49,7 +42,12 @@ export function registerChatRoute(
   registerStreamingChatRoute(app, "/chat", "text", chatService, options);
 }
 
-export function registerVoiceChatRoute(
+/**
+ * Diagnostic voice-styled streaming chat over plain HTTP. The realtime browser
+ * client uses the `/voice/chat` WebSocket instead; this route exists so voice
+ * prompting can be exercised with curl and without audio.
+ */
+export function registerVoiceChatDiagnosticRoute(
   app: FastifyInstance,
   chatService: ShivaChatService,
   options: ChatRouteOptions,
@@ -71,13 +69,6 @@ function registerStreamingChatRoute(
   options: ChatRouteOptions,
 ): void {
   app.post<{ Body: unknown }>(path, async (request, reply) => {
-    const voicePlaybackCoordinator = options.voicePlaybackCoordinator;
-    const voiceTurnId = interactionMode === "voice"
-      ? parseVoiceTurnId(request.headers["x-shiva-voice-turn-id"])
-      : undefined;
-    if (voiceTurnId) {
-      options.voicePerformance?.markChatStarted(voiceTurnId);
-    }
     const performance = options.performanceLogging
       ? new ChatPerformanceTrace({
           requestId: request.id,
@@ -112,10 +103,6 @@ function registerStreamingChatRoute(
         );
       }
 
-      if (voiceTurnId) {
-        voicePlaybackCoordinator?.beginTurn(voiceTurnId);
-      }
-
       const clientDisconnectController = new AbortController();
       const abortOnPrematureClose = (): void => {
         if (!reply.raw.writableEnded) {
@@ -144,9 +131,6 @@ function registerStreamingChatRoute(
 
         for await (const chunk of preparedChat.chunks) {
           if (!streamStarted) {
-            if (voiceTurnId) {
-              options.voicePerformance?.markChatFirstToken(voiceTurnId);
-            }
             reply.hijack();
             reply.raw.writeHead(200, {
               "cache-control": "no-cache, no-transform",

@@ -10,7 +10,7 @@ export const VOICE_PERFORMANCE_STAGES = [
 export type VoicePerformanceStage =
   (typeof VOICE_PERFORMANCE_STAGES)[number];
 
-/** Existing turn-level performance entry retained for compatibility. */
+/** Turn-level summary for one voice exchange. */
 export interface VoicePerformanceLog {
   readonly kind: "voice";
   readonly turnId: string;
@@ -19,22 +19,33 @@ export interface VoicePerformanceLog {
   >;
 }
 
+/**
+ * Per speech chunk record covering the whole path from streamed text to the
+ * browser finishing playback. It exists to attribute audible gaps to
+ * synthesis speed, transport, decoding, or browser scheduling.
+ */
 export interface VoiceTtsChunkPerformanceLog {
   readonly kind: "voice-tts-chunk";
   readonly turnId: string;
-  readonly sequence: number;
-  readonly textLength: number;
+  readonly chunkId: number;
+  readonly textChars: number;
   readonly timestampsUnixMs: Readonly<{
     textReady: number | null;
+    queued: number | null;
     synthesisStarted: number;
-    synthesisEnded: number | null;
+    synthesisFinished: number | null;
+    websocketSent: number | null;
+    audioReceived: number | null;
     playbackScheduled: number | null;
     playbackStarted: number | null;
     playbackEnded: number | null;
   }>;
   readonly synthesisDurationMs: number | null;
   readonly audioDurationMs: number | null;
-  readonly rtf: number | null;
+  /** synthesisDurationMs / audioDurationMs; above 1 means slower than realtime. */
+  readonly realtimeFactor: number | null;
+  readonly decodeDurationMs: number | null;
+  readonly underrunMs: number | null;
 }
 
 export type VoicePerformanceEntry =
@@ -43,19 +54,33 @@ export type VoicePerformanceEntry =
 
 export type VoicePerformanceLogSink = (entry: VoicePerformanceEntry) => void;
 
-export type VoicePlaybackEvent = "scheduled" | "started" | "ended";
+export type VoicePlaybackEvent =
+  | "received"
+  | "scheduled"
+  | "started"
+  | "ended"
+  | "underrun";
+
+export interface VoicePlaybackEventDetail {
+  readonly decodeDurationMs?: number;
+  readonly underrunMs?: number;
+}
 
 interface VoiceTtsChunkTiming {
-  textLength: number;
+  textChars: number;
   textReadyAtUnixMs?: number;
-  synthesisStartedAt: number;
-  synthesisStartedAtUnixMs: number;
-  synthesisEndedAtUnixMs?: number;
+  queuedAtUnixMs?: number;
+  synthesisStartedAtUnixMs?: number;
+  synthesisFinishedAtUnixMs?: number;
   synthesisDurationMs?: number;
   audioDurationMs?: number;
+  websocketSentAtUnixMs?: number;
+  audioReceivedAtUnixMs?: number;
   playbackScheduledAtUnixMs?: number;
   playbackStartedAtUnixMs?: number;
   playbackEndedAtUnixMs?: number;
+  decodeDurationMs?: number;
+  underrunMs?: number;
   emitted: boolean;
 }
 
@@ -71,30 +96,14 @@ interface VoiceTurnTiming {
   readonly ttsChunks: Map<number, VoiceTtsChunkTiming>;
 }
 
-interface TtsStartMetadata {
-  readonly textLength: number;
+interface ChunkQueuedMetadata {
+  readonly textChars: number;
   readonly textReadyAtUnixMs?: number;
 }
 
 const TURN_RETENTION_MS = 10 * 60 * 1_000;
 const PLAYBACK_TELEMETRY_GRACE_MS = 500;
 const MAX_TRACKED_TURNS = 1_000;
-const VOICE_TURN_ID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-export function parseVoiceTurnId(value: unknown): string | undefined {
-  return typeof value === "string" && VOICE_TURN_ID.test(value)
-    ? value
-    : undefined;
-}
-
-export function parseVoiceTimestamp(value: unknown): number | undefined {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    return undefined;
-  }
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
-}
 
 export class VoicePerformanceTracker {
   private readonly turns = new Map<string, VoiceTurnTiming>();
@@ -108,7 +117,7 @@ export class VoicePerformanceTracker {
   beginAudioUpload(turnId: string): void {
     const now = this.nowFunction();
     const turn = this.ensureTurn(turnId, now);
-    turn.uploadStartedAt = now;
+    turn.uploadStartedAt ??= now;
   }
 
   markAudioUploaded(turnId: string): void {
@@ -125,7 +134,7 @@ export class VoicePerformanceTracker {
 
   markChatStarted(turnId: string): void {
     const now = this.nowFunction();
-    this.ensureTurn(turnId, now).chatStartedAt = now;
+    this.ensureTurn(turnId, now).chatStartedAt ??= now;
   }
 
   markChatFirstToken(turnId: string): void {
@@ -140,77 +149,95 @@ export class VoicePerformanceTracker {
     }
   }
 
-  markTtsStarted(
+  /** Records the moment a phrase left the chunker and entered the TTS queue. */
+  markChunkQueued(
     turnId: string,
-    sequence: number,
-    metadata: TtsStartMetadata,
-  ): number {
+    chunkId: number,
+    metadata: ChunkQueuedMetadata,
+  ): void {
+    const turn = this.ensureTurn(turnId);
+    const chunk = this.ensureChunk(turn, chunkId);
+    chunk.textChars = metadata.textChars;
+    chunk.queuedAtUnixMs ??= this.unixNowFunction();
+    if (metadata.textReadyAtUnixMs !== undefined) {
+      chunk.textReadyAtUnixMs ??= metadata.textReadyAtUnixMs;
+    }
+  }
+
+  /** Returns the monotonic start time to hand back to `finishTts`. */
+  markTtsStarted(turnId: string, chunkId: number): number {
     const now = this.nowFunction();
     const turn = this.ensureTurn(turnId, now);
-    if (sequence === 0 && turn.firstTtsStartedAt === undefined) {
+    if (chunkId === 0 && turn.firstTtsStartedAt === undefined) {
       turn.firstTtsStartedAt = now;
       const reference = turn.chatFirstTokenAt ?? turn.chatStartedAt;
       if (reference !== undefined) {
         this.record(turn, "first-tts-request", now - reference);
       }
     }
-    turn.ttsChunks.set(sequence, {
-      textLength: metadata.textLength,
-      ...(metadata.textReadyAtUnixMs !== undefined
-        ? { textReadyAtUnixMs: metadata.textReadyAtUnixMs }
-        : {}),
-      synthesisStartedAt: now,
-      synthesisStartedAtUnixMs: this.unixNowFunction(),
-      emitted: false,
-    });
+    const chunk = this.ensureChunk(turn, chunkId);
+    chunk.synthesisStartedAtUnixMs ??= this.unixNowFunction();
     return now;
   }
 
   finishTts(
     turnId: string,
-    sequence: number,
+    chunkId: number,
     startedAt: number,
-    audio: Uint8Array,
+    audioDurationMs?: number,
   ): void {
     const now = this.nowFunction();
     const turn = this.ensureTurn(turnId, now);
-    const chunk = turn.ttsChunks.get(sequence);
+    const chunk = turn.ttsChunks.get(chunkId);
     if (!chunk) {
       return;
     }
 
     chunk.synthesisDurationMs = roundMilliseconds(now - startedAt);
-    chunk.synthesisEndedAtUnixMs = this.unixNowFunction();
-    const audioDurationMs = getWavDurationMs(audio);
+    chunk.synthesisFinishedAtUnixMs = this.unixNowFunction();
     if (audioDurationMs !== undefined) {
       chunk.audioDurationMs = roundMilliseconds(audioDurationMs);
     }
-
-    if (sequence === 0) {
+    if (chunkId === 0) {
       this.record(turn, "tts-duration", now - startedAt);
-      this.record(turn, "time-to-first-audio", now - turn.startedAt);
-      this.emitSummary(turnId, turn);
     }
+    this.tryEmitCompleteChunk(turnId, chunkId, turn, chunk);
+  }
 
-    this.tryEmitCompleteChunk(turnId, sequence, turn, chunk);
+  /** Records the moment a binary audio frame was handed to the socket. */
+  markAudioSent(turnId: string, chunkId: number): void {
+    const now = this.nowFunction();
+    const turn = this.ensureTurn(turnId, now);
+    const chunk = turn.ttsChunks.get(chunkId);
+    if (!chunk) {
+      return;
+    }
+    chunk.websocketSentAtUnixMs ??= this.unixNowFunction();
+    if (chunkId === 0 && !turn.timings.has("time-to-first-audio")) {
+      this.record(turn, "time-to-first-audio", now - turn.startedAt);
+    }
   }
 
   recordPlaybackEvent(
     turnId: string,
-    sequence: number,
+    chunkId: number,
     event: VoicePlaybackEvent,
     timestampUnixMs = this.unixNowFunction(),
+    detail: VoicePlaybackEventDetail = {},
   ): void {
     const turn = this.turns.get(turnId);
     if (!turn) {
       return;
     }
-    const chunk = turn.ttsChunks.get(sequence);
+    const chunk = turn.ttsChunks.get(chunkId);
     if (!chunk) {
       return;
     }
 
     switch (event) {
+      case "received":
+        chunk.audioReceivedAtUnixMs = timestampUnixMs;
+        break;
       case "scheduled":
         chunk.playbackScheduledAtUnixMs = timestampUnixMs;
         break;
@@ -220,8 +247,24 @@ export class VoicePerformanceTracker {
       case "ended":
         chunk.playbackEndedAtUnixMs = timestampUnixMs;
         break;
+      case "underrun":
+        break;
     }
-    this.tryEmitCompleteChunk(turnId, sequence, turn, chunk);
+    if (detail.decodeDurationMs !== undefined) {
+      chunk.decodeDurationMs = roundMilliseconds(detail.decodeDurationMs);
+    }
+    if (detail.underrunMs !== undefined) {
+      chunk.underrunMs = roundMilliseconds(detail.underrunMs);
+    }
+    this.tryEmitCompleteChunk(turnId, chunkId, turn, chunk);
+  }
+
+  /** Emits the turn summary once every foreground stage has been observed. */
+  finishTurn(turnId: string): void {
+    const turn = this.turns.get(turnId);
+    if (turn) {
+      this.emitSummary(turnId, turn);
+    }
   }
 
   finishPlaybackTurn(turnId: string): void {
@@ -229,24 +272,27 @@ export class VoicePerformanceTracker {
     if (!turn) {
       return;
     }
+    this.emitSummary(turnId, turn);
     if ([...turn.ttsChunks.values()].every((chunk) => chunk.emitted)) {
       this.deleteTurn(turnId, turn);
       return;
     }
 
-    // Playback events are sent independently with keepalive fetches, so an
-    // idle request can overtake an immediately preceding ended request. Keep
-    // a short grace window before emitting a partial record.
+    // A browser can report whole-turn idle immediately after the last chunk
+    // ended, so keep a short grace window before emitting partial records.
     turn.cleanupTimeout ??= setTimeout(() => {
-      for (const [sequence, chunk] of turn.ttsChunks) {
-        this.emitTtsChunk(turnId, sequence, chunk);
+      for (const [chunkId, chunk] of turn.ttsChunks) {
+        this.emitTtsChunk(turnId, chunkId, chunk);
       }
       this.deleteTurn(turnId, turn);
     }, PLAYBACK_TELEMETRY_GRACE_MS);
     turn.cleanupTimeout.unref();
   }
 
-  private ensureTurn(turnId: string, startedAt = this.nowFunction()): VoiceTurnTiming {
+  private ensureTurn(
+    turnId: string,
+    startedAt = this.nowFunction(),
+  ): VoiceTurnTiming {
     const existing = this.turns.get(turnId);
     if (existing) {
       return existing;
@@ -260,6 +306,19 @@ export class VoicePerformanceTracker {
       ttsChunks: new Map(),
     };
     this.turns.set(turnId, created);
+    return created;
+  }
+
+  private ensureChunk(
+    turn: VoiceTurnTiming,
+    chunkId: number,
+  ): VoiceTtsChunkTiming {
+    const existing = turn.ttsChunks.get(chunkId);
+    if (existing) {
+      return existing;
+    }
+    const created: VoiceTtsChunkTiming = { textChars: 0, emitted: false };
+    turn.ttsChunks.set(chunkId, created);
     return created;
   }
 
@@ -288,7 +347,7 @@ export class VoicePerformanceTracker {
 
   private emitTtsChunk(
     turnId: string,
-    sequence: number,
+    chunkId: number,
     chunk: VoiceTtsChunkTiming,
   ): void {
     if (chunk.emitted) {
@@ -300,42 +359,47 @@ export class VoicePerformanceTracker {
     this.emit({
       kind: "voice-tts-chunk",
       turnId,
-      sequence,
-      textLength: chunk.textLength,
+      chunkId,
+      textChars: chunk.textChars,
       timestampsUnixMs: {
         textReady: chunk.textReadyAtUnixMs ?? null,
-        synthesisStarted: chunk.synthesisStartedAtUnixMs,
-        synthesisEnded: chunk.synthesisEndedAtUnixMs ?? null,
+        queued: chunk.queuedAtUnixMs ?? null,
+        synthesisStarted: chunk.synthesisStartedAtUnixMs ?? 0,
+        synthesisFinished: chunk.synthesisFinishedAtUnixMs ?? null,
+        websocketSent: chunk.websocketSentAtUnixMs ?? null,
+        audioReceived: chunk.audioReceivedAtUnixMs ?? null,
         playbackScheduled: chunk.playbackScheduledAtUnixMs ?? null,
         playbackStarted: chunk.playbackStartedAtUnixMs ?? null,
         playbackEnded: chunk.playbackEndedAtUnixMs ?? null,
       },
       synthesisDurationMs,
       audioDurationMs,
-      rtf:
+      realtimeFactor:
         synthesisDurationMs !== null &&
         audioDurationMs !== null &&
         audioDurationMs > 0
           ? roundRatio(synthesisDurationMs / audioDurationMs)
           : null,
+      decodeDurationMs: chunk.decodeDurationMs ?? null,
+      underrunMs: chunk.underrunMs ?? null,
     });
   }
 
   private tryEmitCompleteChunk(
     turnId: string,
-    sequence: number,
+    chunkId: number,
     turn: VoiceTurnTiming,
     chunk: VoiceTtsChunkTiming,
   ): void {
     if (
-      chunk.synthesisEndedAtUnixMs === undefined ||
+      chunk.synthesisFinishedAtUnixMs === undefined ||
       chunk.playbackScheduledAtUnixMs === undefined ||
       chunk.playbackStartedAtUnixMs === undefined ||
       chunk.playbackEndedAtUnixMs === undefined
     ) {
       return;
     }
-    this.emitTtsChunk(turnId, sequence, chunk);
+    this.emitTtsChunk(turnId, chunkId, chunk);
     if (
       turn.cleanupTimeout &&
       [...turn.ttsChunks.values()].every((candidate) => candidate.emitted)
@@ -363,10 +427,7 @@ export class VoicePerformanceTracker {
   private prune(now: number): void {
     for (const [turnId, turn] of this.turns) {
       if (now - turn.startedAt > TURN_RETENTION_MS) {
-        for (const [sequence, chunk] of turn.ttsChunks) {
-          this.emitTtsChunk(turnId, sequence, chunk);
-        }
-        this.deleteTurn(turnId, turn);
+        this.flushTurn(turnId, turn);
       }
     }
     while (this.turns.size >= MAX_TRACKED_TURNS) {
@@ -376,12 +437,16 @@ export class VoicePerformanceTracker {
       }
       const turn = this.turns.get(oldest);
       if (turn) {
-        for (const [sequence, chunk] of turn.ttsChunks) {
-          this.emitTtsChunk(oldest, sequence, chunk);
-        }
-        this.deleteTurn(oldest, turn);
+        this.flushTurn(oldest, turn);
       }
     }
+  }
+
+  private flushTurn(turnId: string, turn: VoiceTurnTiming): void {
+    for (const [chunkId, chunk] of turn.ttsChunks) {
+      this.emitTtsChunk(turnId, chunkId, chunk);
+    }
+    this.deleteTurn(turnId, turn);
   }
 }
 
@@ -393,17 +458,22 @@ export function formatVoicePerformanceLog(
     return [
       "[SHIVA VOICE TTS PERF]",
       `turn=${entry.turnId}`,
-      `sequence=${entry.sequence}`,
-      `text-length=${entry.textLength}`,
+      `chunk=${entry.chunkId}`,
+      `text-chars=${entry.textChars}`,
       `text-ready-at=${formatTimestamp(timestamps.textReady)}`,
+      `queued-at=${formatTimestamp(timestamps.queued)}`,
       `synthesis-start=${formatTimestamp(timestamps.synthesisStarted)}`,
-      `synthesis-end=${formatTimestamp(timestamps.synthesisEnded)}`,
+      `synthesis-end=${formatTimestamp(timestamps.synthesisFinished)}`,
       `synthesis=${formatNullableMilliseconds(entry.synthesisDurationMs)}`,
       `audio-duration=${formatNullableMilliseconds(entry.audioDurationMs)}`,
-      `rtf=${entry.rtf?.toFixed(3) ?? "n/a"}`,
+      `rtf=${entry.realtimeFactor?.toFixed(3) ?? "n/a"}`,
+      `websocket-sent-at=${formatTimestamp(timestamps.websocketSent)}`,
+      `audio-received-at=${formatTimestamp(timestamps.audioReceived)}`,
+      `decode=${formatNullableMilliseconds(entry.decodeDurationMs)}`,
       `playback-scheduled=${formatTimestamp(timestamps.playbackScheduled)}`,
       `playback-start=${formatTimestamp(timestamps.playbackStarted)}`,
       `playback-end=${formatTimestamp(timestamps.playbackEnded)}`,
+      `underrun=${formatNullableMilliseconds(entry.underrunMs)}`,
     ].join(" ");
   }
 
@@ -411,60 +481,7 @@ export function formatVoicePerformanceLog(
     const value = entry.timingsMs[stage];
     return value === null ? [] : [`${stage}=${value.toFixed(2)}ms`];
   });
-  return `[SHIVA VOICE PERF] ${timings.join(" ")}`;
-}
-
-export function getWavDurationMs(audio: Uint8Array): number | undefined {
-  if (audio.byteLength < 12) {
-    return undefined;
-  }
-  const view = new DataView(audio.buffer, audio.byteOffset, audio.byteLength);
-  if (
-    readFourCc(view, 0) !== "RIFF" ||
-    readFourCc(view, 8) !== "WAVE"
-  ) {
-    return undefined;
-  }
-
-  let byteRate: number | undefined;
-  let dataBytes: number | undefined;
-  let offset = 12;
-  while (offset + 8 <= view.byteLength) {
-    const chunkType = readFourCc(view, offset);
-    const declaredSize = view.getUint32(offset + 4, true);
-    const dataOffset = offset + 8;
-    const availableSize = Math.min(declaredSize, view.byteLength - dataOffset);
-
-    if (chunkType === "fmt " && availableSize >= 16) {
-      const candidate = view.getUint32(dataOffset + 8, true);
-      if (candidate > 0) {
-        byteRate = candidate;
-      }
-    } else if (chunkType === "data") {
-      dataBytes = availableSize;
-    }
-
-    if (byteRate !== undefined && dataBytes !== undefined) {
-      return (dataBytes / byteRate) * 1_000;
-    }
-
-    const paddedSize = declaredSize + (declaredSize % 2);
-    if (paddedSize > view.byteLength - dataOffset) {
-      break;
-    }
-    offset = dataOffset + paddedSize;
-  }
-
-  return undefined;
-}
-
-function readFourCc(view: DataView, offset: number): string {
-  return String.fromCharCode(
-    view.getUint8(offset),
-    view.getUint8(offset + 1),
-    view.getUint8(offset + 2),
-    view.getUint8(offset + 3),
-  );
+  return `[SHIVA VOICE PERF] turn=${entry.turnId} ${timings.join(" ")}`;
 }
 
 function roundMilliseconds(value: number): number {

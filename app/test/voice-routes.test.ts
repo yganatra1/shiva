@@ -13,10 +13,7 @@ import {
   type SynthesisInput,
   type TTSProvider,
 } from "../src/voice/provider.js";
-import type { VoicePerformanceEntry } from "../src/voice/voice-performance.js";
 import { createTestOverrides, testConfig } from "./test-support.js";
-
-const TURN_ID = "10000000-0000-4000-8000-000000000001";
 
 class FakeASRProvider implements ASRProvider {
   readonly inputs: ASRInput[] = [];
@@ -45,7 +42,7 @@ const chatProvider: AIProvider = {
   },
 };
 
-test("voice proxy routes use provider abstractions and serve the browser UI", async (context) => {
+test("voice page and diagnostic REST routes stay available", async (context) => {
   const asr = new FakeASRProvider();
   const tts = new FakeTTSProvider();
   const app = createApp(testConfig, {
@@ -59,10 +56,11 @@ test("voice proxy routes use provider abstractions and serve the browser UI", as
   assert.equal(page.statusCode, 200);
   assert.match(page.body, /getUserMedia/);
   assert.match(page.body, /\/voice\/chat/);
+  assert.match(page.body, /WebSocket/);
   assert.match(page.body, /AudioContext/);
-  assert.match(page.body, /\/voice\/playback/);
-  assert.match(page.body, /x-shiva-text-ready-at/);
-  assert.doesNotMatch(page.body, /synthesisChain/);
+  assert.doesNotMatch(page.body, /\/voice\/synthesize/);
+  assert.doesNotMatch(page.body, /\/voice\/playback/);
+  assert.doesNotMatch(page.body, /\/voice\/transcribe/);
   assert.doesNotMatch(page.body, /fetch\("\/chat"/);
 
   const transcription = await app.inject({
@@ -140,7 +138,7 @@ test("voice routes map invalid audio and provider outages safely", async (contex
   assert.equal(ttsUnavailable.json().error.code, "TTS_UNAVAILABLE");
 });
 
-test("voice chat reuses the shared pipeline and conversation ID with voice guidance", async (context) => {
+test("diagnostic voice chat reuses the shared pipeline and conversation ID", async (context) => {
   const prompts: readonly ChatMessage[][] = [];
   const mutablePrompts = prompts as ChatMessage[][];
   const provider: AIProvider = {
@@ -198,64 +196,7 @@ test("voice chat reuses the shared pipeline and conversation ID with voice guida
   );
 });
 
-test("voice performance tracing correlates upload, chat TTFT, and first audio", async (context) => {
-  const logs: VoicePerformanceEntry[] = [];
-  const app = createApp(
-    { ...testConfig, performanceLogging: true },
-    {
-      ...createTestOverrides(chatProvider),
-      asrProvider: new FakeASRProvider(),
-      ttsProvider: new FakeTTSProvider(),
-      voicePerformanceLogSink: (entry) => logs.push(entry),
-    },
-  );
-  context.after(() => app.close());
-
-  await app.inject({
-    method: "POST",
-    url: "/voice/transcribe",
-    headers: {
-      "content-type": "audio/webm",
-      "x-shiva-voice-turn-id": TURN_ID,
-    },
-    payload: Buffer.from([1]),
-  });
-  await app.inject({
-    method: "POST",
-    url: "/voice/chat",
-    headers: {
-      "content-type": "application/json",
-      "x-shiva-voice-turn-id": TURN_ID,
-    },
-    payload: { message: "Hello" },
-  });
-  await app.inject({
-    method: "POST",
-    url: "/voice/synthesize",
-    headers: {
-      "content-type": "application/json",
-      "x-shiva-voice-turn-id": TURN_ID,
-      "x-shiva-voice-sequence": "0",
-    },
-    payload: { text: "Hello." },
-  });
-
-  assert.equal(logs.length, 1);
-  const summary = logs.find((entry) => entry.kind === "voice");
-  assert.ok(summary);
-  for (const stage of [
-    "audio-upload",
-    "asr-duration",
-    "chat-ttft",
-    "first-tts-request",
-    "tts-duration",
-    "time-to-first-audio",
-  ] as const) {
-    assert.equal(typeof summary.timingsMs[stage], "number", stage);
-  }
-});
-
-test("browser conversation state captures, reuses, and clears the existing ID contract", () => {
+test("browser conversation state remembers and clears the conversation ID", () => {
   const values = new Map<string, string>();
   const storage = {
     getItem: (key: string) => values.get(key) ?? null,
@@ -263,15 +204,15 @@ test("browser conversation state captures, reuses, and clears the existing ID co
     removeItem: (key: string) => void values.delete(key),
   };
   const state = new VoiceConversationState(storage);
+  const turnId = "10000000-0000-4000-8000-000000000001";
 
-  assert.deepEqual(state.chatPayload("First"), { message: "First" });
-  state.captureResponse({ get: () => TURN_ID });
-  assert.deepEqual(state.chatPayload("Second"), {
-    message: "Second",
-    conversationId: TURN_ID,
-  });
+  assert.equal(state.current(), null);
+  state.remember(turnId);
+  assert.equal(state.current(), turnId);
+  state.remember(turnId);
+  assert.equal(state.current(), turnId);
   state.clear();
-  assert.deepEqual(state.chatPayload("Fresh"), { message: "Fresh" });
+  assert.equal(state.current(), null);
 });
 
 test("served voice client is valid framework-free JavaScript", () => {
