@@ -1,6 +1,8 @@
 import fastifyWebsocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 
+import { createAgentRuntime } from "./agent/runtime.js";
+import type { AgentOrchestratorPort } from "./agent/types.js";
 import {
   registerChatRoute,
   registerVoiceChatDiagnosticRoute,
@@ -50,6 +52,7 @@ export interface AppOverrides {
   readonly ttsProvider?: TTSProvider;
   readonly voicePerformanceLogSink?: VoicePerformanceLogSink;
   readonly voicePlaybackCoordinator?: VoicePlaybackCoordinator;
+  readonly agentOrchestrator?: AgentOrchestratorPort;
 }
 
 export function createApp(config: AppConfig, overrides: AppOverrides = {}): FastifyInstance {
@@ -125,6 +128,13 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     embeddingProvider,
     extractionEngine,
   );
+  const agentOrchestrator =
+    overrides.agentOrchestrator ??
+    (database
+      ? createAgentRuntime(database.db, provider, config, (error) => {
+          app.log.error({ err: error }, "Agent audit finalization failed");
+        })
+      : undefined);
   const chatService = new ShivaChatService({
     provider,
     repository,
@@ -132,7 +142,9 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     memoryService,
     userId: config.userId,
     userName: config.userName,
+    timeZone: config.timeZone,
     workingMemoryMessageLimit: config.workingMemoryMessageLimit,
+    ...(agentOrchestrator ? { agentOrchestrator } : {}),
     automaticMemoryGate: {
       waitUntilReady: async () =>
         (await voicePlaybackCoordinator.waitUntilAllIdle()) !== "closed",

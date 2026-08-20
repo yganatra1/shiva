@@ -116,6 +116,15 @@ export class ChatPerformanceTrace {
     this.record("total-ttft", now - this.startedAt);
   }
 
+  markResponseFirstToken(): void {
+    if (this.firstTokenAt !== undefined) {
+      return;
+    }
+    const now = this.nowFunction();
+    this.firstTokenAt = now;
+    this.record("total-ttft", now - this.startedAt);
+  }
+
   markOllamaComplete(): void {
     const now = this.nowFunction();
     if (this.ollamaStartedAt !== undefined) {

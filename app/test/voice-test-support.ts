@@ -245,6 +245,7 @@ export function createChatService(
     ),
     userId: testConfig.userId,
     userName: testConfig.userName,
+    timeZone: testConfig.timeZone,
     workingMemoryMessageLimit: testConfig.workingMemoryMessageLimit,
     // Mirrors the production wiring so deferred memory cannot compete with
     // live speech in tests either.

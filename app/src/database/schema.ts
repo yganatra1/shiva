@@ -10,6 +10,7 @@ import {
   real,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   vector,
 } from "drizzle-orm/pg-core";
@@ -30,6 +31,24 @@ export const memoryStatus = pgEnum("memory_status", [
   "superseded",
   "archived",
 ]);
+export const agentRunStatus = pgEnum("agent_run_status", [
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "max_steps",
+]);
+export const skillRunStatus = pgEnum("skill_run_status", [
+  "running",
+  "succeeded",
+  "failed",
+  "denied",
+  "cancelled",
+]);
+export const expenseSheetBindingStatus = pgEnum(
+  "expense_sheet_binding_status",
+  ["provisioning", "ready"],
+);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
@@ -42,6 +61,61 @@ export const users = pgTable("users", {
     .$onUpdate(() => new Date())
     .notNull(),
 });
+
+/**
+ * Per-user pointer to Shiva's externally stored expense ledger.
+ *
+ * This table contains only Google resource identifiers and provisioning state;
+ * expense rows and Google credentials must never be persisted here.
+ */
+export const expenseSheetBindings = pgTable(
+  "expense_sheet_bindings",
+  {
+    userId: uuid("user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    spreadsheetId: text("spreadsheet_id"),
+    sheetId: integer("sheet_id"),
+    status: expenseSheetBindingStatus("status")
+      .default("provisioning")
+      .notNull(),
+    schemaVersion: integer("schema_version").default(1).notNull(),
+    leaseOwner: uuid("lease_owner"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("expense_sheet_bindings_spreadsheet_unique")
+      .on(table.spreadsheetId)
+      .where(sql`${table.spreadsheetId} IS NOT NULL`),
+    check(
+      "expense_sheet_bindings_spreadsheet_not_empty",
+      sql`${table.spreadsheetId} IS NULL OR length(btrim(${table.spreadsheetId})) > 0`,
+    ),
+    check(
+      "expense_sheet_bindings_sheet_id_nonnegative",
+      sql`${table.sheetId} IS NULL OR ${table.sheetId} >= 0`,
+    ),
+    check(
+      "expense_sheet_bindings_schema_version_positive",
+      sql`${table.schemaVersion} > 0`,
+    ),
+    check(
+      "expense_sheet_bindings_lease_shape",
+      sql`(${table.leaseOwner} IS NULL) = (${table.leaseExpiresAt} IS NULL)`,
+    ),
+    check(
+      "expense_sheet_bindings_ready_shape",
+      sql`${table.status} <> 'ready' OR (${table.spreadsheetId} IS NOT NULL AND ${table.sheetId} IS NOT NULL AND ${table.leaseOwner} IS NULL)`,
+    ),
+  ],
+);
 
 export const conversations = pgTable(
   "conversations",
@@ -89,6 +163,87 @@ export const messages = pgTable(
       table.conversationId,
       table.createdAt.desc(),
       table.id.desc(),
+    ),
+  ],
+);
+
+export const agentRuns = pgTable(
+  "agent_runs",
+  {
+    id: uuid("id").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    request: text("request").notNull(),
+    status: agentRunStatus("status").default("running").notNull(),
+    stepCount: integer("step_count").default(0).notNull(),
+    errorCode: text("error_code"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    durationMs: integer("duration_ms"),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .default({})
+      .notNull(),
+  },
+  (table) => [
+    check("agent_runs_request_not_empty", sql`length(btrim(${table.request})) > 0`),
+    check("agent_runs_step_count_nonnegative", sql`${table.stepCount} >= 0`),
+    check(
+      "agent_runs_duration_nonnegative",
+      sql`${table.durationMs} IS NULL OR ${table.durationMs} >= 0`,
+    ),
+    index("agent_runs_user_started_idx").on(
+      table.userId,
+      table.startedAt.desc(),
+    ),
+    index("agent_runs_conversation_started_idx").on(
+      table.conversationId,
+      table.startedAt.desc(),
+    ),
+  ],
+);
+
+export const skillRuns = pgTable(
+  "skill_runs",
+  {
+    id: uuid("id").primaryKey(),
+    agentRunId: uuid("agent_run_id")
+      .notNull()
+      .references(() => agentRuns.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    skill: text("skill").notNull(),
+    input: jsonb("input").$type<unknown>().notNull(),
+    permissions: text("permissions").array().notNull(),
+    result: jsonb("result").$type<unknown>(),
+    status: skillRunStatus("status").default("running").notNull(),
+    errorCode: text("error_code"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    durationMs: integer("duration_ms"),
+  },
+  (table) => [
+    check("skill_runs_skill_not_empty", sql`length(btrim(${table.skill})) > 0`),
+    check(
+      "skill_runs_duration_nonnegative",
+      sql`${table.durationMs} IS NULL OR ${table.durationMs} >= 0`,
+    ),
+    index("skill_runs_agent_started_idx").on(
+      table.agentRunId,
+      table.startedAt,
+    ),
+    index("skill_runs_user_skill_started_idx").on(
+      table.userId,
+      table.skill,
+      table.startedAt.desc(),
     ),
   ],
 );

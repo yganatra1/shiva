@@ -59,10 +59,36 @@ const postgresqlUrlSchema = z
       });
     }
   });
+const httpsBaseUrlSchema = httpBaseUrlSchema.superRefine((value, context) => {
+  if (new URL(value).protocol !== "https:") {
+    context.addIssue({
+      code: "custom",
+      message: "must use the https protocol",
+    });
+  }
+});
+const braveSearchUrlSchema = httpsBaseUrlSchema.refine(
+  (value) => new URL(value).hostname === "api.search.brave.com",
+  { message: "must use the official api.search.brave.com host" },
+);
 
 const booleanEnvironmentSchema = z
   .enum(["true", "false"])
   .transform((value) => value === "true");
+const optionalSecretSchema = z
+  .string()
+  .transform((value): string | undefined => value.trim() || undefined)
+  .optional();
+const optionalSheetIdSchema = optionalSecretSchema.refine(
+  (value) => value === undefined || /^[A-Za-z0-9_-]{5,256}$/.test(value),
+  { message: "must be a Google spreadsheet ID, not a full URL" },
+);
+const timeZoneSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(255)
+  .refine(isValidTimeZone, { message: "must be a valid IANA time zone" });
 
 const numericEnvironmentValue = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 const ollamaKeepAliveSchema = z
@@ -74,7 +100,8 @@ const ollamaKeepAliveSchema = z
     numericEnvironmentValue.test(value) ? Number(value) : value,
   );
 
-const environmentSchema = z.object({
+const environmentSchema = z
+  .object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   HOST: z.string().trim().min(1).max(255).default("127.0.0.1"),
   OLLAMA_URL: httpBaseUrlSchema.default("http://127.0.0.1:11434"),
@@ -107,6 +134,38 @@ const environmentSchema = z.object({
     .uuid()
     .default("00000000-0000-4000-8000-000000000001"),
   SHIVA_USER_NAME: z.string().trim().min(1).max(255).default("Yash"),
+  SHIVA_TIME_ZONE: timeZoneSchema.default("Asia/Kolkata"),
+  AGENT_MAX_STEPS: z.coerce.number().int().min(1).max(32).default(8),
+  AGENT_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(1_800_000)
+    .default(300_000),
+  EXPENSE_SHEET_ID: optionalSheetIdSchema,
+  EXPENSE_SHEET_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(120_000)
+    .default(15_000),
+  GOOGLE_OAUTH_CLIENT_ID: optionalSecretSchema,
+  GOOGLE_OAUTH_CLIENT_SECRET: optionalSecretSchema,
+  GOOGLE_OAUTH_REFRESH_TOKEN: optionalSecretSchema,
+  BRAVE_SEARCH_API_KEY: optionalSecretSchema,
+  BRAVE_SEARCH_URL: braveSearchUrlSchema.default("https://api.search.brave.com"),
+  WEB_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(120_000)
+    .default(15_000),
+  WEB_MAX_CONTENT_BYTES: z.coerce
+    .number()
+    .int()
+    .min(16_384)
+    .max(2_097_152)
+    .default(524_288),
   EMBEDDING_MODEL: z.string().trim().min(1).max(255).default("embeddinggemma"),
   EMBEDDING_REQUEST_TIMEOUT_MS: z.coerce
     .number()
@@ -157,7 +216,29 @@ const environmentSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
-});
+  })
+  .superRefine((environment, context) => {
+    const oauth = [
+      environment.GOOGLE_OAUTH_CLIENT_ID,
+      environment.GOOGLE_OAUTH_CLIENT_SECRET,
+      environment.GOOGLE_OAUTH_REFRESH_TOKEN,
+    ];
+    if (oauth.some(Boolean) && !oauth.every(Boolean)) {
+      for (const key of [
+        "GOOGLE_OAUTH_CLIENT_ID",
+        "GOOGLE_OAUTH_CLIENT_SECRET",
+        "GOOGLE_OAUTH_REFRESH_TOKEN",
+      ] as const) {
+        if (!environment[key]) {
+          context.addIssue({
+            code: "custom",
+            path: [key],
+            message: "is required when Google user OAuth is configured",
+          });
+        }
+      }
+    }
+  });
 
 export interface AppConfig {
   readonly port: number;
@@ -172,6 +253,20 @@ export interface AppConfig {
   readonly databaseSsl: boolean;
   readonly userId: string;
   readonly userName: string;
+  readonly timeZone: string;
+  readonly agentMaxSteps: number;
+  readonly agentRequestTimeoutMs: number;
+  readonly expenseSheetId?: string;
+  readonly expenseSheetRequestTimeoutMs: number;
+  readonly googleUserOAuth?: {
+    readonly clientId: string;
+    readonly clientSecret: string;
+    readonly refreshToken: string;
+  };
+  readonly braveSearchApiKey?: string;
+  readonly braveSearchUrl: string;
+  readonly webRequestTimeoutMs: number;
+  readonly webMaxContentBytes: number;
   readonly embeddingModel: string;
   readonly embeddingRequestTimeoutMs: number;
   readonly workingMemoryMessageLimit: number;
@@ -216,6 +311,31 @@ export function loadConfig(): AppConfig {
     databaseSsl: result.data.DATABASE_SSL,
     userId: result.data.SHIVA_USER_ID,
     userName: result.data.SHIVA_USER_NAME,
+    timeZone: result.data.SHIVA_TIME_ZONE,
+    agentMaxSteps: result.data.AGENT_MAX_STEPS,
+    agentRequestTimeoutMs: result.data.AGENT_REQUEST_TIMEOUT_MS,
+    ...(result.data.EXPENSE_SHEET_ID
+      ? { expenseSheetId: result.data.EXPENSE_SHEET_ID }
+      : {}),
+    expenseSheetRequestTimeoutMs:
+      result.data.EXPENSE_SHEET_REQUEST_TIMEOUT_MS,
+    ...(result.data.GOOGLE_OAUTH_CLIENT_ID &&
+    result.data.GOOGLE_OAUTH_CLIENT_SECRET &&
+    result.data.GOOGLE_OAUTH_REFRESH_TOKEN
+      ? {
+          googleUserOAuth: {
+            clientId: result.data.GOOGLE_OAUTH_CLIENT_ID,
+            clientSecret: result.data.GOOGLE_OAUTH_CLIENT_SECRET,
+            refreshToken: result.data.GOOGLE_OAUTH_REFRESH_TOKEN,
+          },
+        }
+      : {}),
+    ...(result.data.BRAVE_SEARCH_API_KEY
+      ? { braveSearchApiKey: result.data.BRAVE_SEARCH_API_KEY }
+      : {}),
+    braveSearchUrl: result.data.BRAVE_SEARCH_URL,
+    webRequestTimeoutMs: result.data.WEB_REQUEST_TIMEOUT_MS,
+    webMaxContentBytes: result.data.WEB_MAX_CONTENT_BYTES,
     embeddingModel: result.data.EMBEDDING_MODEL,
     embeddingRequestTimeoutMs: result.data.EMBEDDING_REQUEST_TIMEOUT_MS,
     workingMemoryMessageLimit: result.data.WORKING_MEMORY_MESSAGE_LIMIT,
@@ -230,4 +350,13 @@ export function loadConfig(): AppConfig {
     performanceLogging: result.data.SHIVA_PERF_LOG,
     nodeEnv: result.data.NODE_ENV,
   };
+}
+
+function isValidTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
+    return true;
+  } catch {
+    return false;
+  }
 }

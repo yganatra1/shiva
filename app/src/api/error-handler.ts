@@ -1,5 +1,10 @@
 import type { FastifyInstance } from "fastify";
 
+import {
+  AgentCancelledError,
+  AgentEvidenceError,
+  AgentTimeoutError,
+} from "../agent/agent-loop.js";
 import { AIProviderError } from "../brain/ai-provider.js";
 import { VoiceProviderError } from "../voice/provider.js";
 import { ApiError } from "./api-error.js";
@@ -55,6 +60,30 @@ function toPublicError(error: unknown): PublicError {
       statusCode: error.statusCode,
       code: error.code,
       message: error.publicMessage,
+    };
+  }
+
+  if (error instanceof AgentCancelledError) {
+    return {
+      statusCode: 499,
+      code: "REQUEST_CANCELLED",
+      message: "The request was cancelled.",
+    };
+  }
+
+  if (error instanceof AgentEvidenceError) {
+    return {
+      statusCode: 502,
+      code: "AGENT_INVALID_RESPONSE",
+      message: "Shiva could not verify the required skill result.",
+    };
+  }
+
+  if (error instanceof AgentTimeoutError) {
+    return {
+      statusCode: 504,
+      code: "AGENT_TIMEOUT",
+      message: "Shiva's skill request did not complete in time.",
     };
   }
 

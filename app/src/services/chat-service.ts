@@ -3,6 +3,7 @@ import type {
   ChatChunk,
   ChatMessage,
 } from "../brain/ai-provider.js";
+import type { AgentOrchestratorPort } from "../agent/types.js";
 import { SHIVA_SYSTEM_PROMPT } from "../brain/system-prompt.js";
 import {
   isExplicitMemoryRequest,
@@ -28,7 +29,9 @@ interface ShivaChatServiceOptions {
   readonly memoryService: MemoryService;
   readonly userId: string;
   readonly userName: string;
+  readonly timeZone: string;
   readonly workingMemoryMessageLimit: number;
+  readonly agentOrchestrator?: AgentOrchestratorPort;
   readonly automaticMemoryGate?: {
     waitUntilReady(): Promise<boolean>;
     isClosed(): boolean;
@@ -136,6 +139,21 @@ export class ShivaChatService {
           interaction.mode,
         ),
     );
+    const agentResult =
+      !explicitRequest && this.options.agentOrchestrator?.shouldHandle(message)
+        ? await this.options.agentOrchestrator.run({
+            userMessage: message,
+            conversationId: conversation.id,
+            userId: this.options.userId,
+            userName: this.options.userName,
+            timeZone: this.options.timeZone,
+            // The agent planner owns its system contract. Preserve voice,
+            // memory, and conversation context without injecting the direct
+            // chat system prompt as a competing planner instruction.
+            contextMessages: messages.slice(1),
+            ...(signal ? { signal } : {}),
+          })
+        : undefined;
 
     return {
       conversationId: conversation.id,
@@ -145,6 +163,7 @@ export class ShivaChatService {
         recentMessages,
         messages,
         !explicitRequest,
+        agentResult?.response,
         signal,
         performance,
       ),
@@ -178,21 +197,27 @@ export class ShivaChatService {
     recentMessages: readonly StoredMessage[],
     messages: readonly ChatMessage[],
     deferMemoryExtraction: boolean,
+    agentResponse?: string,
     signal?: AbortSignal,
     performance?: ChatPerformanceTrace,
   ): AsyncIterable<ChatChunk> {
     let assistantResponse = "";
-    const input = signal ? { messages, signal } : { messages };
-
-    performance?.markBeforeOllama();
-    try {
-      for await (const chunk of this.options.provider.streamChat(input)) {
-        performance?.markOllamaFirstToken();
-        assistantResponse += chunk.content;
-        yield chunk;
+    if (agentResponse !== undefined) {
+      performance?.markResponseFirstToken();
+      assistantResponse = agentResponse;
+      yield { content: agentResponse };
+    } else {
+      const input = signal ? { messages, signal } : { messages };
+      performance?.markBeforeOllama();
+      try {
+        for await (const chunk of this.options.provider.streamChat(input)) {
+          performance?.markOllamaFirstToken();
+          assistantResponse += chunk.content;
+          yield chunk;
+        }
+      } finally {
+        performance?.markOllamaComplete();
       }
-    } finally {
-      performance?.markOllamaComplete();
     }
 
     if (assistantResponse.trim().length === 0) {

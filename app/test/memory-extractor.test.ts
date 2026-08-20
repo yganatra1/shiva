@@ -6,9 +6,11 @@ import type {
   ChatInput,
 } from "../src/brain/ai-provider.js";
 import {
+  MAX_EXTRACTED_MEMORIES,
   MemoryExtractionError,
   MemoryExtractor,
 } from "../src/memory/memory-extractor.js";
+import type { MemoryRecord } from "../src/memory/types.js";
 
 test("explicit extraction audits a compound statement for omitted atomic meanings", async () => {
   const inputs: ChatInput[] = [];
@@ -342,7 +344,7 @@ test("a malformed relationship classification falls back to unrelated", async ()
   );
 
   const result = await extractor.classifyRelationship(
-    memoryResult({ content: "Yash prefers window seats." }),
+    activeMemory("Yash prefers window seats."),
     {
       memoryType: "semantic",
       semanticType: "preference",
@@ -358,6 +360,51 @@ test("a malformed relationship classification falls back to unrelated", async ()
 
   assert.deepEqual(result, { relationship: "unrelated", confidence: 0 });
 });
+
+test("a response that is not JSON at all still surfaces an extraction error", async () => {
+  const extractor = new MemoryExtractor({
+    async chat() {
+      return { content: "I cannot help with that." };
+    },
+    async *streamChat() {
+      throw new Error("Extraction must use non-streaming structured output.");
+    },
+  });
+
+  await assert.rejects(
+    extractor.extract({
+      userMessage: "I prefer aisle seats.",
+      assistantResponse: "Understood.",
+      recentMessages: [],
+    }),
+    MemoryExtractionError,
+  );
+});
+
+function activeMemory(content: string): MemoryRecord {
+  const now = new Date("2026-08-20T00:00:00Z");
+  return {
+    id: "11111111-1111-4111-8111-111111111111",
+    userId: "22222222-2222-4222-8222-222222222222",
+    memoryType: "semantic",
+    semanticType: "preference",
+    content,
+    importance: 0.8,
+    confidence: 0.9,
+    occurredAt: null,
+    validFrom: null,
+    validUntil: null,
+    status: "active",
+    supersededBy: null,
+    sourceConversationId: null,
+    sourceMessageId: null,
+    metadata: {},
+    createdAt: now,
+    updatedAt: now,
+    lastAccessedAt: null,
+    accessCount: 0,
+  };
+}
 
 function extractionProvider(response: unknown): AIProvider {
   return {

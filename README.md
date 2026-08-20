@@ -1,6 +1,6 @@
 # Shiva V0.3
 
-Shiva is Yash's private personal AI. V0.3 preserves the Fastify/Ollama streaming brain and V0.2 persistent memory, then adds a browser push-to-talk layer with internal Qwen ASR and TTS services.
+Shiva is Yash's private personal AI. V0.3 preserves the Fastify/Ollama streaming brain, V0.2 persistent memory, and browser voice layer, then adds a bounded agent loop for controlled expense and public-web skills.
 
 ## Architecture
 
@@ -9,15 +9,20 @@ Text client  -> POST /chat ----------------┐
 Voice UI     -> WS   /voice/chat ----------┴-> shared ShivaChatService
                                               -> conversation + bounded working history
                                               -> embeddinggemma -> memory retrieval/ranking
-                                              -> AIProvider -> Ollama/Gemma stream
+                                              -> clear skill intent? -> bounded AgentLoop
+                                                   -> permission policy -> SkillExecutor
+                                                   -> expense sheet / public web tools
+                                              -> otherwise AIProvider -> Ollama/Gemma stream
                                               -> persistence + memory extraction
                  VoiceSession also owns:
                    ASR -> chunker -> serial Qwen TTS -> binary audio frames
 ```
 
-The API does not put model, embedding, or persistence details in route handlers. Provider and repository interfaces keep those boundaries explicit. `/chat` and the voice WebSocket share the same conversation, memory, persistence, cancellation, and model path; voice mode only adds speech-friendly response guidance. The live voice UI uses one persistent WebSocket and never calls `/voice/synthesize` directly. See [docs/memory-architecture.md](docs/memory-architecture.md) and [docs/voice-architecture.md](docs/voice-architecture.md).
+The API does not put model, embedding, persistence, or external-service details in route handlers. Provider and repository interfaces keep those boundaries explicit. `/chat` and the voice WebSocket share the same conversation, memory, persistence, cancellation, and model path; voice mode only adds speech-friendly response guidance. Clear expense or current-web requests enter the agent loop after the same context is built. Ordinary chat does not enter the loop.
 
-V0.3 does not add wake words, always-listening mode, streaming ASR, VAD, barge-in, speaker recognition, face recognition, voice cloning, tools/browser access, authentication, cloud fallback, procedural memory, or a knowledge graph.
+Google Sheets is the sole expense source of truth. Shiva does not maintain a PostgreSQL expense ledger, row cache, or synchronization mirror. PostgreSQL stores the existing conversation/memory data, the per-user Google resource binding and provisioning lease, plus `agent_runs` and `skill_runs` audit records. Expense-routed audit payloads are redacted so those audit tables do not duplicate ledger details; the normal chat transcript and memory pipeline remain unchanged and can still contain what the user said. See [docs/memory-architecture.md](docs/memory-architecture.md), [docs/voice-architecture.md](docs/voice-architecture.md), and [docs/agent-architecture.md](docs/agent-architecture.md).
+
+V0.3 does not add wake words, always-listening mode, streaming ASR, VAD, barge-in, speaker recognition, face recognition, voice cloning, authentication, cloud fallback, procedural memory, a knowledge graph, arbitrary browser automation, or a general-purpose shell/tool runtime.
 
 ## Requirements
 
@@ -27,8 +32,10 @@ V0.3 does not add wake words, always-listening mode, streaming ASR, VAD, barge-i
 - PostgreSQL with the pgvector extension available
 - Ollama reachable at `OLLAMA_URL`
 - the configured Gemma model and `embeddinggemma` installed for real `/chat` requests
+- for expense skills: Google user OAuth credentials with the least-privilege `drive.file` scope (recommended), or a legacy pre-existing Sheet shared with a service account
+- for web research: a Brave Search API key
 
-Health, typechecking, building, and mocked Node/Python tests do not require Ollama, PostgreSQL, a GPU, or Qwen model weights.
+Health, typechecking, building, and mocked Node/Python tests do not require Ollama, PostgreSQL, Google Sheets, Brave Search, a GPU, or Qwen model weights. Mocked tests are not proof of a live Google, Brave, Ollama, or RunPod integration.
 
 ## Environment
 
@@ -53,6 +60,19 @@ DATABASE_POOL_MAX=10
 DATABASE_SSL=false
 SHIVA_USER_ID=00000000-0000-4000-8000-000000000001
 SHIVA_USER_NAME=Yash
+SHIVA_TIME_ZONE=Asia/Kolkata
+AGENT_MAX_STEPS=8
+AGENT_REQUEST_TIMEOUT_MS=300000
+EXPENSE_SHEET_ID=
+EXPENSE_SHEET_REQUEST_TIMEOUT_MS=15000
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+GOOGLE_OAUTH_REFRESH_TOKEN=
+GOOGLE_APPLICATION_CREDENTIALS=
+BRAVE_SEARCH_API_KEY=
+BRAVE_SEARCH_URL=https://api.search.brave.com
+WEB_REQUEST_TIMEOUT_MS=15000
+WEB_MAX_CONTENT_BYTES=524288
 EMBEDDING_MODEL=embeddinggemma
 EMBEDDING_REQUEST_TIMEOUT_MS=60000
 WORKING_MEMORY_MESSAGE_LIMIT=20
@@ -77,6 +97,8 @@ NODE_ENV=development
 `SHIVA_USER_ID` identifies the single Shiva owner and must remain stable across restarts. Use a strong database password in real environments. Node and both Python services deliberately resolve the root `.env`.
 
 `SHIVA_KEEP_ALIVE` accepts Ollama duration strings such as `30m` or numeric seconds. Use `SHIVA_KEEP_ALIVE=-1` to keep the chat model loaded indefinitely; Shiva serializes numeric environment values as JSON numbers as required by Ollama.
+
+The built-in expense and web skill contracts are always registered, so a clear request follows one stable agent path. Expense execution is enabled by the complete `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET`/`GOOGLE_OAUTH_REFRESH_TOKEN` trio, or by the legacy `EXPENSE_SHEET_ID` path. If neither is configured, expense skills return a safe `EXPENSE_SHEET_UNAVAILABLE` observation rather than falling back to an ungrounded answer. Partial OAuth configuration is rejected at startup. `GOOGLE_APPLICATION_CREDENTIALS` is used only by the legacy sheet-ID path and must point to a service-account JSON file outside Git. Without `BRAVE_SEARCH_API_KEY`, research similarly returns `WEB_RESEARCH_UNAVAILABLE`. `AGENT_MAX_STEPS` accepts 1–32 and bounds every agent run. `AGENT_REQUEST_TIMEOUT_MS` defaults to 300,000 ms and accepts 1,000–1,800,000 ms at startup; it is one total deadline shared by every planner and tool step in that run. Expiry cancels the active work and maps to the sanitized `AGENT_TIMEOUT` response.
 
 ## Local commands
 
@@ -163,6 +185,67 @@ curl --no-buffer -i -X POST http://127.0.0.1:3000/chat \
 
 Errors before the first streamed chunk use a sanitized JSON envelope. Once streaming headers are committed, a later provider error closes the stream and is logged without exposing upstream response bodies, paths, credentials, or environment values.
 
+### Agent skills
+
+Expense and explicit current-web requests use the same `/chat` or voice conversation contract. The deterministic router only activates the bounded agent loop for clear intents; it does not replace normal conversation. For each routed request it derives an allowed-and-required skill set from the original user wording. The planner sees only those skill contracts. If it nevertheless selects an out-of-scope skill, the agent loop terminates immediately with the safe `AGENT_INVALID_RESPONSE` error before the executor or tool runs; the executor retains the same denial as defense in depth.
+
+Record an expense:
+
+```bash
+curl --no-buffer -i -X POST http://127.0.0.1:3000/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Record ₹450 for pizza as dinner."}'
+```
+
+Read fresh sheet rows and calculate totals by currency:
+
+```bash
+curl --no-buffer -i -X POST http://127.0.0.1:3000/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"How much have I spent today?"}'
+```
+
+Research current public information:
+
+```bash
+curl --no-buffer -i -X POST http://127.0.0.1:3000/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Research current RTX 3090 rental pricing and cite the sources."}'
+```
+
+With the recommended user OAuth setup, the first expense read or write lazily creates one spreadsheet per Shiva user in that Google user's My Drive. Shiva names it `Shiva Expenses`, creates an `Expenses` tab, freezes row 1, and owns the internal `Expenses!A:G` layout. The user does not create a sheet, choose a tab, or configure a range. The managed header is:
+
+```text
+expense_id | occurred_at | amount | currency | description | category | source
+```
+
+Recommended Google setup:
+
+1. In a Google Cloud project, enable the Google Sheets API, configure an OAuth consent screen, and create an OAuth 2.0 client. Google's [Sheets creation guide](https://developers.google.com/workspace/sheets/api/guides/create) describes the API resource Shiva provisions.
+2. Complete a one-time user consent flow requesting offline access and only `https://www.googleapis.com/auth/drive.file`; retain the resulting refresh token securely. Use Google's [OAuth offline-access flow](https://developers.google.com/identity/protocols/oauth2/web-server) and [Sheets scope reference](https://developers.google.com/workspace/sheets/api/scopes) as the authority for the bootstrap process.
+3. Put the client ID, client secret, and refresh token in `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REFRESH_TOKEN`. Leave `EXPENSE_SHEET_ID` and `GOOGLE_APPLICATION_CREDENTIALS` empty for autonomous creation.
+4. Apply the committed database migrations before startup:
+
+   ```bash
+   cd app
+   npm install
+   npm run build
+   npm run db:migrate
+   npm start
+   ```
+
+5. Make the first expense request. Shiva creates and initializes the sheet, verifies it, and durably binds its Google resource IDs to `SHIVA_USER_ID`.
+
+The app never needs or asks for the user's Google password or unrestricted account credentials. It consumes an already-authorized refresh token and does not currently expose an OAuth enrollment/callback UI. Keep the OAuth client secret and refresh token outside Git, logs, prompts, and the database. If the OAuth consent screen is External and remains in Google Cloud's Testing status, Google may issue a refresh token that expires after seven days; use the appropriate published consent state for a stable deployment.
+
+`EXPENSE_SHEET_ID` plus `GOOGLE_APPLICATION_CREDENTIALS` remains only as a legacy/manual-adoption path. In that mode an operator creates and shares a spreadsheet with the service-account email as Editor, then supplies its ID. During first adoption Shiva can add a missing `Expenses` tab, initialize an empty header, and freeze row 1; it rejects a populated noncanonical layout rather than overwriting data. A configured bootstrap ID that differs from the durable binding fails closed instead of silently switching ledgers. Supplying any but not all three OAuth values is also rejected at startup.
+
+Every expense report reads the live sheet and computes fixed two-decimal totals per currency across every matching row; it performs no currency conversion. Its 1–25 `limit` (default 25) and 8,000-character serialized detail budget cap only the individual rows exposed to the planner, while `matchedCount` and totals still cover the full filtered result. Every record operation validates the current header, appends one A:G row, reads the exact appended range back, and reports success only if all seven cells match. `expense_sheet_bindings` keeps only the spreadsheet/tab IDs, schema version, status, and a short provisioning lease—never expense rows or OAuth tokens. Expense agent/skill audit records use constant or minimal redacted payloads and are not used for reporting or calculation. Concurrent first requests coordinate through that lease so Shiva does not intentionally create duplicate ledgers.
+
+Web research uses Brave Search to discover sources and a restricted text fetcher to inspect selected public HTTP(S) pages. It rejects local/private destinations, revalidates redirects, accepts only HTML/plain-text content, and enforces the configured timeout and response-size ceiling. Evidence passed to the planner is capped at 6,000 characters per source and 16,000 characters in total. All page text, snippets, and tool-result content is untrusted data: it cannot grant permission, change the request scope, trigger a write, or establish a new objective. It is not a JavaScript browser and cannot access authenticated pages.
+
+The current permission defaults are `AUTO` for `web.read`, `expenses.read`, and `expenses.write`. Unknown permissions fail closed. A `confirm` policy also fails closed because V0.3 has no confirmation UI. In addition to the planner instructions, the agent loop enforces evidence: a success response is accepted only after every skill required by the explicit intent has at least one `success=true` observation. A failure response requires at least one failed observation from a required skill, allowing a dependent chain to stop safely without attempting steps that can no longer succeed. Agent and skill execution metadata is written to `agent_runs` and `skill_runs`; these audit tables are not an expense ledger.
+
 ### Voice
 
 Open the lightweight browser UI after starting Shiva:
@@ -246,7 +329,7 @@ For voice turns, deferred automatic memory extraction waits until the browser re
 
 ## Current RunPod direct runtime
 
-The current RunPod Pod does not run Docker Compose. Provision PostgreSQL with pgvector, Ollama, Gemma/embedding models, the two Python environments, Qwen voice models, ffmpeg, and `/workspace/shiva/repo/.env` separately. Do not overwrite the production `.env` during pulls.
+The current RunPod Pod does not run Docker Compose. Provision PostgreSQL with pgvector, Ollama, Gemma/embedding models, the two Python environments, Qwen voice models, ffmpeg, and `/workspace/shiva/repo/.env` separately. If expense skills are enabled, prefer the three user OAuth values described above so Shiva can create and manage the sheet itself; use a protected service-account JSON and manually shared `EXPENSE_SHEET_ID` only for the legacy path. Configure the Brave key separately for web research. Do not overwrite the production `.env` or credentials during pulls.
 
 ```bash
 cd /workspace/shiva/repo
@@ -272,7 +355,7 @@ ollama list
 
 Then, from another shell, run the health and chat curls above. `npm start` is foreground execution; process supervision remains an operational choice. Keep runtime data outside Git, for example under `/workspace/shiva/{data,models,ollama,logs,backups,config}`.
 
-Do not treat local mocked tests as RunPod integration proof. Real chat requires PostgreSQL/pgvector, the migration, Ollama, Gemma, and embeddinggemma. Real voice additionally requires ffmpeg, both Python services, their Qwen weights, and suitable GPU capacity.
+Do not treat local mocked tests as RunPod integration proof. Real chat requires PostgreSQL/pgvector, the migration, Ollama, Gemma, and embeddinggemma. Real voice additionally requires ffmpeg, both Python services, their Qwen weights, and suitable GPU capacity. Real expense and web runs additionally require working Google credentials/sheet sharing and Brave credentials respectively.
 
 ## Future Docker runtime
 
@@ -289,7 +372,7 @@ The Compose definition runs the API, pgvector-enabled PostgreSQL, and internal A
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Hot-reload the API from TypeScript |
-| `npm test` | Run mocked memory, stream, cancellation, model-provider, and voice-gateway tests |
+| `npm test` | Run mocked chat, memory, voice, agent, permission, expense-sheet, and web-tool tests |
 | `npm run typecheck` | Strict-check app and tests without emitting |
 | `npm run build` | Compile ESM output into `app/dist` |
 | `npm run db:generate` | Generate a migration from the Drizzle schema |
