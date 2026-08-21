@@ -420,6 +420,7 @@ function normalizeSkillScope(
   registry: SkillRegistry,
 ): readonly string[] {
   if (skills.length === 0 || skills.length > 16) {
+    console.log(skills);
     throw new AgentEvidenceError("The planner selected an invalid skill scope.");
   }
   const normalized = [...new Set(skills)].sort();
@@ -427,6 +428,8 @@ function normalizeSkillScope(
     normalized.length !== skills.length ||
     normalized.some((skill) => !registry.has(skill))
   ) {
+    console.log('NOR', skills);
+    
     throw new AgentEvidenceError("The planner selected an invalid skill scope.");
   }
   return normalized;
