@@ -14,6 +14,7 @@ import type {
   AgentRequest,
   AgentRunResult,
 } from "./types.js";
+import { AgentPlannerError } from "./planner.js";
 
 export const DEFAULT_MAX_AGENT_STEPS = 8;
 export const DEFAULT_AGENT_REQUEST_TIMEOUT_MS = 300_000;
@@ -103,6 +104,27 @@ export class AgentLoop {
     };
     let selectedSkills: readonly string[] | undefined;
 
+    const fallBackToCore = async (
+      reason: "INVALID_OUTPUT" | "INVALID_SCOPE",
+      step: number,
+    ): Promise<AgentRunResult> => {
+      await this.finishAuditSafely(
+        runId,
+        "succeeded",
+        step,
+        `PlannerFallback${reason === "INVALID_OUTPUT" ? "InvalidOutput" : "InvalidScope"}`,
+        monotonicStartedAt,
+      );
+      return {
+        kind: "direct_chat",
+        runId,
+        response: undefined,
+        steps: step,
+        observations: [],
+        plannerFallback: reason,
+      };
+    };
+
     let completedSteps = 0;
     try {
       selectedSkills = initialSkillScope(request, this.registry);
@@ -112,7 +134,7 @@ export class AgentLoop {
         const scopedRequest: AgentRequest = selectedSkills
           ? { ...baseRequest, allowedSkills: selectedSkills }
           : withoutSkillScope(baseRequest);
-        const decision = await this.planner.decide({
+        const planningContext = {
           request: scopedRequest,
           skills: allowedSkillSummaries(
             this.registry,
@@ -122,8 +144,75 @@ export class AgentLoop {
           step,
           maxSteps: this.maxSteps,
           now: this.now(),
-        });
+        };
+        let decision;
+        try {
+          decision = await this.planner.decide(planningContext);
+        } catch (error: unknown) {
+          if (
+            error instanceof AgentPlannerError &&
+            !selectedSkills &&
+            observations.length === 0
+          ) {
+            return await fallBackToCore("INVALID_OUTPUT", step);
+          }
+          throw error;
+        }
         throwIfAborted(scopedRequest.signal);
+
+        let validatedScope: readonly string[] | undefined;
+        if (decision.type === "skill_call") {
+          try {
+            validatedScope = freezeSkillScope(
+              selectedSkills,
+              decision.selectedSkills,
+              decision.skill,
+              this.registry,
+            );
+          } catch (error: unknown) {
+            if (
+              !(error instanceof AgentEvidenceError) ||
+              selectedSkills ||
+              observations.length > 0
+            ) {
+              throw error;
+            }
+            const validNames = this.registry
+              .list()
+              .map((skill) => skill.name)
+              .join(", ");
+            let repairedDecision;
+            try {
+              repairedDecision = await this.planner.decide({
+                ...planningContext,
+                plannerFeedback: `The previous skill scope was invalid. Use only unique registered skill names from this exact list: ${validNames}. selectedSkills must include the called skill and the complete minimal set needed by the current task.`,
+              });
+            } catch (retryError: unknown) {
+              if (retryError instanceof AgentPlannerError) {
+                return await fallBackToCore("INVALID_SCOPE", step);
+              }
+              throw retryError;
+            }
+            throwIfAborted(scopedRequest.signal);
+            if (repairedDecision.type !== "skill_call") {
+              return await fallBackToCore("INVALID_SCOPE", step);
+            }
+            try {
+              validatedScope = freezeSkillScope(
+                selectedSkills,
+                repairedDecision.selectedSkills,
+                repairedDecision.skill,
+                this.registry,
+              );
+              decision = repairedDecision;
+            } catch (retryError: unknown) {
+              if (retryError instanceof AgentEvidenceError) {
+                return await fallBackToCore("INVALID_SCOPE", step);
+              }
+              throw retryError;
+            }
+          }
+        }
 
         if (decision.type === "direct_chat") {
           const result = {
@@ -208,12 +297,12 @@ export class AgentLoop {
           return result;
         }
 
-        selectedSkills = freezeSkillScope(
-          selectedSkills,
-          decision.selectedSkills,
-          decision.skill,
-          this.registry,
-        );
+        if (!validatedScope) {
+          throw new AgentEvidenceError(
+            "The planner did not establish a valid skill scope.",
+          );
+        }
+        selectedSkills = validatedScope;
 
         const expenseCallKey = recordExpenseCallKey(decision);
         let result = expenseCallKey
@@ -397,12 +486,9 @@ function freezeSkillScope(
   calledSkill: string,
   registry: SkillRegistry,
 ): readonly string[] {
-  const normalized = normalizeSkillScope(proposed, registry);
-  if (!normalized.includes(calledSkill)) {
-    throw new AgentEvidenceError(
-      "The selected skill scope does not include the requested skill.",
-    );
-  }
+  const normalized = current
+    ? normalizeSkillScope(proposed, registry)
+    : normalizeInitialSkillScope(proposed, calledSkill, registry);
   if (
     current &&
     (current.length !== normalized.length ||
@@ -415,12 +501,27 @@ function freezeSkillScope(
   return current ?? normalized;
 }
 
+function normalizeInitialSkillScope(
+  skills: readonly string[],
+  calledSkill: string,
+  registry: SkillRegistry,
+): readonly string[] {
+  if (!registry.has(calledSkill)) {
+    throw new AgentEvidenceError("The planner selected an unknown skill.");
+  }
+  const registered = skills.filter((skill) => registry.has(skill));
+  const normalized = [...new Set([...registered, calledSkill])].sort();
+  if (normalized.length > 16) {
+    throw new AgentEvidenceError("The planner selected an invalid skill scope.");
+  }
+  return normalized;
+}
+
 function normalizeSkillScope(
   skills: readonly string[],
   registry: SkillRegistry,
 ): readonly string[] {
   if (skills.length === 0 || skills.length > 16) {
-    console.log(skills);
     throw new AgentEvidenceError("The planner selected an invalid skill scope.");
   }
   const normalized = [...new Set(skills)].sort();
@@ -428,8 +529,6 @@ function normalizeSkillScope(
     normalized.length !== skills.length ||
     normalized.some((skill) => !registry.has(skill))
   ) {
-    console.log('NOR', skills);
-    
     throw new AgentEvidenceError("The planner selected an invalid skill scope.");
   }
   return normalized;

@@ -113,13 +113,35 @@ export class ShivaAgentPlanner implements AgentPlanner {
         content: buildIterationInput(context),
       },
     ];
-    const result = await this.provider.chat({
-      messages,
-      responseFormat: decisionResponseFormat,
-      ...(context.request.signal ? { signal: context.request.signal } : {}),
-    });
-
-    return parseDecision(result.content);
+    let firstFailure: AgentPlannerError | undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const attemptMessages: ChatMessage[] =
+        attempt === 0
+          ? messages
+          : [
+              ...messages,
+              {
+                role: "user",
+                content:
+                  "Your previous decision was rejected because it was not one exact valid JSON object matching the supplied decision schema. Retry once. Return JSON only; do not add markdown or commentary.",
+              },
+            ];
+      const result = await this.provider.chat({
+        messages: attemptMessages,
+        responseFormat: decisionResponseFormat,
+        ...(context.request.signal ? { signal: context.request.signal } : {}),
+      });
+      try {
+        return parseDecision(result.content);
+      } catch (error: unknown) {
+        if (!(error instanceof AgentPlannerError)) throw error;
+        firstFailure ??= error;
+      }
+    }
+    throw new AgentPlannerError(
+      "The planner did not return a valid decision after one retry.",
+      { cause: firstFailure },
+    );
   }
 }
 
@@ -177,6 +199,9 @@ function buildIterationInput(context: AgentPlanningContext): string {
     step: context.step,
     remainingSteps: context.maxSteps - context.step + 1,
     observations: context.observations,
+    ...(context.plannerFeedback
+      ? { correctionRequired: context.plannerFeedback }
+      : {}),
   });
 }
 
@@ -194,7 +219,7 @@ function parseDecision(content: string): AgentDecision {
       cause: error,
     });
   }
-
+  console.log('DECISION schema', decisionSchema);
   const parsed = decisionSchema.safeParse(payload);
   if (!parsed.success) {
     throw new AgentPlannerError(

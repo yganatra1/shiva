@@ -66,6 +66,12 @@ const VOICE_RESPONSE_GUIDANCE: ChatMessage = {
     "This interaction is being spoken aloud. Respond conversationally and concisely in smooth, connected natural speech. Avoid markdown, tables, headings, long lists, choppy fragments, and unnecessary formatting. Use moderately sized spoken phrases and only include detail that is useful when heard.",
 };
 
+const PLANNER_FALLBACK_GUIDANCE: ChatMessage = {
+  role: "system",
+  content:
+    "The tool planner could not produce a safe executable plan for this turn. Respond with Shiva's core conversational reasoning only. Do not claim that a tool, live source, workspace operation, or external action was used. If the request requires current information or an action, say plainly that it could not be completed in this turn.",
+};
+
 export class ShivaChatService {
   private backgroundMemoryTail: Promise<void> = Promise.resolve();
 
@@ -155,13 +161,18 @@ export class ShivaChatService {
           })
         : undefined;
 
+    const responseMessages =
+      agentResult?.kind === "direct_chat" && agentResult.plannerFallback
+        ? [messages[0] ?? { role: "system", content: SHIVA_SYSTEM_PROMPT }, PLANNER_FALLBACK_GUIDANCE, ...messages.slice(1)]
+        : messages;
+
     return {
       conversationId: conversation.id,
       chunks: this.streamAndPersist(
         conversation.id,
         userMessage,
         recentMessages,
-        messages,
+        responseMessages,
         !explicitRequest,
         agentResult?.kind === "response" ? agentResult.response : undefined,
         signal,

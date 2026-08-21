@@ -405,10 +405,12 @@ test("agent loop terminates an adversarial cross-skill call outside request scop
   assert.equal(webExecutions, 0);
 });
 
-test("agent loop rejects a planner-selected unknown skill", async () => {
+test("agent loop retries an unknown skill scope then falls back to core chat", async () => {
   const registry = new SkillRegistry();
+  let plannerCalls = 0;
   const planner: AgentPlanner = {
     async decide() {
+      plannerCalls += 1;
       return {
         type: "skill_call",
         skill: "missing",
@@ -424,7 +426,12 @@ test("agent loop rejects a planner-selected unknown skill", async () => {
     2,
   );
 
-  await assert.rejects(loop.run(request), AgentEvidenceError);
+  const result = await loop.run(request);
+  assert.equal(plannerCalls, 2);
+  assert.equal(result.kind, "direct_chat");
+  if (result.kind === "direct_chat") {
+    assert.equal(result.plannerFallback, "INVALID_SCOPE");
+  }
 });
 
 test("agent loop sanitizes cancellation and finalizes without another decision", async () => {

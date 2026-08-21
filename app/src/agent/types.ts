@@ -50,6 +50,7 @@ export interface AgentPlanningContext {
   readonly step: number;
   readonly maxSteps: number;
   readonly now: Date;
+  readonly plannerFeedback?: string;
 }
 
 export type AgentRunResult =
@@ -66,6 +67,7 @@ export type AgentRunResult =
       readonly response: undefined;
       readonly steps: number;
       readonly observations: readonly AgentObservation[];
+      readonly plannerFallback?: "INVALID_OUTPUT" | "INVALID_SCOPE";
     };
 
 export interface AgentPlanner {
