@@ -30,6 +30,8 @@ export interface ShivaSkill<TInput, TOutput> {
   readonly name: string;
   readonly description: string;
   readonly inputDescription: string;
+  /** Whether the external dependency required by this skill is configured. */
+  readonly configured?: boolean;
   readonly inputSchema: z.ZodType<TInput>;
   readonly permissions: readonly string[];
   execute(
@@ -43,6 +45,7 @@ export interface RegisteredSkill {
   readonly name: string;
   readonly description: string;
   readonly inputDescription: string;
+  readonly configured: boolean;
   readonly inputSchema: z.ZodType<unknown>;
   readonly permissions: readonly string[];
   execute(
@@ -55,5 +58,6 @@ export interface SkillSummary {
   readonly name: string;
   readonly description: string;
   readonly inputDescription: string;
+  readonly configured: boolean;
   readonly permissions: readonly string[];
 }

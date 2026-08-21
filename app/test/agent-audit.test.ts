@@ -75,6 +75,7 @@ test("agent and skill success are auditable around actual execution", async () =
         ? {
             type: "skill_call" as const,
             skill: "record_expense",
+            selectedSkills: ["record_expense"],
             arguments: { amount: 10 },
           }
         : {
@@ -159,11 +160,13 @@ test("expense agent and skill audit payloads are redacted without changing obser
     {
       type: "skill_call" as const,
       skill: "record_expense",
+      selectedSkills: ["expense_report", "record_expense"],
       arguments: privateRecordInput,
     },
     {
       type: "skill_call" as const,
       skill: "expense_report",
+      selectedSkills: ["expense_report", "record_expense"],
       arguments: privateReportInput,
     },
     {
@@ -198,7 +201,6 @@ test("expense agent and skill audit payloads are redacted without changing obser
     userMessage:
       "Record 987654 for SECRET_DINNER_DESCRIPTION, then report 2042 private rows.",
     allowedSkills: ["record_expense", "expense_report"],
-    requiredSkills: ["record_expense", "expense_report"],
   });
 
   assert.equal(
@@ -213,7 +215,7 @@ test("expense agent and skill audit payloads are redacted without changing obser
     success: true,
     data: privateReportResult,
   });
-  assert.equal(audit.agentStarts[0]?.request, "[expense request redacted]");
+  assert.equal(audit.agentStarts[0]?.request, "[agent request redacted]");
   assert.deepEqual(
     audit.skillStarts.map(({ input }) => input),
     [{ redacted: true }, { redacted: true }],
@@ -305,7 +307,7 @@ test("expense failure audit keeps status and error code but redacts its payload"
   );
 });
 
-test("non-expense agent and skill audit payloads remain intact", async () => {
+test("agent requests are redacted while non-expense skill payloads remain intact", async () => {
   const audit = new RecordingAudit();
   const registry = new SkillRegistry();
   const webInput = { query: "PRIVATE_WEB_QUERY" };
@@ -327,6 +329,7 @@ test("non-expense agent and skill audit payloads remain intact", async () => {
     {
       type: "skill_call" as const,
       skill: "web_research",
+      selectedSkills: ["web_research"],
       arguments: webInput,
     },
     {
@@ -356,10 +359,9 @@ test("non-expense agent and skill audit payloads remain intact", async () => {
     ...request,
     userMessage,
     allowedSkills: ["web_research"],
-    requiredSkills: ["web_research"],
   });
 
-  assert.equal(audit.agentStarts[0]?.request, userMessage);
+  assert.equal(audit.agentStarts[0]?.request, "[agent request redacted]");
   assert.deepEqual(audit.skillStarts[0]?.input, webInput);
   assert.deepEqual(audit.skillFinishes[0]?.result, {
     success: true,
@@ -370,9 +372,27 @@ test("non-expense agent and skill audit payloads remain intact", async () => {
 test("max-step termination is finalized without leaking error text", async () => {
   const audit = new RecordingAudit();
   const registry = new SkillRegistry();
+  registry.register({
+    name: "missing",
+    description: "Always fails for the bounded-loop fixture.",
+    inputDescription: "{}",
+    inputSchema: z.object({}).strict(),
+    permissions: ["web.read"],
+    async execute() {
+      return {
+        success: false,
+        error: { code: "FIXTURE_FAILURE", message: "Fixture failure." },
+      };
+    },
+  });
   const planner: AgentPlanner = {
     async decide() {
-      return { type: "skill_call", skill: "missing", arguments: {} };
+      return {
+        type: "skill_call",
+        skill: "missing",
+        selectedSkills: ["missing"],
+        arguments: {},
+      };
     },
   };
   const executor = new SkillExecutor(
@@ -393,7 +413,7 @@ test("max-step termination is finalized without leaking error text", async () =>
   await assert.rejects(loop.run(request), AgentMaxStepsError);
   assert.equal(audit.agentFinishes[0]?.status, "max_steps");
   assert.equal(audit.agentFinishes[0]?.errorCode, "AgentMaxStepsError");
-  assert.equal(audit.skillFinishes[0]?.errorCode, "UNKNOWN_SKILL");
+  assert.equal(audit.skillFinishes[0]?.errorCode, "FIXTURE_FAILURE");
 });
 
 test("a successful side effect remains successful when audit finalization fails", async () => {
@@ -451,7 +471,7 @@ test("a successful side effect remains successful when audit finalization fails"
   assert.equal(auditErrors.length, 1);
 });
 
-test("agent audit finalization cannot replace an already successful response", async () => {
+test("agent audit finalization cannot replace an already successful clarification", async () => {
   const audit = new RecordingAudit();
   let finishAttempts = 0;
   audit.finishAgentRun = async () => {
@@ -464,8 +484,7 @@ test("agent audit finalization cannot replace an already successful response", a
     {
       async decide() {
         return {
-          type: "respond",
-          outcome: "success",
+          type: "clarify",
           message: "Completed.",
         };
       },

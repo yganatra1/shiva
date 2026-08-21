@@ -41,11 +41,14 @@ export class WebResearchSkill
     '{ "query": "2-400 character search", "additionalQueries"?: [up to 2 alternate searches], "maxSources"?: 1-6 }';
   readonly inputSchema: z.ZodType<WebResearchInput> = inputSchema;
   readonly permissions = ["web.read"] as const;
+  readonly configured: boolean;
 
   constructor(
     private readonly searchTool?: WebSearchToolPort,
     private readonly openTool?: WebOpenToolPort,
-  ) {}
+  ) {
+    this.configured = searchTool !== undefined && openTool !== undefined;
+  }
 
   async execute(
     input: WebResearchInput,

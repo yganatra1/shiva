@@ -82,6 +82,7 @@ test("agent chains web research into a confirmed expense-sheet write before resp
         return {
           type: "skill_call",
           skill: "web_research",
+          selectedSkills: ["record_expense", "web_research"],
           arguments: { query: "latest RTX 3090 rental pricing in INR" },
         };
       }
@@ -92,6 +93,7 @@ test("agent chains web research into a confirmed expense-sheet write before resp
         return {
           type: "skill_call",
           skill: "record_expense",
+          selectedSkills: ["record_expense", "web_research"],
           arguments: {
             amount: 45,
             currency: "INR",
@@ -138,6 +140,7 @@ test("agent chains web research into a confirmed expense-sheet write before resp
   );
   assert.equal(expenseSheet.rows.length, 1);
   assert.equal(expenseSheet.rows[0]?.amount, "45.00");
+  assert.equal(result.kind, "response");
   assert.match(result.response, /found.*recorded/i);
 });
 
@@ -154,6 +157,7 @@ test("a planner cannot claim a failed sheet write was confirmed by the executor"
     {
       type: "skill_call",
       skill: "record_expense",
+      selectedSkills: ["record_expense"],
       arguments: { amount: 45, description: "GPU" },
     },
     {
@@ -193,6 +197,7 @@ test("a planner cannot claim a failed sheet write was confirmed by the executor"
     contextMessages: [],
   });
 
+  assert.equal(result.kind, "response");
   assert.match(result.response, /could not record/i);
   assert.equal(repository.rows.length, 0);
 });

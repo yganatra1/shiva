@@ -19,35 +19,32 @@ POST /chat or voice turn
 resolve user/conversation -> save message -> load memory -> build context
           |
           v
-deterministic intent router
-    | ordinary chat                         | clear expense/current-web intent
-    v                                       v
-Ollama/Gemma streaming          derive allowed + required skills
+bounded AgentLoop -> planner sees actual registered catalog
+          |
+          +-> direct_chat -----------> existing Ollama/Gemma stream
+          +-> describe_capabilities -> registry-derived answer
+          +-> clarify ---------------> one user-facing question
+          +-> first skill_call ------> validate + freeze selectedSkills
                                              |
-                                      bounded AgentLoop
+                                  permission policy + input schema
                                              |
-                                   planner emits one JSON decision
-                                      /                 \
-                               skill_call              respond
-                                   |                       |
-                            SkillExecutor                  v
-                     request scope + permission        evidence gate
-                           + input checks                   |
-                                   |                       v
-                                   |                  final answer
-                                   v
-                          tool executes and returns
-                          structured observation
-                                   |
-                          next bounded planner step
+                                        SkillExecutor
+                                             |
+                                  structured tool observation
+                                             |
+                                  next bounded planner step
+                                             |
+                                  evidence-gated final response
           |
           v
 save assistant message -> existing memory scheduling
 ```
 
-The router is deliberately narrow. It identifies clear expense/action language and explicit current-web language; normal conversation remains on the existing provider stream. From the original user request it derives the skills both allowed and required for that run. A write intent allows/requires `record_expense`, a read/report intent allows/requires `expense_report`, and explicit current-web intent allows/requires `web_research`; a request can require more than one of these. The planner receives only the scoped skill contracts and prior structured observations. If it nevertheless selects an out-of-scope skill, the agent loop terminates immediately with `AgentEvidenceError` (sanitized publicly as `AGENT_INVALID_RESPONSE`) before the executor or any tool runs. The executor independently retains `SKILL_NOT_AUTHORIZED_FOR_REQUEST` as defense in depth for direct or future call paths.
+There is no keyword or regex intent router. Every non-explicit-memory turn reaches the planner with the real registered skill catalog and a truthful `configured` flag for each integration. The model decides semantically whether the request needs a skill. Tool-free conversation is delegated to the existing streaming provider, skill/capability questions use a deterministic registry summary, and incomplete action requests can produce one clarification without claiming execution.
 
-The planner can emit exactly one `skill_call` or `respond` decision at each step, in a validated JSON shape. A response declares `success` or `failure`, but that declaration is not trusted by itself. The agent loop accepts a success response only when every required skill has at least one successful observation. It accepts a failure response after at least one required skill has a failed observation; later dependent skills do not need to be attempted when that failure makes them unsafe or impossible to complete. A response without the corresponding evidence raises `AgentEvidenceError` rather than making an unsupported claim.
+On its first `skill_call`, the planner must declare the complete minimal `selectedSkills` set needed by the original task. The loop rejects unknown, duplicate, empty, malformed, or incomplete scopes and freezes the normalized set before execution. Later planner steps see only those skill contracts and must repeat the exact scope, so conversation history, web text, and tool observations cannot expand it. The executor independently retains `SKILL_NOT_AUTHORIZED_FOR_REQUEST` as defense in depth.
+
+The planner emits one validated `direct_chat`, `describe_capabilities`, `clarify`, `skill_call`, or `respond` decision per step. A successful `respond` is accepted only after every selected skill has a successful observation. A failure response needs at least one failed selected-skill observation, allowing a dependent chain to stop safely. A response without corresponding evidence raises `AgentEvidenceError` rather than making an unsupported claim. A planner may not switch to direct chat, capability description, or clarification after tool execution starts.
 
 `AGENT_MAX_STEPS` is 8 by default and accepts 1–32. `AGENT_REQUEST_TIMEOUT_MS` defaults to 300,000 ms and accepts 1,000–1,800,000 ms in environment configuration. It creates one deadline for the complete planner/tool loop, rather than resetting a timer for each step, and propagates its cancellation signal through active planner and tool calls. Expiry records the run as failed and becomes a sanitized HTTP 504 `AGENT_TIMEOUT` response. Reaching the step bound ends the run as `max_steps`; client cancellation and other failures are separately classified. The final agent answer uses the existing chat response path and is persisted like any other assistant message.
 
@@ -55,11 +52,10 @@ The planner can emit exactly one `skill_call` or `respond` decision at each step
 
 | Layer | Responsibility | Must not do |
 | --- | --- | --- |
-| Intent router | Decide whether a clear request needs the agent loop and derive its allowed/required skills | Execute tools or infer tool success |
-| Planner | Choose one scoped skill call or a typed success/failure response | Bypass the request scope, evidence gate, or permissions |
+| Planner | Semantically delegate tool-free chat, request clarification, describe the catalog, or choose a minimal skill scope/call | Grant permission, change a frozen scope, or infer tool success |
 | Skill registry | Expose immutable skill names, descriptions, schemas, and permissions | Accept duplicate/invalid names |
 | Permission policy | Deterministically allow or reject declared permissions | Delegate authorization to the model |
-| Agent loop | Terminate an out-of-scope planner call before execution and enforce response evidence | Trust the planner's claimed outcome by itself |
+| Agent loop | Validate/freeze the first selected scope and enforce response evidence | Trust a claimed scope change or outcome by itself |
 | Skill executor | Recheck registration, request scope, policy, schema, cancellation, and audit status | Treat exceptions as successful actions |
 | Skill | Coordinate one user-facing capability | Own route/chat/memory logic |
 | Tool | Perform one narrow external operation | Decide user intent or compose the final answer |
@@ -69,7 +65,7 @@ Unknown skills and permissions fail closed. Skill input schemas reject unknown o
 
 ## Expense architecture
 
-Google Sheets is the sole source of truth for expenses. There is intentionally no PostgreSQL `expenses` table, local row cache, mirror, or synchronization job. The only expense-specific operational state in PostgreSQL is the Google resource binding and short provisioning lease needed to find one user's sheet safely. Expense-routed audit payloads are redacted and are never queried to calculate a report. The existing conversation/message and memory pipeline remains unchanged, so the database may still contain the user's original expense utterance as normal chat data.
+Google Sheets is the sole source of truth for expenses. There is intentionally no PostgreSQL `expenses` table, local row cache, mirror, or synchronization job. The only expense-specific operational state in PostgreSQL is the Google resource binding and short provisioning lease needed to find one user's sheet safely. Agent request text and expense skill payloads are redacted in audit storage and are never queried to calculate a report. The existing conversation/message and memory pipeline remains unchanged, so the database may still contain the user's original expense utterance as normal chat data.
 
 Recommended production configuration:
 
@@ -190,7 +186,7 @@ Drizzle migrations add these control-plane tables:
 - `skill_runs`: parent agent run, skill name, arguments, declared permissions, sanitized result, status, error code, timestamps, and duration.
 - `expense_sheet_bindings`: one per-user Google spreadsheet/tab pointer, schema state, and provisioning lease.
 
-Statuses distinguish success, failure, cancellation, denial, and max-step exhaustion where applicable. Agent and skill records make cross-skill behavior inspectable, but they can contain personal request and tool data for non-expense skills; database access and retention must be managed accordingly. For an expense-routed run, `agent_runs.request` uses a constant placeholder and `skill_runs` uses constant or minimal redacted input/result payloads rather than expense descriptions, amounts, or returned rows. The binding table contains resource IDs and coordination state only. None of these tables replaces or copies the Google expense ledger, and none stores Google tokens. This audit redaction does not alter the existing conversation/message or memory records created by the shared chat pipeline.
+Statuses distinguish success, failure, cancellation, denial, and max-step exhaustion where applicable. `agent_runs.request` always uses a constant redacted marker because every ordinary turn now reaches planning. Non-expense skill runs may contain their bounded inputs/results; expense skill runs use constant or minimal redacted payloads rather than descriptions, amounts, or returned rows. Database access and retention must still be managed accordingly. The binding table contains resource IDs and coordination state only. None of these tables replaces or copies the Google expense ledger, and none stores Google tokens. This audit redaction does not alter the existing conversation/message or memory records created by the shared chat pipeline.
 
 Apply committed Drizzle migrations before running this feature against a real database:
 

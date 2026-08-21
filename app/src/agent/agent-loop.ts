@@ -2,8 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   NOOP_AGENT_AUDIT,
-  REDACTED_EXPENSE_AGENT_REQUEST,
-  isExpenseAuditSkill,
+  REDACTED_AGENT_REQUEST,
   type AgentAuditPort,
   type AgentRunStatus,
 } from "./audit.js";
@@ -83,11 +82,9 @@ export class AgentLoop {
       id: runId,
       userId: request.userId,
       conversationId: request.conversationId,
-      request:
-        request.requiredSkills?.some(isExpenseAuditSkill) ||
-        request.allowedSkills?.some(isExpenseAuditSkill)
-        ? REDACTED_EXPENSE_AGENT_REQUEST
-        : request.userMessage,
+      // The planner now evaluates every turn before the skill scope exists.
+      // Keep agent audit metadata useful without duplicating chat content.
+      request: REDACTED_AGENT_REQUEST,
       startedAt,
     });
 
@@ -100,16 +97,21 @@ export class AgentLoop {
     const scopedSignal = request.signal
       ? AbortSignal.any([request.signal, deadline.signal])
       : deadline.signal;
-    const scopedRequest: AgentRequest = {
+    const baseRequest: AgentRequest = {
       ...request,
       signal: scopedSignal,
     };
+    let selectedSkills: readonly string[] | undefined;
 
     let completedSteps = 0;
     try {
+      selectedSkills = initialSkillScope(request, this.registry);
       for (let step = 1; step <= this.maxSteps; step += 1) {
         completedSteps = step;
-        throwIfAborted(scopedRequest.signal);
+        throwIfAborted(baseRequest.signal);
+        const scopedRequest: AgentRequest = selectedSkills
+          ? { ...baseRequest, allowedSkills: selectedSkills }
+          : withoutSkillScope(baseRequest);
         const decision = await this.planner.decide({
           request: scopedRequest,
           skills: allowedSkillSummaries(
@@ -123,9 +125,60 @@ export class AgentLoop {
         });
         throwIfAborted(scopedRequest.signal);
 
-        if (decision.type === "respond") {
-          assertResponseEvidence(decision, scopedRequest, observations);
+        if (decision.type === "direct_chat") {
+          if (selectedSkills || observations.length > 0) {
+            throw new AgentEvidenceError(
+              "The planner attempted to bypass an active skill plan.",
+            );
+          }
           const result = {
+            kind: "direct_chat" as const,
+            runId,
+            response: undefined,
+            steps: step,
+            observations: [...observations],
+          };
+          await this.finishAuditSafely(
+            runId,
+            "succeeded",
+            completedSteps,
+            null,
+            monotonicStartedAt,
+          );
+          return result;
+        }
+
+        if (decision.type === "describe_capabilities") {
+          if (selectedSkills || observations.length > 0) {
+            throw new AgentEvidenceError(
+              "The planner attempted to describe capabilities during execution.",
+            );
+          }
+          const result = {
+            kind: "response" as const,
+            runId,
+            response: describeCapabilities(this.registry),
+            steps: step,
+            observations: [...observations],
+          };
+          await this.finishAuditSafely(
+            runId,
+            "succeeded",
+            completedSteps,
+            null,
+            monotonicStartedAt,
+          );
+          return result;
+        }
+
+        if (decision.type === "clarify") {
+          if (selectedSkills || observations.length > 0) {
+            throw new AgentEvidenceError(
+              "The planner attempted to clarify after beginning execution.",
+            );
+          }
+          const result = {
+            kind: "response" as const,
             runId,
             response: decision.message,
             steps: step,
@@ -141,14 +194,31 @@ export class AgentLoop {
           return result;
         }
 
-        if (
-          scopedRequest.allowedSkills &&
-          !scopedRequest.allowedSkills.includes(decision.skill)
-        ) {
-          throw new AgentEvidenceError(
-            "The planner selected a skill outside the request's authorized scope.",
+        if (decision.type === "respond") {
+          assertResponseEvidence(decision, selectedSkills, observations);
+          const result = {
+            kind: "response" as const,
+            runId,
+            response: decision.message,
+            steps: step,
+            observations: [...observations],
+          };
+          await this.finishAuditSafely(
+            runId,
+            "succeeded",
+            completedSteps,
+            null,
+            monotonicStartedAt,
           );
+          return result;
         }
+
+        selectedSkills = freezeSkillScope(
+          selectedSkills,
+          decision.selectedSkills,
+          decision.skill,
+          this.registry,
+        );
 
         const expenseCallKey = recordExpenseCallKey(decision);
         let result = expenseCallKey
@@ -164,9 +234,7 @@ export class AgentLoop {
               userId: scopedRequest.userId,
               userName: scopedRequest.userName,
               timeZone: scopedRequest.timeZone,
-              ...(scopedRequest.allowedSkills
-                ? { allowedSkills: scopedRequest.allowedSkills }
-                : {}),
+              allowedSkills: selectedSkills,
               signal: scopedSignal,
               now: this.now,
             },
@@ -312,15 +380,76 @@ function allowedSkillSummaries(
   return summaries.filter((skill) => allowed.has(skill.name));
 }
 
+function withoutSkillScope(request: AgentRequest): AgentRequest {
+  const {
+    allowedSkills: _allowedSkills,
+    ...unscoped
+  } = request;
+  return unscoped;
+}
+
+function initialSkillScope(
+  request: AgentRequest,
+  registry: SkillRegistry,
+): readonly string[] | undefined {
+  const declared = request.allowedSkills;
+  return declared ? normalizeSkillScope(declared, registry) : undefined;
+}
+
+function freezeSkillScope(
+  current: readonly string[] | undefined,
+  proposed: readonly string[],
+  calledSkill: string,
+  registry: SkillRegistry,
+): readonly string[] {
+  const normalized = normalizeSkillScope(proposed, registry);
+  if (!normalized.includes(calledSkill)) {
+    throw new AgentEvidenceError(
+      "The selected skill scope does not include the requested skill.",
+    );
+  }
+  if (
+    current &&
+    (current.length !== normalized.length ||
+      current.some((skill, index) => skill !== normalized[index]))
+  ) {
+    throw new AgentEvidenceError(
+      "The planner attempted to change the request's skill scope.",
+    );
+  }
+  return current ?? normalized;
+}
+
+function normalizeSkillScope(
+  skills: readonly string[],
+  registry: SkillRegistry,
+): readonly string[] {
+  if (skills.length === 0 || skills.length > 16) {
+    throw new AgentEvidenceError("The planner selected an invalid skill scope.");
+  }
+  const normalized = [...new Set(skills)].sort();
+  if (
+    normalized.length !== skills.length ||
+    normalized.some((skill) => !registry.has(skill))
+  ) {
+    throw new AgentEvidenceError("The planner selected an invalid skill scope.");
+  }
+  return normalized;
+}
+
 function assertResponseEvidence(
   decision: Extract<import("./types.js").AgentDecision, { type: "respond" }>,
-  request: AgentRequest,
+  selectedSkills: readonly string[] | undefined,
   observations: readonly AgentObservation[],
 ): void {
-  const required = request.requiredSkills ?? [];
-  if (required.length === 0) return;
+  if (!selectedSkills) {
+    if (decision.outcome === "failure" && observations.length === 0) return;
+    throw new AgentEvidenceError(
+      "The planner attempted to respond without selected tool evidence.",
+    );
+  }
 
-  const relevant = required.map((skill) =>
+  const relevant = selectedSkills.map((skill) =>
     observations.filter((observation) => observation.skill === skill),
   );
   const valid =
@@ -336,6 +465,18 @@ function assertResponseEvidence(
       "The planner attempted to respond without required tool evidence.",
     );
   }
+}
+
+function describeCapabilities(registry: SkillRegistry): string {
+  const skills = registry.list();
+  if (skills.length === 0) {
+    return "I currently have no registered external skills. My normal conversation and memory capabilities remain available.";
+  }
+  const lines = skills.map(
+    (skill) =>
+      `- ${skill.name}: ${skill.description} (${skill.configured ? "configured" : "registered, but its external integration is not configured"})`,
+  );
+  return `I currently have ${skills.length} registered skill${skills.length === 1 ? "" : "s"}:\n${lines.join("\n")}\n\nI also retain my normal conversation, memory, text, and voice paths outside this skill count.`;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

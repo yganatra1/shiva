@@ -140,7 +140,7 @@ export class ShivaChatService {
         ),
     );
     const agentResult =
-      !explicitRequest && this.options.agentOrchestrator?.shouldHandle(message)
+      !explicitRequest && this.options.agentOrchestrator
         ? await this.options.agentOrchestrator.run({
             userMessage: message,
             conversationId: conversation.id,
@@ -163,7 +163,7 @@ export class ShivaChatService {
         recentMessages,
         messages,
         !explicitRequest,
-        agentResult?.response,
+        agentResult?.kind === "response" ? agentResult.response : undefined,
         signal,
         performance,
       ),

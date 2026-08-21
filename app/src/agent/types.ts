@@ -3,6 +3,16 @@ import type { SkillResult, SkillSummary } from "../skills/types.js";
 
 export type AgentDecision =
   | {
+      readonly type: "direct_chat";
+    }
+  | {
+      readonly type: "describe_capabilities";
+    }
+  | {
+      readonly type: "clarify";
+      readonly message: string;
+    }
+  | {
       readonly type: "respond";
       readonly outcome: "success" | "failure";
       readonly message: string;
@@ -10,6 +20,8 @@ export type AgentDecision =
   | {
       readonly type: "skill_call";
       readonly skill: string;
+      /** Immutable request scope selected from the original user task. */
+      readonly selectedSkills: readonly string[];
       readonly arguments: Readonly<Record<string, unknown>>;
     };
 
@@ -28,7 +40,6 @@ export interface AgentRequest {
   readonly timeZone: string;
   readonly contextMessages: readonly ChatMessage[];
   readonly allowedSkills?: readonly string[];
-  readonly requiredSkills?: readonly string[];
   readonly signal?: AbortSignal;
 }
 
@@ -41,18 +52,26 @@ export interface AgentPlanningContext {
   readonly now: Date;
 }
 
-export interface AgentRunResult {
-  readonly runId: string;
-  readonly response: string;
-  readonly steps: number;
-  readonly observations: readonly AgentObservation[];
-}
+export type AgentRunResult =
+  | {
+      readonly kind: "response";
+      readonly runId: string;
+      readonly response: string;
+      readonly steps: number;
+      readonly observations: readonly AgentObservation[];
+    }
+  | {
+      readonly kind: "direct_chat";
+      readonly runId: string;
+      readonly response: undefined;
+      readonly steps: number;
+      readonly observations: readonly AgentObservation[];
+    };
 
 export interface AgentPlanner {
   decide(context: AgentPlanningContext): Promise<AgentDecision>;
 }
 
 export interface AgentOrchestratorPort {
-  shouldHandle(message: string): boolean;
   run(request: AgentRequest): Promise<AgentRunResult>;
 }

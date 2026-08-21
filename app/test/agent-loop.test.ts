@@ -6,7 +6,6 @@ import {
   AgentCancelledError,
   AgentEvidenceError,
   AgentLoop,
-  AgentMaxStepsError,
   AgentTimeoutError,
 } from "../src/agent/agent-loop.js";
 import { ShivaOrchestrator } from "../src/agent/orchestrator.js";
@@ -53,6 +52,7 @@ test("agent loop executes a skill, observes confirmed output, then responds", as
     {
       type: "skill_call",
       skill: "record_expense",
+      selectedSkills: ["record_expense"],
       arguments: { amount: 450 },
     },
     {
@@ -113,11 +113,13 @@ test("agent loop executes an identical record_expense call only once per run", a
     {
       type: "skill_call",
       skill: "record_expense",
+      selectedSkills: ["record_expense"],
       arguments: { amount: 450, description: "Pizza" },
     },
     {
       type: "skill_call",
       skill: "record_expense",
+      selectedSkills: ["record_expense"],
       arguments: { description: "Pizza", amount: 450 },
     },
     {
@@ -141,7 +143,6 @@ test("agent loop executes an identical record_expense call only once per run", a
   const result = await loop.run({
     ...request,
     allowedSkills: ["record_expense"],
-    requiredSkills: ["record_expense"],
   });
 
   assert.equal(executionCount, 1);
@@ -170,11 +171,13 @@ test("agent loop preserves distinct record_expense calls in one run", async () =
     {
       type: "skill_call",
       skill: "record_expense",
+      selectedSkills: ["record_expense"],
       arguments: { amount: 450 },
     },
     {
       type: "skill_call",
       skill: "record_expense",
+      selectedSkills: ["record_expense"],
       arguments: { amount: 200 },
     },
     { type: "respond", outcome: "success", message: "Added both." },
@@ -194,7 +197,6 @@ test("agent loop preserves distinct record_expense calls in one run", async () =
   const result = await loop.run({
     ...request,
     allowedSkills: ["record_expense"],
-    requiredSkills: ["record_expense"],
   });
 
   assert.deepEqual(executedAmounts, [450, 200]);
@@ -221,7 +223,6 @@ test("agent loop rejects a successful response without required skill evidence",
     loop.run({
       ...request,
       allowedSkills: ["record_expense"],
-      requiredSkills: ["record_expense"],
     }),
     AgentEvidenceError,
   );
@@ -258,6 +259,7 @@ test("agent loop accepts an early failure from a required prerequisite skill", a
     {
       type: "skill_call",
       skill: "web_research",
+      selectedSkills: ["record_expense", "web_research"],
       arguments: { query: "current price" },
     },
     {
@@ -281,7 +283,6 @@ test("agent loop accepts an early failure from a required prerequisite skill", a
   const result = await loop.run({
     ...request,
     allowedSkills: ["web_research", "record_expense"],
-    requiredSkills: ["web_research", "record_expense"],
   });
 
   assert.equal(result.response, "I could not research the current price, so I did not record it.");
@@ -289,7 +290,7 @@ test("agent loop accepts an early failure from a required prerequisite skill", a
   assert.equal(result.observations.length, 1);
 });
 
-test("agent loop rejects a failure supported only by a non-required skill", async () => {
+test("agent loop rejects a call outside the pre-authorized skill scope", async () => {
   const registry = new SkillRegistry();
   registry.register({
     name: "record_expense",
@@ -315,6 +316,7 @@ test("agent loop rejects a failure supported only by a non-required skill", asyn
     {
       type: "skill_call",
       skill: "record_expense",
+      selectedSkills: ["record_expense"],
       arguments: { amount: 999 },
     },
     {
@@ -339,7 +341,6 @@ test("agent loop rejects a failure supported only by a non-required skill", asyn
     loop.run({
       ...request,
       allowedSkills: ["web_research"],
-      requiredSkills: ["web_research"],
     }),
     AgentEvidenceError,
   );
@@ -375,6 +376,7 @@ test("agent loop terminates an adversarial cross-skill call outside request scop
     {
       type: "skill_call",
       skill: "record_expense",
+      selectedSkills: ["record_expense"],
       arguments: { amount: 999 },
     },
   ];
@@ -395,7 +397,6 @@ test("agent loop terminates an adversarial cross-skill call outside request scop
       ...request,
       userMessage: "Research the latest TTS models.",
       allowedSkills: ["web_research"],
-      requiredSkills: ["web_research"],
     }),
     AgentEvidenceError,
   );
@@ -404,11 +405,16 @@ test("agent loop terminates an adversarial cross-skill call outside request scop
   assert.equal(webExecutions, 0);
 });
 
-test("agent loop stops at the configured decision limit", async () => {
+test("agent loop rejects a planner-selected unknown skill", async () => {
   const registry = new SkillRegistry();
   const planner: AgentPlanner = {
     async decide() {
-      return { type: "skill_call", skill: "missing", arguments: {} };
+      return {
+        type: "skill_call",
+        skill: "missing",
+        selectedSkills: ["missing"],
+        arguments: {},
+      };
     },
   };
   const loop = new AgentLoop(
@@ -418,7 +424,7 @@ test("agent loop stops at the configured decision limit", async () => {
     2,
   );
 
-  await assert.rejects(loop.run(request), AgentMaxStepsError);
+  await assert.rejects(loop.run(request), AgentEvidenceError);
 });
 
 test("agent loop sanitizes cancellation and finalizes without another decision", async () => {
@@ -494,7 +500,7 @@ test("provider-neutral planner requests strict JSON and validates the decision",
       inputs.push(input);
       return {
         content:
-          '```json\n{"type":"skill_call","skill":"record_expense","arguments":{"amount":450}}\n```',
+          '```json\n{"type":"skill_call","skill":"record_expense","selectedSkills":["record_expense"],"arguments":{"amount":450}}\n```',
       };
     },
     async *streamChat() {
@@ -509,6 +515,7 @@ test("provider-neutral planner requests strict JSON and validates the decision",
         name: "record_expense",
         description: "Records an expense.",
         inputDescription: '{ "amount": number }',
+        configured: true,
         permissions: ["expenses.write"],
       },
     ],
@@ -521,39 +528,52 @@ test("provider-neutral planner requests strict JSON and validates the decision",
   assert.deepEqual(decision, {
     type: "skill_call",
     skill: "record_expense",
+    selectedSkills: ["record_expense"],
     arguments: { amount: 450 },
   });
   assert.equal(typeof inputs[0]?.responseFormat, "object");
   assert.match(inputs[0]?.messages[0]?.content ?? "", /Never claim an action succeeded/);
 });
 
-test("orchestrator only intercepts clear enabled skill intents", () => {
+test("orchestrator sends every turn to semantic planner selection", async () => {
+  const messages: string[] = [];
   const noOpLoop: Pick<AgentLoop, "run"> = {
-    async run() {
-      throw new Error("unused");
+    async run(input) {
+      messages.push(input.userMessage);
+      return {
+        kind: "direct_chat",
+        runId: "30000000-0000-4000-8000-000000000003",
+        response: undefined,
+        steps: 1,
+        observations: [],
+      };
     },
   };
-  const orchestrator = new ShivaOrchestrator(noOpLoop, {
-    expenses: true,
-    web: true,
-  });
+  const orchestrator = new ShivaOrchestrator(noOpLoop);
 
-  assert.equal(orchestrator.shouldHandle("Add ₹450 for pizza"), true);
-  assert.equal(orchestrator.shouldHandle("I spent ₹450 on pizza"), true);
-  assert.equal(orchestrator.shouldHandle("We just paid INR 900 for dinner"), true);
-  assert.equal(orchestrator.shouldHandle("What did I spend today?"), true);
-  assert.equal(orchestrator.shouldHandle("Research the latest TTS models"), true);
-  assert.equal(orchestrator.shouldHandle("What is the cost of an RTX 3090?"), false);
-  assert.equal(orchestrator.shouldHandle("What is Newton's third law?"), false);
+  const inputs = [
+    "Add ₹450 for pizza",
+    "I spent ₹450 on pizza",
+    "We just paid INR 900 for dinner",
+    "What did I spend today?",
+    "Research the latest TTS models",
+    "What is the cost of an RTX 3090?",
+    "What is Newton's third law?",
+  ];
+  for (const userMessage of inputs) {
+    await orchestrator.run({ ...request, userMessage });
+  }
+  assert.deepEqual(messages, inputs);
 });
 
-test("orchestrator scopes a combined request to only its explicit skills", async () => {
+test("orchestrator leaves semantic skill selection to the planner", async () => {
   let captured: AgentRequest | undefined;
   const orchestrator = new ShivaOrchestrator(
     {
       async run(scopedRequest) {
         captured = scopedRequest;
         return {
+          kind: "response",
           runId: "30000000-0000-4000-8000-000000000003",
           response: "Completed.",
           steps: 1,
@@ -561,7 +581,6 @@ test("orchestrator scopes a combined request to only its explicit skills", async
         };
       },
     },
-    { expenses: true, web: true },
   );
 
   await orchestrator.run({
@@ -570,12 +589,5 @@ test("orchestrator scopes a combined request to only its explicit skills", async
       "Research current GPU pricing and record the cheapest as an expense.",
   });
 
-  assert.deepEqual(captured?.allowedSkills, [
-    "record_expense",
-    "web_research",
-  ]);
-  assert.deepEqual(captured?.requiredSkills, [
-    "record_expense",
-    "web_research",
-  ]);
+  assert.equal(captured?.allowedSkills, undefined);
 });

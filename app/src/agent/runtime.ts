@@ -88,5 +88,5 @@ export function createAgentRuntime(
     onAuditError,
     config.agentRequestTimeoutMs,
   );
-  return new ShivaOrchestrator(loop, { expenses: true, web: true });
+  return new ShivaOrchestrator(loop);
 }

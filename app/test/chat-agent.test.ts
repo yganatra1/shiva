@@ -26,12 +26,19 @@ test("skill turns reuse the shared chat persistence pipeline while ordinary chat
   };
   const agentRequests: Parameters<AgentOrchestratorPort["run"]>[0][] = [];
   const agentOrchestrator: AgentOrchestratorPort = {
-    shouldHandle(message) {
-      return /expense/i.test(message);
-    },
     async run(request) {
       agentRequests.push(request);
+      if (!/expense/i.test(request.userMessage)) {
+        return {
+          kind: "direct_chat",
+          runId: "90000000-0000-4000-8000-000000000010",
+          response: undefined,
+          steps: 1,
+          observations: [],
+        };
+      }
       return {
+        kind: "response",
         runId: "90000000-0000-4000-8000-000000000009",
         response: "Recorded INR 450 for pizza.",
         steps: 2,
@@ -78,14 +85,12 @@ test("skill turns reuse the shared chat persistence pipeline while ordinary chat
 test("voice-styled diagnostic chat enters the same orchestrator with voice guidance", async (context) => {
   let sawVoiceGuidance = false;
   const agentOrchestrator: AgentOrchestratorPort = {
-    shouldHandle() {
-      return true;
-    },
     async run(request) {
       sawVoiceGuidance = request.contextMessages.some((message) =>
         /spoken aloud/i.test(message.content),
       );
       return {
+        kind: "response",
         runId: "90000000-0000-4000-8000-000000000009",
         response: "I recorded the expense.",
         steps: 2,
@@ -127,7 +132,6 @@ test("agent cancellation uses the existing public cancellation contract", async 
   const app = createApp(testConfig, {
     ...createTestOverrides(provider),
     agentOrchestrator: {
-      shouldHandle() { return true; },
       async run() { throw new AgentCancelledError(); },
     },
   });

@@ -46,6 +46,7 @@ export class SkillRegistry {
       name: skill.name,
       description: skill.description,
       inputDescription: skill.inputDescription,
+      configured: skill.configured,
       permissions: [...skill.permissions],
     }));
   }
@@ -86,6 +87,7 @@ function eraseSkillTypes<TInput, TOutput>(
     name: skill.name,
     description: skill.description,
     inputDescription: skill.inputDescription,
+    configured: skill.configured ?? true,
     inputSchema: skill.inputSchema as unknown as RegisteredSkill["inputSchema"],
     permissions: [...skill.permissions],
     execute: async (input, context) =>

@@ -34,8 +34,11 @@ export class ExpenseReportSkill
   readonly inputSchema: z.ZodType<ExpenseReportInput> =
     expenseReportInputSchema;
   readonly permissions = ["expenses.read"] as const;
+  readonly configured: boolean;
 
-  constructor(private readonly listTool?: ExpenseListTool) {}
+  constructor(private readonly listTool?: ExpenseListTool) {
+    this.configured = listTool !== undefined;
+  }
 
   async execute(
     input: ExpenseReportInput,

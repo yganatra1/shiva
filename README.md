@@ -9,16 +9,17 @@ Text client  -> POST /chat ----------------┐
 Voice UI     -> WS   /voice/chat ----------┴-> shared ShivaChatService
                                               -> conversation + bounded working history
                                               -> embeddinggemma -> memory retrieval/ranking
-                                              -> clear skill intent? -> bounded AgentLoop
-                                                   -> permission policy -> SkillExecutor
-                                                   -> expense sheet / public web tools
-                                              -> otherwise AIProvider -> Ollama/Gemma stream
+                                              -> semantic planner (every ordinary turn)
+                                                   -> direct_chat -> Ollama/Gemma stream
+                                                   -> capability summary / clarification
+                                                   -> frozen skill scope -> permission policy
+                                                      -> SkillExecutor -> sheet/web tools
                                               -> persistence + memory extraction
                  VoiceSession also owns:
                    ASR -> chunker -> serial Qwen TTS -> binary audio frames
 ```
 
-The API does not put model, embedding, persistence, or external-service details in route handlers. Provider and repository interfaces keep those boundaries explicit. `/chat` and the voice WebSocket share the same conversation, memory, persistence, cancellation, and model path; voice mode only adds speech-friendly response guidance. Clear expense or current-web requests enter the agent loop after the same context is built. Ordinary chat does not enter the loop.
+The API does not put model, embedding, persistence, or external-service details in route handlers. Provider and repository interfaces keep those boundaries explicit. `/chat` and the voice WebSocket share the same conversation, memory, persistence, cancellation, and model path; voice mode only adds speech-friendly response guidance. Every non-explicit-memory turn reaches the semantic planner after the same context is built. The planner decides from the registered catalog whether to use skills, ask a clarification, describe the real catalog, or delegate tool-free conversation to the existing streaming provider. There is no keyword/regex intent router.
 
 Google Sheets is the sole expense source of truth. Shiva does not maintain a PostgreSQL expense ledger, row cache, or synchronization mirror. PostgreSQL stores the existing conversation/memory data, the per-user Google resource binding and provisioning lease, plus `agent_runs` and `skill_runs` audit records. Expense-routed audit payloads are redacted so those audit tables do not duplicate ledger details; the normal chat transcript and memory pipeline remain unchanged and can still contain what the user said. See [docs/memory-architecture.md](docs/memory-architecture.md), [docs/voice-architecture.md](docs/voice-architecture.md), and [docs/agent-architecture.md](docs/agent-architecture.md).
 
@@ -187,7 +188,7 @@ Errors before the first streamed chunk use a sanitized JSON envelope. Once strea
 
 ### Agent skills
 
-Expense and explicit current-web requests use the same `/chat` or voice conversation contract. The deterministic router only activates the bounded agent loop for clear intents; it does not replace normal conversation. For each routed request it derives an allowed-and-required skill set from the original user wording. The planner sees only those skill contracts. If it nevertheless selects an out-of-scope skill, the agent loop terminates immediately with the safe `AGENT_INVALID_RESPONSE` error before the executor or tool runs; the executor retains the same denial as defense in depth.
+Expense, web, and ordinary questions use the same `/chat` or voice conversation contract. Every non-explicit-memory turn first gives the planner the actual registered skill catalog, including whether each external integration is configured. The planner can delegate tool-free conversation back to the existing streaming path, request one clarification, return a registry-derived capability summary, or make a skill call. Its first skill call declares the complete minimal skill set for the original task. The agent loop validates and freezes that set; later decisions may only use that exact scope, so web pages and tool observations cannot add a new capability mid-run. Unknown, duplicate, empty, or changing scopes terminate safely before a tool runs.
 
 Record an expense:
 
@@ -242,9 +243,9 @@ The app never needs or asks for the user's Google password or unrestricted accou
 
 Every expense report reads the live sheet and computes fixed two-decimal totals per currency across every matching row; it performs no currency conversion. Its 1–25 `limit` (default 25) and 8,000-character serialized detail budget cap only the individual rows exposed to the planner, while `matchedCount` and totals still cover the full filtered result. Every record operation validates the current header, appends one A:G row, reads the exact appended range back, and reports success only if all seven cells match. `expense_sheet_bindings` keeps only the spreadsheet/tab IDs, schema version, status, and a short provisioning lease—never expense rows or OAuth tokens. Expense agent/skill audit records use constant or minimal redacted payloads and are not used for reporting or calculation. Concurrent first requests coordinate through that lease so Shiva does not intentionally create duplicate ledgers.
 
-Web research uses Brave Search to discover sources and a restricted text fetcher to inspect selected public HTTP(S) pages. It rejects local/private destinations, revalidates redirects, accepts only HTML/plain-text content, and enforces the configured timeout and response-size ceiling. Evidence passed to the planner is capped at 6,000 characters per source and 16,000 characters in total. All page text, snippets, and tool-result content is untrusted data: it cannot grant permission, change the request scope, trigger a write, or establish a new objective. It is not a JavaScript browser and cannot access authenticated pages.
+Web research uses Brave Search to discover sources and a restricted text fetcher to inspect selected public HTTP(S) pages. It rejects local/private destinations, revalidates redirects, accepts only HTML/plain-text content, and enforces the configured timeout and response-size ceiling. Evidence passed to the planner is capped at 6,000 characters per source and 16,000 characters in total. All page text, snippets, and tool-result content is untrusted data: it cannot grant permission, change the already-frozen scope, trigger a write, or establish a new objective. It is not a JavaScript browser and cannot access authenticated pages.
 
-The current permission defaults are `AUTO` for `web.read`, `expenses.read`, and `expenses.write`. Unknown permissions fail closed. A `confirm` policy also fails closed because V0.3 has no confirmation UI. In addition to the planner instructions, the agent loop enforces evidence: a success response is accepted only after every skill required by the explicit intent has at least one `success=true` observation. A failure response requires at least one failed observation from a required skill, allowing a dependent chain to stop safely without attempting steps that can no longer succeed. Agent and skill execution metadata is written to `agent_runs` and `skill_runs`; these audit tables are not an expense ledger.
+The current permission defaults are `AUTO` for `web.read`, `expenses.read`, and `expenses.write`. Unknown permissions fail closed. A `confirm` policy also fails closed because V0.3 has no confirmation UI; the planner can ask a clarification before execution when information or write authorization is missing. In addition to planner instructions, the agent loop enforces evidence: a success response is accepted only after every skill in the frozen plan has a `success=true` observation. A failure response requires at least one failed observation from that plan, allowing a dependent chain to stop safely. Agent and skill execution metadata is written to `agent_runs` and `skill_runs`; agent request text is always redacted there, and expense skill payloads remain redacted. These audit tables are not an expense ledger.
 
 ### Voice
 

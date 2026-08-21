@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { ShivaDatabase } from "../database/pool.js";
 import { agentRuns, skillRuns } from "../database/schema.js";
 
-export const REDACTED_EXPENSE_AGENT_REQUEST = "[expense request redacted]";
+export const REDACTED_AGENT_REQUEST = "[agent request redacted]";
 export const REDACTED_EXPENSE_SKILL_PAYLOAD = Object.freeze({
   redacted: true,
 });
