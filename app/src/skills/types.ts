@@ -1,5 +1,10 @@
 import type { z } from "zod";
 
+export interface SkillAuditDiagnostic {
+  readonly category: string;
+  readonly reason: string;
+}
+
 export interface SkillContext {
   readonly agentRunId: string;
   readonly conversationId: string;
@@ -8,6 +13,10 @@ export interface SkillContext {
   readonly timeZone: string;
   readonly allowedSkills?: readonly string[];
   readonly signal?: AbortSignal;
+  /** Audit-only details that are never returned as a skill observation. */
+  readonly reportAuditDiagnostic?: (
+    diagnostic: SkillAuditDiagnostic,
+  ) => void;
   now(): Date;
 }
 

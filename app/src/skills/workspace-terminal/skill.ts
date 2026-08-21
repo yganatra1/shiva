@@ -49,6 +49,10 @@ export class WorkspaceTerminalSkill
     } catch (error: unknown) {
       if (context.signal?.aborted) throw error;
       if (error instanceof WorkspaceTerminalError) {
+        context.reportAuditDiagnostic?.({
+          category: error.failure,
+          reason: error.message,
+        });
         return {
           success: false,
           error: {

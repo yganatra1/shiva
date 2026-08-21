@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { z } from "zod";
 
-import { AgentLoop, AgentMaxStepsError } from "../src/agent/agent-loop.js";
+import { AgentLoop } from "../src/agent/agent-loop.js";
 import type {
   AgentAuditPort,
   FinishAgentRunInput,
@@ -410,7 +410,9 @@ test("max-step termination is finalized without leaking error text", async () =>
     audit,
   );
 
-  await assert.rejects(loop.run(request), AgentMaxStepsError);
+  const result = await loop.run(request);
+  assert.equal(result.kind, "response");
+  assert.match(result.response ?? "", /couldn't complete this request safely/i);
   assert.equal(audit.agentFinishes[0]?.status, "max_steps");
   assert.equal(audit.agentFinishes[0]?.errorCode, "AgentMaxStepsError");
   assert.equal(audit.skillFinishes[0]?.errorCode, "FIXTURE_FAILURE");

@@ -73,7 +73,7 @@ export class AgentLoop {
   async run(request: AgentRequest): Promise<AgentRunResult> {
     const runId = this.createRunId();
     const observations: AgentObservation[] = [];
-    const completedExpenseCalls = new Map<
+    const completedSkillCalls = new Map<
       string,
       AgentObservation["result"]
     >();
@@ -103,6 +103,9 @@ export class AgentLoop {
       signal: scopedSignal,
     };
     let selectedSkills: readonly string[] | undefined;
+    let plannerFeedback: string | undefined;
+    let plannerFallbackReason: "INVALID_OUTPUT" | "INVALID_SCOPE" =
+      "INVALID_OUTPUT";
 
     const fallBackToCore = async (
       reason: "INVALID_OUTPUT" | "INVALID_SCOPE",
@@ -134,6 +137,8 @@ export class AgentLoop {
         const scopedRequest: AgentRequest = selectedSkills
           ? { ...baseRequest, allowedSkills: selectedSkills }
           : withoutSkillScope(baseRequest);
+        const correctionForAttempt = plannerFeedback;
+        plannerFeedback = undefined;
         const planningContext = {
           request: scopedRequest,
           skills: allowedSkillSummaries(
@@ -144,6 +149,9 @@ export class AgentLoop {
           step,
           maxSteps: this.maxSteps,
           now: this.now(),
+          ...(correctionForAttempt
+            ? { plannerFeedback: correctionForAttempt }
+            : {}),
         };
         let decision;
         try {
@@ -155,6 +163,12 @@ export class AgentLoop {
             observations.length === 0
           ) {
             return await fallBackToCore("INVALID_OUTPUT", step);
+          }
+          if (error instanceof AgentPlannerError) {
+            plannerFallbackReason = "INVALID_OUTPUT";
+            plannerFeedback =
+              "Your previous decision could not be parsed even after its format retry. The active execution is still intact. Return one valid decision using only the frozen skills and existing observations; do not restart, switch to direct chat, or invent tool results.";
+            continue;
           }
           throw error;
         }
@@ -170,51 +184,25 @@ export class AgentLoop {
               this.registry,
             );
           } catch (error: unknown) {
-            if (
-              !(error instanceof AgentEvidenceError) ||
-              selectedSkills ||
-              observations.length > 0
-            ) {
-              throw error;
-            }
+            if (!(error instanceof AgentEvidenceError)) throw error;
+            plannerFallbackReason = "INVALID_SCOPE";
             const validNames = this.registry
               .list()
               .map((skill) => skill.name)
               .join(", ");
-            let repairedDecision;
-            try {
-              repairedDecision = await this.planner.decide({
-                ...planningContext,
-                plannerFeedback: `The previous skill scope was invalid. Use only unique registered skill names from this exact list: ${validNames}. selectedSkills must include the called skill and the complete minimal set needed by the current task.`,
-              });
-            } catch (retryError: unknown) {
-              if (retryError instanceof AgentPlannerError) {
-                return await fallBackToCore("INVALID_SCOPE", step);
-              }
-              throw retryError;
-            }
-            throwIfAborted(scopedRequest.signal);
-            if (repairedDecision.type !== "skill_call") {
-              return await fallBackToCore("INVALID_SCOPE", step);
-            }
-            try {
-              validatedScope = freezeSkillScope(
-                selectedSkills,
-                repairedDecision.selectedSkills,
-                repairedDecision.skill,
-                this.registry,
-              );
-              decision = repairedDecision;
-            } catch (retryError: unknown) {
-              if (retryError instanceof AgentEvidenceError) {
-                return await fallBackToCore("INVALID_SCOPE", step);
-              }
-              throw retryError;
-            }
+            plannerFeedback = selectedSkills
+              ? `Your previous skill_call was rejected because this run's skill scope is frozen. Repeat exactly selectedSkills=${JSON.stringify(selectedSkills)} and call only one of those skills. Preserve the current task and existing observations.`
+              : `Your previous skill_call used an invalid called skill or scope. Choose a called skill only from this exact registered list: ${validNames}. selectedSkills must contain unique registered names, include the called skill, and be the complete minimal set for the current task.`;
+            continue;
           }
         }
 
         if (decision.type === "direct_chat") {
+          if (selectedSkills || observations.length > 0) {
+            plannerFeedback =
+              "direct_chat was rejected because skill execution has already started. Keep the existing frozen scope and observations. Call another allowed skill if more evidence is needed, or return a grounded respond decision whose outcome matches the observations.";
+            continue;
+          }
           const result = {
             kind: "direct_chat" as const,
             runId,
@@ -234,9 +222,9 @@ export class AgentLoop {
 
         if (decision.type === "describe_capabilities") {
           if (selectedSkills || observations.length > 0) {
-            throw new AgentEvidenceError(
-              "The planner attempted to describe capabilities during execution.",
-            );
+            plannerFeedback =
+              "describe_capabilities was rejected because this turn is already executing a task. Continue the existing frozen plan using its observations, then return a grounded respond decision.";
+            continue;
           }
           const result = {
             kind: "response" as const,
@@ -257,9 +245,9 @@ export class AgentLoop {
 
         if (decision.type === "clarify") {
           if (selectedSkills || observations.length > 0) {
-            throw new AgentEvidenceError(
-              "The planner attempted to clarify after beginning execution.",
-            );
+            plannerFeedback =
+              "clarify was rejected because execution has already begun. Do not pause or promise future work. Use the existing observations, call another skill inside the exact frozen scope if needed, or return a grounded success/failure response.";
+            continue;
           }
           const result = {
             kind: "response" as const,
@@ -279,7 +267,16 @@ export class AgentLoop {
         }
 
         if (decision.type === "respond") {
-          assertResponseEvidence(decision, selectedSkills, observations);
+          try {
+            assertResponseEvidence(decision, selectedSkills, observations);
+          } catch (error: unknown) {
+            if (!(error instanceof AgentEvidenceError)) throw error;
+            plannerFeedback = buildResponseEvidenceFeedback(
+              selectedSkills,
+              observations,
+            );
+            continue;
+          }
           const result = {
             kind: "response" as const,
             runId,
@@ -304,29 +301,29 @@ export class AgentLoop {
         }
         selectedSkills = validatedScope;
 
-        const expenseCallKey = recordExpenseCallKey(decision);
-        let result = expenseCallKey
-          ? completedExpenseCalls.get(expenseCallKey)
-          : undefined;
-        if (result === undefined) {
-          result = await this.executor.execute(
-            decision.skill,
-            decision.arguments,
-            {
-              agentRunId: runId,
-              conversationId: scopedRequest.conversationId,
-              userId: scopedRequest.userId,
-              userName: scopedRequest.userName,
-              timeZone: scopedRequest.timeZone,
-              allowedSkills: selectedSkills,
-              signal: scopedSignal,
-              now: this.now,
-            },
-          );
-          if (expenseCallKey) {
-            completedExpenseCalls.set(expenseCallKey, result);
-          }
+        const callKey = skillCallKey(decision);
+        if (callKey && completedSkillCalls.has(callKey)) {
+          const previous = completedSkillCalls.get(callKey);
+          plannerFeedback = previous?.success
+            ? `The identical ${decision.skill} call with the same arguments already succeeded in this run. It was not executed again. Use its existing observation, choose materially different arguments if another call is genuinely required, or return a grounded response.`
+            : `The identical ${decision.skill} call with the same arguments already failed in this run${previous && !previous.success ? ` with code ${previous.error.code}` : ""}. It was not executed again. Use the existing failure observation to return a grounded failure, or choose a materially different allowed action.`;
+          continue;
         }
+        const result = await this.executor.execute(
+          decision.skill,
+          decision.arguments,
+          {
+            agentRunId: runId,
+            conversationId: scopedRequest.conversationId,
+            userId: scopedRequest.userId,
+            userName: scopedRequest.userName,
+            timeZone: scopedRequest.timeZone,
+            allowedSkills: selectedSkills,
+            signal: scopedSignal,
+            now: this.now,
+          },
+        );
+        if (callKey) completedSkillCalls.set(callKey, result);
         observations.push({
           step,
           skill: decision.skill,
@@ -335,9 +332,33 @@ export class AgentLoop {
         });
       }
 
-      throw new AgentMaxStepsError(
+      const maxStepsError = new AgentMaxStepsError(
         `Shiva reached the ${this.maxSteps}-step execution limit.`,
       );
+      await this.finishAuditSafely(
+        runId,
+        "max_steps",
+        completedSteps,
+        maxStepsError.name,
+        monotonicStartedAt,
+      );
+      if (observations.length === 0) {
+        return {
+          kind: "direct_chat",
+          runId,
+          response: undefined,
+          steps: completedSteps,
+          observations: [],
+          plannerFallback: plannerFallbackReason,
+        };
+      }
+      return {
+        kind: "response",
+        runId,
+        response: buildMaxStepsResponse(observations),
+        steps: completedSteps,
+        observations: [...observations],
+      };
     } catch (error: unknown) {
       const timedOut = deadline.signal.aborted && !request.signal?.aborted;
       const cancelled = request.signal?.aborted === true;
@@ -407,16 +428,17 @@ export class AgentLoop {
   }
 }
 
-function recordExpenseCallKey(
+function skillCallKey(
   decision: Extract<import("./types.js").AgentDecision, { type: "skill_call" }>,
 ): string | undefined {
-  if (decision.skill !== "record_expense") return undefined;
-
   try {
-    return JSON.stringify(sortJsonValue(decision.arguments));
+    return JSON.stringify({
+      skill: decision.skill,
+      arguments: sortJsonValue(decision.arguments),
+    });
   } catch {
     // Normal planner arguments are JSON. If an injected planner violates that
-    // contract, execute normally rather than risk suppressing a distinct call.
+    // contract, execute normally rather than suppressing a potentially distinct call.
     return undefined;
   }
 }
@@ -562,6 +584,33 @@ function assertResponseEvidence(
       "The planner attempted to respond without required tool evidence.",
     );
   }
+}
+
+function buildResponseEvidenceFeedback(
+  selectedSkills: readonly string[] | undefined,
+  observations: readonly AgentObservation[],
+): string {
+  if (!selectedSkills) {
+    return "Your respond decision was rejected because no skill plan or tool evidence exists. Choose direct_chat for an ordinary tool-free answer, choose a skill_call when the task requires a registered capability, or return a failure response only when the task truly cannot proceed.";
+  }
+  const status = selectedSkills.map((skill) => {
+    const results = observations
+      .filter((observation) => observation.skill === skill)
+      .map((observation) =>
+        observation.result.success ? "success" : "failure",
+      );
+    return `${skill}=${results.length > 0 ? results.join("|") : "not-called"}`;
+  });
+  return `Your respond decision was rejected because its outcome was not supported by the required tool evidence. Evidence status: ${status.join(", ")}. A success response requires at least one success for every frozen skill. A failure response requires at least one failed frozen-skill observation. Call missing skills or return the supported outcome without inventing results.`;
+}
+
+function buildMaxStepsResponse(
+  observations: readonly AgentObservation[],
+): string {
+  if (observations.some((observation) => !observation.result.success)) {
+    return "I couldn't complete this request safely because a required skill step failed and the planning limit was reached. I have not assumed or claimed success. Please retry or ask me to inspect the relevant configuration.";
+  }
+  return "I completed one or more verified tool steps, but I couldn't safely finish the answer within this turn's planning limit. I won't invent the remaining outcome. Please ask me to verify the result before repeating any action.";
 }
 
 function describeCapabilities(registry: SkillRegistry): string {

@@ -4,7 +4,6 @@ import { z } from "zod";
 
 import {
   AgentCancelledError,
-  AgentEvidenceError,
   AgentLoop,
   AgentTimeoutError,
 } from "../src/agent/agent-loop.js";
@@ -90,7 +89,7 @@ test("agent loop executes a skill, observes confirmed output, then responds", as
   });
 });
 
-test("agent loop executes an identical record_expense call only once per run", async () => {
+test("agent loop executes an identical skill call only once per run", async () => {
   const registry = new SkillRegistry();
   let executionCount = 0;
   registry.register({
@@ -146,11 +145,63 @@ test("agent loop executes an identical record_expense call only once per run", a
   });
 
   assert.equal(executionCount, 1);
-  assert.equal(result.observations.length, 2);
-  assert.deepEqual(
-    result.observations[1]?.result,
-    result.observations[0]?.result,
+  assert.equal(result.observations.length, 1);
+});
+
+test("agent loop does not re-execute an identical unavailable skill", async () => {
+  const registry = new SkillRegistry();
+  let executions = 0;
+  registry.register({
+    name: "web_research",
+    description: "Researches the web.",
+    inputDescription: '{ "query": string }',
+    inputSchema: z.object({ query: z.string() }).strict(),
+    permissions: ["web.read"],
+    async execute() {
+      executions += 1;
+      return {
+        success: false,
+        error: {
+          code: "WEB_RESEARCH_UNAVAILABLE",
+          message: "Web research is unavailable.",
+        },
+      };
+    },
+  });
+  const contexts: AgentPlanningContext[] = [];
+  const failedCall: AgentDecision = {
+    type: "skill_call",
+    skill: "web_research",
+    selectedSkills: ["web_research"],
+    arguments: { query: "Ahmedabad weather" },
+  };
+  const decisions: AgentDecision[] = [
+    failedCall,
+    failedCall,
+    {
+      type: "respond",
+      outcome: "failure",
+      message: "Web research is not configured.",
+    },
+  ];
+  const loop = new AgentLoop(
+    {
+      async decide(context) {
+        contexts.push(context);
+        const decision = decisions.shift();
+        if (!decision) throw new Error("No fake decision available.");
+        return decision;
+      },
+    },
+    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    registry,
   );
+
+  const result = await loop.run(request);
+  assert.equal(executions, 1);
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.response, "Web research is not configured.");
+  assert.match(contexts[2]?.plannerFeedback ?? "", /already failed/i);
 });
 
 test("agent loop preserves distinct record_expense calls in one run", async () => {
@@ -203,29 +254,56 @@ test("agent loop preserves distinct record_expense calls in one run", async () =
   assert.equal(result.observations.length, 2);
 });
 
-test("agent loop rejects a successful response without selected skill evidence", async () => {
+test("agent loop corrects a response that is missing required skill evidence", async () => {
   const registry = new SkillRegistry();
+  let executions = 0;
+  registry.register({
+    name: "record_expense",
+    description: "Records an expense.",
+    inputDescription: '{ "amount": number }',
+    inputSchema: z.object({ amount: z.number().positive() }).strict(),
+    permissions: ["expenses.write"],
+    async execute() {
+      executions += 1;
+      return { success: true, data: { expenseId: "expense-1" } };
+    },
+  });
+  const contexts: AgentPlanningContext[] = [];
+  const decisions: AgentDecision[] = [
+    {
+      type: "respond",
+      outcome: "success",
+      message: "The expense was added.",
+    },
+    {
+      type: "skill_call",
+      skill: "record_expense",
+      selectedSkills: ["record_expense"],
+      arguments: { amount: 450 },
+    },
+    {
+      type: "respond",
+      outcome: "success",
+      message: "The expense was added.",
+    },
+  ];
   const loop = new AgentLoop(
     {
-      async decide() {
-        return {
-          type: "respond",
-          outcome: "success",
-          message: "The expense was added.",
-        };
+      async decide(context) {
+        contexts.push(context);
+        const decision = decisions.shift();
+        if (!decision) throw new Error("No fake decision available.");
+        return decision;
       },
     },
     new SkillExecutor(registry, new PermissionPolicyEngine()),
     registry,
   );
 
-  await assert.rejects(
-    loop.run({
-      ...request,
-      allowedSkills: ["record_expense"],
-    }),
-    AgentEvidenceError,
-  );
+  const result = await loop.run(request);
+  assert.equal(executions, 1);
+  assert.equal(result.response, "The expense was added.");
+  assert.match(contexts[1]?.plannerFeedback ?? "", /no skill plan or tool evidence/i);
 });
 
 test("agent loop accepts an early failure from a selected prerequisite skill", async () => {
@@ -290,8 +368,10 @@ test("agent loop accepts an early failure from a selected prerequisite skill", a
   assert.equal(result.observations.length, 1);
 });
 
-test("agent loop rejects a call outside the pre-authorized skill scope", async () => {
+test("agent loop feeds an out-of-scope call back to the planner for correction", async () => {
   const registry = new SkillRegistry();
+  let expenseExecutions = 0;
+  let webExecutions = 0;
   registry.register({
     name: "record_expense",
     description: "Records an expense.",
@@ -299,6 +379,7 @@ test("agent loop rejects a call outside the pre-authorized skill scope", async (
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
     permissions: ["expenses.write"],
     async execute() {
+      expenseExecutions += 1;
       return { success: true, data: { expenseId: "unexpected" } };
     },
   });
@@ -309,7 +390,8 @@ test("agent loop rejects a call outside the pre-authorized skill scope", async (
     inputSchema: z.object({ query: z.string() }).strict(),
     permissions: ["web.read"],
     async execute() {
-      return { success: true, data: { answer: "unused" } };
+      webExecutions += 1;
+      return { success: true, data: { answer: "grounded" } };
     },
   });
   const decisions: AgentDecision[] = [
@@ -320,14 +402,18 @@ test("agent loop rejects a call outside the pre-authorized skill scope", async (
       arguments: { amount: 999 },
     },
     {
-      type: "respond",
-      outcome: "failure",
-      message: "The research failed.",
+      type: "skill_call",
+      skill: "web_research",
+      selectedSkills: ["web_research"],
+      arguments: { query: "latest TTS models" },
     },
+    { type: "respond", outcome: "success", message: "Research complete." },
   ];
+  const contexts: AgentPlanningContext[] = [];
   const loop = new AgentLoop(
     {
-      async decide() {
+      async decide(context) {
+        contexts.push(context);
         const decision = decisions.shift();
         if (!decision) throw new Error("No fake decision available.");
         return decision;
@@ -337,16 +423,17 @@ test("agent loop rejects a call outside the pre-authorized skill scope", async (
     registry,
   );
 
-  await assert.rejects(
-    loop.run({
-      ...request,
-      allowedSkills: ["web_research"],
-    }),
-    AgentEvidenceError,
-  );
+  const result = await loop.run({
+    ...request,
+    allowedSkills: ["web_research"],
+  });
+  assert.equal(expenseExecutions, 0);
+  assert.equal(webExecutions, 1);
+  assert.equal(result.response, "Research complete.");
+  assert.match(contexts[1]?.plannerFeedback ?? "", /scope is frozen/i);
 });
 
-test("agent loop terminates an adversarial cross-skill call outside request scope", async () => {
+test("agent loop never executes a repeated adversarial cross-skill call", async () => {
   const registry = new SkillRegistry();
   let expenseExecutions = 0;
   let webExecutions = 0;
@@ -372,17 +459,65 @@ test("agent loop terminates an adversarial cross-skill call outside request scop
       return { success: true, data: { answer: input.query } };
     },
   });
-  const decisions: AgentDecision[] = [
-    {
+  const invalidDecision: AgentDecision = {
       type: "skill_call",
       skill: "record_expense",
       selectedSkills: ["record_expense"],
       arguments: { amount: 999 },
+    };
+  const loop = new AgentLoop(
+    {
+      async decide() {
+        return invalidDecision;
+      },
+    },
+    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    registry,
+    2,
+  );
+
+  const result = await loop.run({
+    ...request,
+    userMessage: "Research the latest TTS models.",
+    allowedSkills: ["web_research"],
+  });
+
+  assert.equal(result.kind, "direct_chat");
+  assert.equal(expenseExecutions, 0);
+  assert.equal(webExecutions, 0);
+});
+
+test("agent loop corrects clarification attempted after tool execution", async () => {
+  const registry = new SkillRegistry();
+  registry.register({
+    name: "web_research",
+    description: "Researches the web.",
+    inputDescription: '{ "query": string }',
+    inputSchema: z.object({ query: z.string() }).strict(),
+    permissions: ["web.read"],
+    async execute() {
+      return { success: true, data: { answer: "grounded" } };
+    },
+  });
+  const contexts: AgentPlanningContext[] = [];
+  const decisions: AgentDecision[] = [
+    {
+      type: "skill_call",
+      skill: "web_research",
+      selectedSkills: ["web_research"],
+      arguments: { query: "Ahmedabad weather" },
+    },
+    { type: "clarify", message: "Which Ahmedabad?" },
+    {
+      type: "respond",
+      outcome: "success",
+      message: "Here is the grounded forecast.",
     },
   ];
   const loop = new AgentLoop(
     {
-      async decide() {
+      async decide(context) {
+        contexts.push(context);
         const decision = decisions.shift();
         if (!decision) throw new Error("No fake decision available.");
         return decision;
@@ -392,17 +527,10 @@ test("agent loop terminates an adversarial cross-skill call outside request scop
     registry,
   );
 
-  await assert.rejects(
-    loop.run({
-      ...request,
-      userMessage: "Research the latest TTS models.",
-      allowedSkills: ["web_research"],
-    }),
-    AgentEvidenceError,
-  );
-
-  assert.equal(expenseExecutions, 0);
-  assert.equal(webExecutions, 0);
+  const result = await loop.run(request);
+  assert.equal(result.response, "Here is the grounded forecast.");
+  assert.match(contexts[2]?.plannerFeedback ?? "", /clarify was rejected/i);
+  assert.equal(result.observations.length, 1);
 });
 
 test("agent loop retries an unknown skill scope then falls back to core chat", async () => {
