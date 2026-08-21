@@ -203,7 +203,7 @@ test("agent loop preserves distinct record_expense calls in one run", async () =
   assert.equal(result.observations.length, 2);
 });
 
-test("agent loop rejects a successful response without required skill evidence", async () => {
+test("agent loop rejects a successful response without selected skill evidence", async () => {
   const registry = new SkillRegistry();
   const loop = new AgentLoop(
     {
@@ -228,7 +228,7 @@ test("agent loop rejects a successful response without required skill evidence",
   );
 });
 
-test("agent loop accepts an early failure from a required prerequisite skill", async () => {
+test("agent loop accepts an early failure from a selected prerequisite skill", async () => {
   const registry = new SkillRegistry();
   let expenseExecutions = 0;
   registry.register({

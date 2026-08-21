@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import {
   NOOP_AGENT_AUDIT,
-  REDACTED_EXPENSE_SKILL_PAYLOAD,
-  isExpenseAuditSkill,
+  REDACTED_SKILL_PAYLOAD,
+  isRedactedAuditSkill,
   type AgentAuditPort,
   type SkillRunStatus,
 } from "../agent/audit.js";
@@ -252,7 +252,7 @@ function failure(code: string, message: string): SkillFailure {
 }
 
 function auditPayload(skill: string, payload: unknown): unknown {
-  return isExpenseAuditSkill(skill)
-    ? REDACTED_EXPENSE_SKILL_PAYLOAD
+  return isRedactedAuditSkill(skill)
+    ? REDACTED_SKILL_PAYLOAD
     : payload;
 }

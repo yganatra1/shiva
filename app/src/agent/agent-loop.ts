@@ -126,11 +126,6 @@ export class AgentLoop {
         throwIfAborted(scopedRequest.signal);
 
         if (decision.type === "direct_chat") {
-          if (selectedSkills || observations.length > 0) {
-            throw new AgentEvidenceError(
-              "The planner attempted to bypass an active skill plan.",
-            );
-          }
           const result = {
             kind: "direct_chat" as const,
             runId,

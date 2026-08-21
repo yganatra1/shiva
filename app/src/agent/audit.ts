@@ -4,12 +4,17 @@ import type { ShivaDatabase } from "../database/pool.js";
 import { agentRuns, skillRuns } from "../database/schema.js";
 
 export const REDACTED_AGENT_REQUEST = "[agent request redacted]";
-export const REDACTED_EXPENSE_SKILL_PAYLOAD = Object.freeze({
+export const REDACTED_SKILL_PAYLOAD = Object.freeze({
   redacted: true,
 });
 
-export function isExpenseAuditSkill(skill: string): boolean {
-  return skill === "record_expense" || skill === "expense_report";
+export function isRedactedAuditSkill(skill: string): boolean {
+  return (
+    skill === "record_expense" ||
+    skill === "expense_report" ||
+    skill === "learn_about_shiva" ||
+    skill === "analyze_shiva_workspace"
+  );
 }
 
 export type AgentRunStatus =

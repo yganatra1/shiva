@@ -17,6 +17,12 @@ skill registry -> permission policy -> validated skill
 
 There is no keyword intent router. On every non-explicit-memory turn the planner sees the full registered catalog and selects `direct_chat`, a capability summary, a clarification, or a skill call. The first skill call declares the complete minimal skill set for the original task. The agent loop validates and freezes that set, then exposes only those contracts on later steps. A changing, unknown, duplicate, or out-of-scope selection terminates with `AGENT_INVALID_RESPONSE` before the `SkillExecutor` or tool runs; the executor retains the scope check as defense in depth. It then checks permissions and validated input before an allowed tool runs. Tool results become structured observations. A success response requires successful evidence for every selected skill; one failed selected-skill observation permits a safe early failure response. All planner and tool steps share one `AGENT_REQUEST_TIMEOUT_MS` deadline.
 
+## Shiva workspace tools
+
+`learn_about_shiva` uses the read-only workspace adapter to return a bounded source tree and excerpts from core project documents. `analyze_shiva_workspace` accepts a diagnostic question, optional literal search terms, and up to eight repository-relative source/config paths. The planner can use an initial search observation to select precise files in a later call without changing its frozen skill scope.
+
+The adapter is rooted to the Shiva repository and exposes no write or command-execution method. It rejects absolute/traversal paths, verifies real paths, skips symlinks, accepts only bounded text files, and excludes `.env`, credentials/tokens/private keys, Git internals, dependencies, generated output, runtime data, caches, logs, backups, models, virtual environments, binary data, and oversized files. Returned workspace content is untrusted tool data. Workspace skill inputs/results are redacted from PostgreSQL audit payloads.
+
 ## Expense tools
 
 `expense.insert` and `expense.list` depend on the data-source-neutral `ExpenseRepositoryPort`. Production wires that boundary through `ManagedGoogleSheetsExpenseRepository`, which provisions/resolves the per-user sheet, and then to the strict `GoogleSheetsExpenseRepository` for live row operations.

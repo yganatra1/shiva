@@ -1,6 +1,6 @@
 # Shiva V0.3
 
-Shiva is Yash's private personal AI. V0.3 preserves the Fastify/Ollama streaming brain, V0.2 persistent memory, and browser voice layer, then adds a bounded agent loop for controlled expense and public-web skills.
+Shiva is Yash's private personal AI. V0.3 preserves the Fastify/Ollama streaming brain, V0.2 persistent memory, and browser voice layer, then adds a bounded agent loop for controlled expense, public-web, and read-only Shiva-workspace skills.
 
 ## Architecture
 
@@ -99,7 +99,7 @@ NODE_ENV=development
 
 `SHIVA_KEEP_ALIVE` accepts Ollama duration strings such as `30m` or numeric seconds. Use `SHIVA_KEEP_ALIVE=-1` to keep the chat model loaded indefinitely; Shiva serializes numeric environment values as JSON numbers as required by Ollama.
 
-The built-in expense and web skill contracts are always registered, so a clear request follows one stable agent path. Expense execution is enabled by the complete `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET`/`GOOGLE_OAUTH_REFRESH_TOKEN` trio, or by the legacy `EXPENSE_SHEET_ID` path. If neither is configured, expense skills return a safe `EXPENSE_SHEET_UNAVAILABLE` observation rather than falling back to an ungrounded answer. Partial OAuth configuration is rejected at startup. `GOOGLE_APPLICATION_CREDENTIALS` is used only by the legacy sheet-ID path and must point to a service-account JSON file outside Git. Without `BRAVE_SEARCH_API_KEY`, research similarly returns `WEB_RESEARCH_UNAVAILABLE`. `AGENT_MAX_STEPS` accepts 1–32 and bounds every agent run. `AGENT_REQUEST_TIMEOUT_MS` defaults to 300,000 ms and accepts 1,000–1,800,000 ms at startup; it is one total deadline shared by every planner and tool step in that run. Expiry cancels the active work and maps to the sanitized `AGENT_TIMEOUT` response.
+All five built-in skill contracts are registered for semantic planner selection: `record_expense`, `expense_report`, `web_research`, `learn_about_shiva`, and `analyze_shiva_workspace`. Expense execution is enabled by the complete `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET`/`GOOGLE_OAUTH_REFRESH_TOKEN` trio, or by the legacy `EXPENSE_SHEET_ID` path. If neither is configured, expense skills return `EXPENSE_SHEET_UNAVAILABLE`. Partial OAuth configuration is rejected at startup. `GOOGLE_APPLICATION_CREDENTIALS` is used only by the legacy sheet-ID path. Without `BRAVE_SEARCH_API_KEY`, research returns `WEB_RESEARCH_UNAVAILABLE`. The two workspace skills are always configured because they use a bounded read-only view of this repository. `AGENT_MAX_STEPS` and `AGENT_REQUEST_TIMEOUT_MS` bound the complete planner/tool run.
 
 ## Local commands
 
@@ -213,6 +213,16 @@ curl --no-buffer -i -X POST http://127.0.0.1:3000/chat \
   -H 'Content-Type: application/json' \
   -d '{"message":"Research current RTX 3090 rental pricing and cite the sources."}'
 ```
+
+Inspect Shiva itself or diagnose its implementation:
+
+```bash
+curl --no-buffer -i -X POST http://127.0.0.1:3000/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Inspect your current skill and configuration architecture. Which source files would need to change to add per-skill confirmation?"}'
+```
+
+`learn_about_shiva` returns a bounded repository tree plus excerpts from core project documentation. `analyze_shiva_workspace` can iteratively search and read relevant source/config text files. Both are read-only: they cannot edit files, run commands, inspect paths outside this repository, follow symlinks, or read `.env`, credentials, private keys, runtime data, dependencies, generated output, logs, models, backups, or oversized/binary files. Workspace skill audit payloads are redacted.
 
 With the recommended user OAuth setup, the first expense read or write lazily creates one spreadsheet per Shiva user in that Google user's My Drive. Shiva names it `Shiva Expenses`, creates an `Expenses` tab, freezes row 1, and owns the internal `Expenses!A:G` layout. The user does not create a sheet, choose a tab, or configure a range. The managed header is:
 

@@ -31,6 +31,7 @@ test("skill registry stores type-erased skills and exposes safe summaries", asyn
       name: "echo_value",
       description: "Echoes a validated value.",
       inputDescription: '{ "value": "non-empty string" }',
+      configured: true,
       permissions: ["example.read"],
     },
   ]);

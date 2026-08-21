@@ -4,6 +4,8 @@ import type { ShivaDatabase } from "../database/pool.js";
 import { PermissionPolicyEngine } from "../security/policy-engine.js";
 import { SkillExecutor } from "../skills/executor.js";
 import { ExpenseReportSkill } from "../skills/expense-report/skill.js";
+import { AnalyzeShivaWorkspaceSkill } from "../skills/analyze-shiva-workspace/skill.js";
+import { LearnAboutShivaSkill } from "../skills/learn-about-shiva/skill.js";
 import { RecordExpenseSkill } from "../skills/record-expense/skill.js";
 import { SkillRegistry } from "../skills/registry.js";
 import { WebResearchSkill } from "../skills/web-research/skill.js";
@@ -17,6 +19,7 @@ import { GoogleUserOAuthAccessTokenProvider } from "../tools/expenses/google-use
 import { DrizzleExpenseSheetBindingStore } from "../tools/expenses/sheet-binding-repository.js";
 import { WebOpenTool } from "../tools/web/open.js";
 import { BraveWebSearchTool } from "../tools/web/search.js";
+import { FileSystemWorkspaceReader } from "../tools/workspace/reader.js";
 import { AgentLoop } from "./agent-loop.js";
 import { AgentAuditRepository } from "./audit.js";
 import { ShivaOrchestrator } from "./orchestrator.js";
@@ -30,6 +33,9 @@ export function createAgentRuntime(
   onAuditError: (error: unknown) => void = () => {},
 ): AgentOrchestratorPort {
   const registry = new SkillRegistry();
+  const workspace = new FileSystemWorkspaceReader();
+  registry.register(new LearnAboutShivaSkill(workspace));
+  registry.register(new AnalyzeShivaWorkspaceSkill(workspace));
   if (config.googleUserOAuth || config.expenseSheetId) {
     const accessTokenProvider = config.googleUserOAuth
       ? new GoogleUserOAuthAccessTokenProvider(config.googleUserOAuth)

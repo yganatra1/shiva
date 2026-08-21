@@ -6,7 +6,9 @@ The V0.3 agent layer lets Shiva perform a small set of controlled, observable ac
 
 - `record_expense`: append and verify one row in a private Google Sheet;
 - `expense_report`: read fresh expense rows and calculate exact totals per currency;
-- `web_research`: search and inspect current public web sources.
+- `web_research`: search and inspect current public web sources;
+- `learn_about_shiva`: inspect a bounded repository tree and core project documentation;
+- `analyze_shiva_workspace`: search/read relevant Shiva source and configuration text to diagnose where a change belongs.
 
 These skills wrap the existing Shiva brain. Text and voice requests still use the same `ShivaChatService`, conversation ID, working memory, long-term memory retrieval, persistence, cancellation, and response transport. The feature does not create a second chat or memory implementation.
 
@@ -62,6 +64,12 @@ The planner emits one validated `direct_chat`, `describe_capabilities`, `clarify
 | Audit repository | Record agent/skill execution state in PostgreSQL | Store the expense ledger |
 
 Unknown skills and permissions fail closed. Skill input schemas reject unknown or malformed arguments. Built-in skill contracts remain registered even when their external integration is not configured: expense execution returns `EXPENSE_SHEET_UNAVAILABLE`, and research returns `WEB_RESEARCH_UNAVAILABLE`. This produces an explicit failed observation instead of silently dropping the capability or letting normal chat guess. A failed observation remains visible to the planner so it can explain the failure or choose another safe action; the evidence gate prevents it from inventing a success.
+
+## Shiva workspace architecture
+
+`learn_about_shiva` and `analyze_shiva_workspace` require `workspace.read` and are always configured. They resolve the repository root from the application module location, so the same build works from the local checkout and `/workspace/shiva/repo` without trusting the shell's current directory. The self-knowledge skill returns a bounded file inventory and fair excerpts from core README, architecture, package, and environment-example documents. The analysis skill accepts a diagnostic question, optional literal search terms, and up to eight repository-relative files; it can be called again within the same frozen plan to inspect files discovered by an earlier search.
+
+This boundary is deliberately not a shell or arbitrary filesystem API. It is read-only, caps traversal depth/file count/file size/output size, accepts only text formats, rejects absolute paths and traversal, verifies real paths, and never follows symlinks. It excludes `.env`, credential/token/key files, Git internals, agent metadata, dependencies, generated output, runtime data, logs, backups, models, caches, virtual environments, binary files, and oversized files. Workspace content is untrusted observation data and cannot change the frozen skill scope or grant permission. Inputs/results for both workspace skills are redacted from `skill_runs` to avoid copying source into PostgreSQL.
 
 ## Expense architecture
 
@@ -186,7 +194,7 @@ Drizzle migrations add these control-plane tables:
 - `skill_runs`: parent agent run, skill name, arguments, declared permissions, sanitized result, status, error code, timestamps, and duration.
 - `expense_sheet_bindings`: one per-user Google spreadsheet/tab pointer, schema state, and provisioning lease.
 
-Statuses distinguish success, failure, cancellation, denial, and max-step exhaustion where applicable. `agent_runs.request` always uses a constant redacted marker because every ordinary turn now reaches planning. Non-expense skill runs may contain their bounded inputs/results; expense skill runs use constant or minimal redacted payloads rather than descriptions, amounts, or returned rows. Database access and retention must still be managed accordingly. The binding table contains resource IDs and coordination state only. None of these tables replaces or copies the Google expense ledger, and none stores Google tokens. This audit redaction does not alter the existing conversation/message or memory records created by the shared chat pipeline.
+Statuses distinguish success, failure, cancellation, denial, and max-step exhaustion where applicable. `agent_runs.request` always uses a constant redacted marker because every ordinary turn now reaches planning. Web skill runs may contain bounded inputs/results; expense and workspace skill runs use constant redacted payloads rather than ledger rows or source content. Database access and retention must still be managed accordingly. The binding table contains resource IDs and coordination state only. None of these tables replaces or copies the Google expense ledger, and none stores Google tokens. This audit redaction does not alter the existing conversation/message or memory records created by the shared chat pipeline.
 
 Apply committed Drizzle migrations before running this feature against a real database:
 

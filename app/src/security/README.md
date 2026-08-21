@@ -28,6 +28,7 @@ The current permission registry is intentionally small:
 | `web.read` | `web_research` | `auto` |
 | `expenses.read` | `expense_report` | `auto` |
 | `expenses.write` | `record_expense` | `auto` |
+| `workspace.read` | `learn_about_shiva`, `analyze_shiva_workspace` | `auto` |
 
 Unknown permissions fail closed. A permission configured as `deny` is rejected. A permission configured as `confirm` is also rejected with `CONFIRMATION_REQUIRED`, because V0.3 deliberately does not invent a confirmation UI. Every ordinary turn reaches semantic planning; the model proposes the minimal skill set from the original request, and the agent loop validates and freezes it on the first skill call. Permission approval cannot expand that frozen set. Scope and policy checks happen before schema validation and before any external tool is called.
 
@@ -41,7 +42,7 @@ PostgreSQL stores agent control-plane history, not an expense ledger:
 - `skill_runs` records the selected skill, arguments, declared permissions, sanitized result, status, error code, and timing;
 - `expense_sheet_bindings` records only the per-user Google spreadsheet/tab IDs, schema/status values, and a short provisioning lease.
 
-Agent request text is always redacted in `agent_runs`. Non-expense `skill_runs` can still contain tool inputs/results; expense skill payloads retain only constant or minimal redacted metadata rather than descriptions, amounts, or returned rows. Protect the database, limit operator access, and apply an explicit retention policy. The binding table contains no expense rows or Google tokens. The ordinary conversation/message and memory path is intentionally unchanged, so the original utterance may still exist as chat data.
+Agent request text is always redacted in `agent_runs`. Web `skill_runs` can still contain bounded tool inputs/results; expense and workspace skill payloads use constant redacted metadata rather than descriptions, amounts, returned rows, or source content. Protect the database, limit operator access, and apply an explicit retention policy. The binding table contains no expense rows or Google tokens. The ordinary conversation/message and memory path is intentionally unchanged, so the original utterance may still exist as chat data.
 
 ## External-service boundaries
 
@@ -52,6 +53,8 @@ Google user OAuth is the recommended expense authorization path. Request offline
 First use is lazy and lease-coordinated: Shiva creates or adopts the spreadsheet, ensures the `Expenses` tab, canonical A:G header, and frozen row, then stores only Google resource IDs and provisioning state. Once bound, unexpected changes to the tab ID, header, or frozen-row invariant fail closed. Each report reads the live sheet, and each append is considered successful only after Shiva reads the exact appended A:G row back and verifies every cell.
 
 The Brave key remains server-side. Public page fetching rejects URL credentials and local/private/reserved destinations after DNS resolution, checks redirects again, limits content types and bytes, and applies deadlines. Evidence is bounded before it enters the planner. Conversation text, web pages, search snippets, and tool results are untrusted data: none can grant permission, widen an already-frozen scope, authorize an expense write, or create a new objective. Production network egress rules remain advisable because application-level URL validation alone is not a complete sandbox.
+
+Workspace inspection is a separate read-only boundary rooted to Shiva's repository. It provides no shell, writes, process execution, network access, or general host-filesystem access. Path traversal, absolute paths, symlinks, secret/key/token files, `.env`, Git internals, dependencies, generated/runtime data, binary files, and oversized inputs are blocked. Source text remains untrusted data and cannot expand the planner's frozen scope.
 
 ## Current limitations
 
