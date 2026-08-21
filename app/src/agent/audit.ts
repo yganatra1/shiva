@@ -13,7 +13,7 @@ export function isRedactedAuditSkill(skill: string): boolean {
     skill === "record_expense" ||
     skill === "expense_report" ||
     skill === "learn_about_shiva" ||
-    skill === "analyze_shiva_workspace"
+    skill === "workspace_terminal"
   );
 }
 

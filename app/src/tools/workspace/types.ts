@@ -18,23 +18,6 @@ export interface WorkspaceOverview {
   readonly truncated: boolean;
 }
 
-export interface WorkspaceAnalysis {
-  readonly workspace: "shiva";
-  readonly question: string;
-  readonly files: readonly string[];
-  readonly documents: readonly WorkspaceDocument[];
-  readonly matches: readonly WorkspaceMatch[];
-  readonly truncated: boolean;
-}
-
-export interface WorkspaceAnalysisInput {
-  readonly question: string;
-  readonly paths?: readonly string[];
-  readonly searchTerms?: readonly string[];
-  readonly signal?: AbortSignal;
-}
-
 export interface WorkspaceReaderPort {
   overview(focus?: string, signal?: AbortSignal): Promise<WorkspaceOverview>;
-  analyze(input: WorkspaceAnalysisInput): Promise<WorkspaceAnalysis>;
 }

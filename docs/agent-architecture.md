@@ -8,7 +8,7 @@ The V0.3 agent layer lets Shiva perform a small set of controlled, observable ac
 - `expense_report`: read fresh expense rows and calculate exact totals per currency;
 - `web_research`: search and inspect current public web sources;
 - `learn_about_shiva`: inspect a bounded repository tree and core project documentation;
-- `analyze_shiva_workspace`: search/read relevant Shiva source and configuration text to diagnose where a change belongs.
+- `workspace_terminal`: iteratively inspect the complete Shiva repository through a read-only terminal contract.
 
 These skills wrap the existing Shiva brain. Text and voice requests still use the same `ShivaChatService`, conversation ID, working memory, long-term memory retrieval, persistence, cancellation, and response transport. The feature does not create a second chat or memory implementation.
 
@@ -67,9 +67,11 @@ Unknown skills and permissions fail closed. Skill input schemas reject unknown o
 
 ## Shiva workspace architecture
 
-`learn_about_shiva` and `analyze_shiva_workspace` require `workspace.read` and are always configured. They resolve the repository root from the application module location, so the same build works from the local checkout and `/workspace/shiva/repo` without trusting the shell's current directory. The self-knowledge skill returns a bounded file inventory and fair excerpts from core README, architecture, package, and environment-example documents. The analysis skill accepts a diagnostic question, optional literal search terms, and up to eight repository-relative files; it can be called again within the same frozen plan to inspect files discovered by an earlier search.
+`learn_about_shiva` and `workspace_terminal` require `workspace.read` and are always configured. They resolve the repository root from the application module location, so the same build works from the local checkout and `/workspace/shiva/repo` without trusting the process's current directory. The self-knowledge skill returns a bounded file inventory and excerpts from core project documents. The terminal skill runs one inspection operation per agent step; Gemma can inspect the result and call it again with a more precise command while the frozen skill scope remains unchanged.
 
-This boundary is deliberately not a shell or arbitrary filesystem API. It is read-only, caps traversal depth/file count/file size/output size, accepts only text formats, rejects absolute paths and traversal, verifies real paths, and never follows symlinks. It excludes `.env`, credential/token/key files, Git internals, agent metadata, dependencies, generated output, runtime data, logs, backups, models, caches, virtual environments, binary files, and oversized files. Workspace content is untrusted observation data and cannot change the frozen skill scope or grant permission. Inputs/results for both workspace skills are redacted from `skill_runs` to avoid copying source into PostgreSQL.
+The terminal has full read visibility inside the repository. It directly spawns only `pwd`, `ls`, `rg`, `cat`, `head`, `tail`, `wc`, and the read-only Git subcommands `status`, `ls-files`, `diff`, `log`, and `grep`. It does not invoke a shell and exposes no redirection, stdin, interpreters, network programs, package managers, or mutating Git/filesystem operations. Every supplied path is repository-relative, normalized, resolved, and rejected if its real target escapes the repository; an in-repository symlink is readable only when its resolved target remains inside that boundary. Commands share the agent cancellation signal, have an eight-second deadline, and return at most 64 KiB. Workspace content is untrusted observation data and cannot change the frozen skill scope or grant permission. Inputs/results for both workspace skills are redacted from `skill_runs` to avoid copying source into PostgreSQL.
+
+V0.3 deliberately has no workspace mutation permission or skill. A future update/delete terminal must use a deterministic state machine that identifies one exact operation and requires two separate Owner confirmations before execution. Until that persisted confirmation protocol exists, all workspace mutation remains unavailable; prompt instructions cannot substitute for authorization.
 
 ## Expense architecture
 

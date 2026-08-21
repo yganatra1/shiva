@@ -28,7 +28,7 @@ The current permission registry is intentionally small:
 | `web.read` | `web_research` | `auto` |
 | `expenses.read` | `expense_report` | `auto` |
 | `expenses.write` | `record_expense` | `auto` |
-| `workspace.read` | `learn_about_shiva`, `analyze_shiva_workspace` | `auto` |
+| `workspace.read` | `learn_about_shiva`, `workspace_terminal` | `auto` |
 
 Unknown permissions fail closed. A permission configured as `deny` is rejected. A permission configured as `confirm` is also rejected with `CONFIRMATION_REQUIRED`, because V0.3 deliberately does not invent a confirmation UI. Every ordinary turn reaches semantic planning; the model proposes the minimal skill set from the original request, and the agent loop validates and freezes it on the first skill call. Permission approval cannot expand that frozen set. Scope and policy checks happen before schema validation and before any external tool is called.
 
@@ -54,7 +54,9 @@ First use is lazy and lease-coordinated: Shiva creates or adopts the spreadsheet
 
 The Brave key remains server-side. Public page fetching rejects URL credentials and local/private/reserved destinations after DNS resolution, checks redirects again, limits content types and bytes, and applies deadlines. Evidence is bounded before it enters the planner. Conversation text, web pages, search snippets, and tool results are untrusted data: none can grant permission, widen an already-frozen scope, authorize an expense write, or create a new objective. Production network egress rules remain advisable because application-level URL validation alone is not a complete sandbox.
 
-Workspace inspection is a separate read-only boundary rooted to Shiva's repository. It provides no shell, writes, process execution, network access, or general host-filesystem access. Path traversal, absolute paths, symlinks, secret/key/token files, `.env`, Git internals, dependencies, generated/runtime data, binary files, and oversized inputs are blocked. Source text remains untrusted data and cannot expand the planner's frozen scope.
+Workspace inspection is a separate read-only boundary rooted to Shiva's repository. `workspace_terminal` can spawn only explicitly supported inspection programs and read-only Git subcommands; it receives no shell, stdin, redirection, interpreter, network program, package manager, or mutation operation. Repository-relative paths are resolved before use, and absolute/traversal paths or symlinks escaping the root are blocked. The complete in-repository contents are otherwise readable. Source text remains untrusted data and cannot expand the planner's frozen scope.
+
+There is no `workspace.write` permission in V0.3. If update/delete support is added later, the deterministic policy layer—not the model—must bind two separate Owner confirmations to one exact operation before execution. Until that protocol exists, such operations remain unavailable.
 
 ## Current limitations
 

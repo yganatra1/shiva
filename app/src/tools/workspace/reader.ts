@@ -3,8 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
-  WorkspaceAnalysis,
-  WorkspaceAnalysisInput,
   WorkspaceDocument,
   WorkspaceMatch,
   WorkspaceOverview,
@@ -147,30 +145,6 @@ export class FileSystemWorkspaceReader implements WorkspaceReaderPort {
         files.length >= MAX_DISCOVERED_FILES ||
         files.length > MAX_TREE_FILES ||
         documents.some((document) => document.truncated),
-    };
-  }
-
-  async analyze(input: WorkspaceAnalysisInput): Promise<WorkspaceAnalysis> {
-    const files = await this.discoverFiles(input.signal);
-    const requestedPaths = [...new Set(input.paths ?? [])].slice(0, 8);
-    const documents = await this.readDocuments(requestedPaths, input.signal);
-    const searchTerms = normalizeSearchTerms(
-      input.searchTerms?.length
-        ? input.searchTerms
-        : deriveSearchTerms(input.question),
-    );
-    const matches = await this.search(files, searchTerms, input.signal);
-    return {
-      workspace: "shiva",
-      question: input.question,
-      files: files.slice(0, MAX_TREE_FILES),
-      documents,
-      matches,
-      truncated:
-        files.length >= MAX_DISCOVERED_FILES ||
-        files.length > MAX_TREE_FILES ||
-        documents.some((document) => document.truncated) ||
-        matches.length >= MAX_MATCHES,
     };
   }
 

@@ -19,9 +19,11 @@ There is no keyword intent router. On every non-explicit-memory turn the planner
 
 ## Shiva workspace tools
 
-`learn_about_shiva` uses the read-only workspace adapter to return a bounded source tree and excerpts from core project documents. `analyze_shiva_workspace` accepts a diagnostic question, optional literal search terms, and up to eight repository-relative source/config paths. The planner can use an initial search observation to select precise files in a later call without changing its frozen skill scope.
+`learn_about_shiva` uses the bounded workspace reader to return a source tree and excerpts from core project documents. `workspace_terminal` provides deeper iterative inspection. Each call runs one of `pwd`, `ls`, `rg`, `cat`, `head`, `tail`, `wc`, or a read-only `git status|ls-files|diff|log|grep`; the planner can use that observation to choose its next inspection without changing the frozen skill scope.
 
-The adapter is rooted to the Shiva repository and exposes no write or command-execution method. It rejects absolute/traversal paths, verifies real paths, skips symlinks, accepts only bounded text files, and excludes `.env`, credentials/tokens/private keys, Git internals, dependencies, generated output, runtime data, caches, logs, backups, models, virtual environments, binary data, and oversized files. Returned workspace content is untrusted tool data. Workspace skill inputs/results are redacted from PostgreSQL audit payloads.
+The terminal is rooted to Shiva's repository and has read visibility across that repository, including hidden and ignored files. It is not an arbitrary shell: it directly spawns only the inspection programs and safe options in its contract, with no stdin, redirection, interpreter, network program, package manager, or write-capable Git/filesystem operation. Absolute/traversal paths and symlinks resolving outside the repository are rejected. Cancellation, an eight-second deadline, and a 64 KiB combined-output limit bound every call. Returned workspace content is untrusted tool data. Workspace skill inputs/results are redacted from PostgreSQL audit payloads.
+
+No update or deletion operation is available today. Any future mutation capability must require two separate Owner confirmations for the exact operation through deterministic persisted state before it can run.
 
 ## Expense tools
 
