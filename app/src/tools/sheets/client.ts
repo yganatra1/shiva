@@ -79,6 +79,15 @@ export interface ReadValuesResult {
   readonly values: readonly (readonly CellValue[])[];
 }
 
+export interface ListTabsInput {
+  readonly spreadsheetId: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface ListTabsResult {
+  readonly tabs: readonly CreatedTab[];
+}
+
 export interface WriteValuesInput {
   readonly spreadsheetId: string;
   readonly range: string;
@@ -259,6 +268,20 @@ export class GoogleSheetsClient {
     });
   }
 
+  async listTabs(input: ListTabsInput): Promise<ListTabsResult> {
+    validateSpreadsheetId(input.spreadsheetId);
+    return this.withDeadline(input.signal, async (signal) => {
+      const token = await this.getAccessToken(signal);
+      const url = new URL(
+        `/v4/spreadsheets/${encodeURIComponent(input.spreadsheetId)}`,
+        this.apiBaseUrl,
+      );
+      url.searchParams.set("fields", "sheets.properties(sheetId,title)");
+      const payload = await this.requestJson(url, token, signal);
+      return { tabs: readSpreadsheetTabs(payload) };
+    });
+  }
+
   async writeValues(input: WriteValuesInput): Promise<WriteValuesResult> {
     validateSpreadsheetId(input.spreadsheetId);
     validateRange(input.range);
@@ -389,10 +412,10 @@ export class GoogleSheetsClient {
           "Google Sheets rejected the configured credentials.",
         );
       }
-      if (response.status === 404) {
+      if (response.status === 400 || response.status === 404) {
         throw new SheetsClientError(
           "INVALID_INPUT",
-          "The requested spreadsheet or range was not found.",
+          "The requested spreadsheet or A1 range was invalid or not found.",
         );
       }
       throw new SheetsClientError(
@@ -697,6 +720,38 @@ function readAddedTab(payload: unknown, name: string): CreatedTab {
     );
   }
   return { name, sheetId: reply.addSheet.properties.sheetId };
+}
+
+function readSpreadsheetTabs(payload: unknown): readonly CreatedTab[] {
+  if (
+    !isRecord(payload) ||
+    !Array.isArray(payload.sheets) ||
+    payload.sheets.length === 0
+  ) {
+    throw new SheetsClientError(
+      "INVALID_RESPONSE",
+      "Google Sheets did not return spreadsheet tab metadata.",
+    );
+  }
+  return payload.sheets.map((sheet) => {
+    if (
+      !isRecord(sheet) ||
+      !isRecord(sheet.properties) ||
+      typeof sheet.properties.title !== "string" ||
+      sheet.properties.title.trim().length === 0 ||
+      typeof sheet.properties.sheetId !== "number" ||
+      !Number.isInteger(sheet.properties.sheetId)
+    ) {
+      throw new SheetsClientError(
+        "INVALID_RESPONSE",
+        "Google Sheets returned invalid spreadsheet tab metadata.",
+      );
+    }
+    return {
+      name: sheet.properties.title,
+      sheetId: sheet.properties.sheetId,
+    };
+  });
 }
 
 function readValues(payload: unknown): readonly (readonly CellValue[])[] {

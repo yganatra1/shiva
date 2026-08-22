@@ -255,6 +255,34 @@ test("getValues normalizes rows and passes through an empty result", async () =>
   });
 });
 
+test("listTabs returns exact workbook tab names without guessing a values range", async () => {
+  const requests: string[] = [];
+  const sheets = client(async (input) => {
+    requests.push(String(input));
+    return jsonResponse({
+      sheets: [
+        { properties: { title: "July 2026", sheetId: 10 } },
+        { properties: { title: "August 2026", sheetId: 11 } },
+      ],
+    });
+  });
+
+  const result = await sheets.listTabs({ spreadsheetId: "sheet-123" });
+
+  assert.deepEqual(result, {
+    tabs: [
+      { name: "July 2026", sheetId: 10 },
+      { name: "August 2026", sheetId: 11 },
+    ],
+  });
+  const url = new URL(requests[0] ?? "");
+  assert.equal(url.pathname, "/v4/spreadsheets/sheet-123");
+  assert.equal(
+    url.searchParams.get("fields"),
+    "sheets.properties(sheetId,title)",
+  );
+});
+
 test("writeValues appends with USER_ENTERED input and returns the updated range", async () => {
   const requests: Array<{ url: string }> = [];
   const sheets = client(async (input) => {
@@ -302,7 +330,7 @@ test("writeValues in update mode PUTs the exact range without :append", async ()
   assert.doesNotMatch(requests[0]?.url ?? "", /:append/);
 });
 
-test("a 401/403 response maps to AUTH and a 404 maps to invalid input", async () => {
+test("401/403 map to AUTH while invalid-range 400 and missing 404 map to invalid input", async () => {
   const unauthorized = client(async () => new Response("no", { status: 403 }));
   await assert.rejects(
     () => unauthorized.getValues({ spreadsheetId: "sheet-123", range: "Sheet1" }),
@@ -314,6 +342,19 @@ test("a 401/403 response maps to AUTH and a 404 maps to invalid input", async ()
     () => missing.getValues({ spreadsheetId: "sheet-123", range: "Sheet1" }),
     (error: unknown) =>
       error instanceof SheetsClientError && error.failure === "INVALID_INPUT",
+  );
+
+  const invalidRange = client(async () => new Response("no", { status: 400 }));
+  await assert.rejects(
+    () =>
+      invalidRange.getValues({
+        spreadsheetId: "sheet-123",
+        range: "Sheet1!A1:E50",
+      }),
+    (error: unknown) =>
+      error instanceof SheetsClientError &&
+      error.failure === "INVALID_INPUT" &&
+      /A1 range was invalid/i.test(error.message),
   );
 });
 

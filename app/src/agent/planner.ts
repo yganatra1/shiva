@@ -223,6 +223,7 @@ export class ShivaAgentPlanner implements AgentPlanner {
         const decision = parseDecision(
           result.content,
           new Set(context.skills.map((skill) => skill.name)),
+          context.observations.length > 0,
         );
         this.onTrace?.(
           { step: context.step, attempt, rawResponse: result.content, decision },
@@ -312,7 +313,7 @@ Rules:
 - Never repeat a skill call with identical arguments in the same run. Use its existing observation; after a failure, return a grounded failure or choose a materially different allowed action.
 - Never end a turn by saying you will start, inspect, check, continue, or perform work later. If more work is required, call the relevant skill now. A respond decision must communicate concrete grounded findings or a completed safe failure.
 - A tool can execute successfully and still find nothing. Report that business result honestly in message; do not try to label the response success or failure. The runtime owns execution status separately from your user-facing wording.
-- For a write to an existing Google Sheet, use sheets_find when its ID is unknown, sheets_read to inspect the live tab/header structure, and sheets_update to perform the write. Never say a row was added or changed unless a sheets_update observation in this run has success=true.
+- For a write to an existing Google Sheet, use sheets_find when its ID is unknown. If the exact tab names are unknown, call sheets_read with only spreadsheetId to list them; never guess a default such as Sheet1. Then read the chosen tab's live header/current structure and use sheets_update to perform the aligned write. Never say a row was added or changed unless a sheets_update observation in this run has success=true.
 - If a required capability is not registered, say it is unavailable; never fabricate data or success.
 - A registered skill marked Configured: no is a real but unavailable capability. For a task that requires it, call it once to obtain a grounded failure observation; never pretend the external service was contacted.
 - Expense observations come from the configured sheet. Use their deterministic totals instead of doing approximate arithmetic.
@@ -350,6 +351,7 @@ function buildIterationInput(context: AgentPlanningContext): string {
 function parseDecision(
   content: string,
   visibleSkillNames: ReadonlySet<string>,
+  allowGroundedResponseAlias: boolean,
 ): AgentDecision {
   const normalized = content
     .trim()
@@ -365,7 +367,10 @@ function parseDecision(
     });
   }
   const parsed = decisionSchema.safeParse(
-    normalizeSkillCallDiscriminator(payload, visibleSkillNames),
+    normalizeSkillCallDiscriminator(
+      normalizeGroundedResponseAlias(payload, allowGroundedResponseAlias),
+      visibleSkillNames,
+    ),
   );
   if (!parsed.success) {
     throw new AgentPlannerError(
@@ -373,6 +378,28 @@ function parseDecision(
     );
   }
   return parsed.data;
+}
+
+/**
+ * After a tool observation exists, Gemma sometimes expresses its grounded
+ * terminal answer as direct_chat plus a message. At that point direct chat is
+ * no longer valid, but the message already is the requested respond payload.
+ * Normalize only in this evidence-backed state; before execution the strict
+ * direct_chat shape remains unchanged and cannot smuggle in planner prose.
+ */
+function normalizeGroundedResponseAlias(
+  payload: unknown,
+  allowed: boolean,
+): unknown {
+  if (
+    !allowed ||
+    !isRecord(payload) ||
+    payload.type !== "direct_chat" ||
+    typeof payload.message !== "string"
+  ) {
+    return payload;
+  }
+  return { ...payload, type: "respond" };
 }
 
 /**

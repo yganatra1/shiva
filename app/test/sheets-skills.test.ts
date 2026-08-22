@@ -13,8 +13,10 @@ import { createSheetsUpdateSkill } from "../src/skills/sheets-update/skill.js";
 import type { SkillContext } from "../src/skills/types.js";
 import {
   GoogleSheetsClient,
+  SheetsClientError,
   type CreatedSpreadsheet,
   type CreatedTab,
+  type ListTabsResult,
   type ReadValuesResult,
   type WriteValuesResult,
 } from "../src/tools/sheets/client.js";
@@ -34,6 +36,7 @@ const context: SkillContext = {
 
 class FakeSheetsClient extends GoogleSheetsClient {
   created: unknown[] = [];
+  listedTabs: unknown[] = [];
   written: unknown[] = [];
   addedTabs: unknown[] = [];
   createResult: CreatedSpreadsheet = {
@@ -42,6 +45,13 @@ class FakeSheetsClient extends GoogleSheetsClient {
     tabs: [{ name: "Sheet1", sheetId: 0 }],
   };
   readResult: ReadValuesResult = { range: "Sheet1!A1:A1", values: [["hi"]] };
+  listTabsResult: ListTabsResult = {
+    tabs: [
+      { name: "July 2026", sheetId: 10 },
+      { name: "August 2026", sheetId: 11 },
+    ],
+  };
+  readError: unknown;
   writeResult: WriteValuesResult = {
     updatedRange: "Sheet1!A2:A2",
     updatedRows: 1,
@@ -62,7 +72,13 @@ class FakeSheetsClient extends GoogleSheetsClient {
   }
 
   override async getValues(): Promise<ReadValuesResult> {
+    if (this.readError) throw this.readError;
     return this.readResult;
+  }
+
+  override async listTabs(input: unknown): Promise<ListTabsResult> {
+    this.listedTabs.push(input);
+    return this.listTabsResult;
   }
 
   override async writeValues(input: unknown): Promise<WriteValuesResult> {
@@ -205,6 +221,36 @@ test("sheets_read, sheets_update, and sheets_add_tab reach the client and return
     { userAuthorized: true },
   );
   assert.deepEqual(read, { success: true, data: client.readResult });
+
+  const tabs = await executor.execute(
+    "sheets_read",
+    { spreadsheetId: "sheet-1" },
+    context,
+    { userAuthorized: true },
+  );
+  assert.deepEqual(tabs, { success: true, data: client.listTabsResult });
+  assert.equal(client.listedTabs.length, 1);
+  const readSummary = registry.list().find((skill) => skill.name === "sheets_read");
+  assert.match(readSummary?.description ?? "", /only spreadsheetId.*exact tabs/i);
+  assert.match(readSummary?.description ?? "", /never guess.*Sheet1/i);
+
+  client.readError = new SheetsClientError(
+    "INVALID_INPUT",
+    "The requested spreadsheet or A1 range was invalid or not found.",
+  );
+  const recoveredTabs = await executor.execute(
+    "sheets_read",
+    { spreadsheetId: "sheet-1", range: "Sheet1!A1:E50" },
+    context,
+    { userAuthorized: true },
+  );
+  assert.deepEqual(recoveredTabs, {
+    success: true,
+    data: {
+      ...client.listTabsResult,
+      rejectedRange: "Sheet1!A1:E50",
+    },
+  });
 
   const update = await executor.execute(
     "sheets_update",

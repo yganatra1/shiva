@@ -1528,6 +1528,52 @@ test("planner repairs a visible skill discriminator when the redundant skill fie
   assert.equal(providerCalls, 1);
 });
 
+test("planner repairs direct_chat plus message to a grounded response after tool evidence", async () => {
+  let providerCalls = 0;
+  const planner = new ShivaAgentPlanner({
+    async chat() {
+      providerCalls += 1;
+      return {
+        content:
+          '{"type":"direct_chat","message":"Google Sheets rejected the guessed range, so no row was added."}',
+      };
+    },
+    async *streamChat() {
+      throw new Error("Planner decisions must use structured chat().");
+    },
+  });
+
+  const decision = await planner.decide({
+    request: { ...request, userMessage: "Add the expense." },
+    packs: [],
+    openPacks: ["google"],
+    skills: [],
+    observations: [
+      {
+        step: 2,
+        skill: "sheets_read",
+        arguments: { spreadsheetId: "sheet-1", range: "Sheet1!A1:E50" },
+        result: {
+          success: false,
+          error: {
+            code: "SHEETS_INVALID_INPUT",
+            message: "The requested A1 range was invalid.",
+          },
+        },
+      },
+    ],
+    step: 3,
+    maxSteps: 12,
+    now: new Date("2026-08-20T00:00:00Z"),
+  });
+
+  assert.deepEqual(decision, {
+    type: "respond",
+    message: "Google Sheets rejected the guessed range, so no row was added.",
+  });
+  assert.equal(providerCalls, 1);
+});
+
 test("two invalid planner outputs after execution stop without consuming twelve steps", async () => {
   const packs = new PackRegistry();
   packs.register({ name: "alpha", description: "Alpha tools." });
