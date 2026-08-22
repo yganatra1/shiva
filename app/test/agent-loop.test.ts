@@ -1001,6 +1001,52 @@ test("planner skill calls fail closed when authorization is omitted", async () =
   assert.equal(attempts, 2);
 });
 
+test("the planner's onTrace logs the request, the raw response, and a parse rejection", async () => {
+  const traces: Array<{ detail: Record<string, unknown>; message: string }> = [];
+  let attempts = 0;
+  const planner = new ShivaAgentPlanner(
+    {
+      async chat() {
+        attempts += 1;
+        return {
+          content:
+            attempts === 1
+              ? "not valid json"
+              : '{"type":"direct_chat"}',
+        };
+      },
+      async *streamChat() {
+        throw new Error("Planner decisions must use structured chat().");
+      },
+    },
+    (detail, message) => traces.push({ detail, message }),
+  );
+
+  const decision = await planner.decide({
+    request,
+    packs: [],
+    openPacks: [],
+    skills: [],
+    observations: [],
+    step: 1,
+    maxSteps: 8,
+    now: new Date("2026-08-20T00:00:00Z"),
+  });
+
+  assert.deepEqual(decision, { type: "direct_chat" });
+  const messages = traces.map((entry) => entry.message);
+  assert.deepEqual(messages, [
+    "agent planner request",
+    "agent planner response rejected",
+    "agent planner request",
+    "agent planner response",
+  ]);
+  assert.equal(traces[0]?.detail.step, 1);
+  assert.ok(typeof traces[0]?.detail.systemPrompt === "string");
+  assert.equal(traces[1]?.detail.rawResponse, "not valid json");
+  assert.deepEqual(traces[3]?.detail.decision, { type: "direct_chat" });
+});
+
 test("orchestrator sends every turn to semantic planner selection", async () => {
   const messages: string[] = [];
   const noOpLoop: Pick<AgentLoop, "run"> = {

@@ -43,6 +43,11 @@ export interface DispatchOptions {
   readonly signal?: AbortSignal;
 }
 
+export type DeviceTraceLogger = (
+  detail: Record<string, unknown>,
+  message: string,
+) => void;
+
 /**
  * Owns the single live Android device connection and correlates outbound
  * device_command messages with their device_command_result reply by ID. One
@@ -55,20 +60,27 @@ export class DeviceCommandDispatcher {
   private readonly pending = new Map<string, PendingCommand>();
   private readonly createCommandId: () => string;
   private readonly now: () => Date;
+  private readonly onTrace: DeviceTraceLogger;
 
   constructor(
     options: {
       readonly createCommandId?: () => string;
       readonly now?: () => Date;
+      readonly onTrace?: DeviceTraceLogger;
     } = {},
   ) {
     this.createCommandId = options.createCommandId ?? randomUUID;
     this.now = options.now ?? (() => new Date());
+    this.onTrace = options.onTrace ?? (() => {});
   }
 
   /** A new connection replaces any previous one; its pending commands fail closed. */
   connect(transport: DeviceTransport): void {
     if (this.transport && this.transport !== transport) {
+      this.onTrace(
+        { pendingCount: this.pending.size },
+        "device dispatcher: new connection is replacing an existing one",
+      );
       this.failAllPending(
         new DeviceDispatchError(
           "DEVICE_DISCONNECTED",
@@ -77,11 +89,16 @@ export class DeviceCommandDispatcher {
       );
     }
     this.transport = transport;
+    this.onTrace({}, "device dispatcher: connected");
   }
 
   disconnect(transport: DeviceTransport): void {
     if (this.transport !== transport) return;
     this.transport = undefined;
+    this.onTrace(
+      { pendingCount: this.pending.size },
+      "device dispatcher: disconnected",
+    );
     this.failAllPending(
       new DeviceDispatchError(
         "DEVICE_DISCONNECTED",
@@ -101,6 +118,7 @@ export class DeviceCommandDispatcher {
   ): Promise<DeviceCommandResult> {
     const transport = this.transport;
     if (!transport) {
+      this.onTrace({ type }, "device dispatcher: dispatch rejected, no device connected");
       throw new DeviceDispatchError(
         "DEVICE_NOT_CONNECTED",
         "No device is currently connected.",
@@ -135,6 +153,10 @@ export class DeviceCommandDispatcher {
       };
       const timeout = setTimeout(() => {
         if (settled) return;
+        this.onTrace(
+          { type, commandId: command.id, timeoutMs },
+          "device dispatcher: command timed out waiting for a reply",
+        );
         cleanup();
         reject(
           new DeviceDispatchError(
@@ -164,6 +186,10 @@ export class DeviceCommandDispatcher {
 
       try {
         transport.send(buildDeviceCommandMessage(command));
+        this.onTrace(
+          { type, commandId: command.id, arguments: commandArguments },
+          "device dispatcher: command sent",
+        );
       } catch (error: unknown) {
         cleanup();
         reject(
@@ -183,15 +209,30 @@ export class DeviceCommandDispatcher {
     try {
       parsed = JSON.parse(raw);
     } catch {
+      this.onTrace({ raw }, "device dispatcher: received unparsable message");
       return;
     }
     const message = deviceCommandResultMessageSchema.safeParse(parsed);
-    if (!message.success) return;
+    if (!message.success) {
+      this.onTrace(
+        { raw, issues: message.error.issues },
+        "device dispatcher: received a message that didn't match the result schema",
+      );
+      return;
+    }
     const pending = this.pending.get(message.data.result.commandId);
     // Unknown, already-resolved, or expired-and-timed-out command IDs are
     // dropped rather than treated as an error — a late reply after this
     // dispatcher already gave up is expected, not a protocol violation.
     const { commandId, status, result, error } = message.data.result;
+    if (!pending) {
+      this.onTrace(
+        { commandId, status },
+        "device dispatcher: result for an unknown/expired command, ignored",
+      );
+    } else {
+      this.onTrace({ commandId, status }, "device dispatcher: result matched a pending command");
+    }
     pending?.resolve({
       commandId,
       status,

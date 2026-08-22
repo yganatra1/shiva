@@ -36,10 +36,27 @@ export function registerDeviceSocketRoute(
         },
       }),
     wsHandler: (socket, request) => {
+      request.log.info(
+        { remoteAddress: request.ip, authRequired: Boolean(options.authToken) },
+        "Device socket connection attempt",
+      );
+
       if (options.authToken) {
         const parsedQuery = querySchema.safeParse(request.query);
         const token = parsedQuery.success ? parsedQuery.data.token : undefined;
-        if (!token || !constantTimeEquals(token, options.authToken)) {
+        if (!token) {
+          request.log.warn(
+            { remoteAddress: request.ip },
+            "Device socket rejected: no ?token= query param was sent",
+          );
+          socket.close(4401, "unauthorized");
+          return;
+        }
+        if (!constantTimeEquals(token, options.authToken)) {
+          request.log.warn(
+            { remoteAddress: request.ip },
+            "Device socket rejected: token did not match DEVICE_WS_TOKEN",
+          );
           socket.close(4401, "unauthorized");
           return;
         }
@@ -47,10 +64,14 @@ export function registerDeviceSocketRoute(
 
       const transport = { send: (message: string) => socket.send(message) };
       options.dispatcher.connect(transport);
+      request.log.info({ remoteAddress: request.ip }, "Device socket connected");
 
       let alive = true;
       const heartbeat = setInterval(() => {
         if (!alive) {
+          request.log.warn(
+            "Device socket missed its heartbeat and is being terminated",
+          );
           socket.terminate();
           return;
         }
@@ -64,13 +85,22 @@ export function registerDeviceSocketRoute(
       });
       socket.on("message", (data: RawData, isBinary: boolean) => {
         alive = true;
-        if (isBinary) return;
-        options.dispatcher.handleMessage(Buffer.from(toBytes(data)).toString("utf8"));
+        if (isBinary) {
+          request.log.debug("Device socket ignored an unexpected binary message");
+          return;
+        }
+        const text = Buffer.from(toBytes(data)).toString("utf8");
+        request.log.debug({ bytes: text.length }, "Device socket message received");
+        options.dispatcher.handleMessage(text);
       });
       socket.on("error", (error) => {
         request.log.warn({ err: error }, "Device socket failed");
       });
-      socket.on("close", () => {
+      socket.on("close", (code, reason) => {
+        request.log.info(
+          { code, reason: reason.toString("utf8") },
+          "Device socket disconnected",
+        );
         clearInterval(heartbeat);
         options.dispatcher.disconnect(transport);
       });

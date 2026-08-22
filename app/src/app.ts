@@ -146,9 +146,15 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     extractionEngine,
   );
   const agentRuntime = database
-    ? createAgentRuntime(database.db, provider, config, (error) => {
+    ? createAgentRuntime(
+        database.db,
+        provider,
+        config,
+        (error) => {
           app.log.error({ err: error }, "Agent audit finalization failed");
-        })
+        },
+        config.agentTraceLog ? consoleTrace : undefined,
+      )
     : undefined;
   const agentOrchestrator =
     overrides.agentOrchestrator ?? agentRuntime?.orchestrator;
@@ -242,4 +248,16 @@ function requiredDatabase(
     throw new Error("A database is required when no repository is provided.");
   }
   return database.db;
+}
+
+/**
+ * Plain stdout output for SHIVA_AGENT_TRACE_LOG, deliberately not routed
+ * through the pino logger: it depends on log level, redaction config, and
+ * how output is being viewed, any of which can make a trace silently not
+ * appear. console.log always goes straight to stdout, which is what every
+ * common deployment (pm2, docker, a bare terminal) already captures.
+ */
+function consoleTrace(detail: Record<string, unknown>, message: string): void {
+  console.log(`[SHIVA-TRACE] ${message}`);
+  console.log(JSON.stringify(detail, null, 2));
 }

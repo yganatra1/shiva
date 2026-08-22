@@ -24,7 +24,7 @@ import { SkillRegistry } from "../skills/registry.js";
 import { AgentLoop } from "./agent-loop.js";
 import { AgentAuditRepository } from "./audit.js";
 import { ShivaOrchestrator } from "./orchestrator.js";
-import { ShivaAgentPlanner } from "./planner.js";
+import { ShivaAgentPlanner, type AgentTraceLogger } from "./planner.js";
 import type { AgentOrchestratorPort } from "./types.js";
 
 export interface AgentRuntime {
@@ -38,6 +38,7 @@ export function createAgentRuntime(
   provider: AIProvider,
   config: AppConfig,
   onAuditError: (error: unknown) => void = () => {},
+  onTrace?: AgentTraceLogger,
 ): AgentRuntime {
   const registry = new SkillRegistry(createPackRegistry());
   const executionState = new ExecutionStateService(
@@ -57,7 +58,9 @@ export function createAgentRuntime(
   // fixed-schema expense ledger. Their code, tools, and tests are untouched
   // and registerFinanceSkills still works, in case this is ever reverted.
   registerGoogleSkills(registry, config);
-  const deviceDispatcher = new DeviceCommandDispatcher();
+  const deviceDispatcher = new DeviceCommandDispatcher({
+    ...(onTrace ? { onTrace } : {}),
+  });
   registerDeviceSkills(registry, deviceDispatcher, provider);
   registerWebSkills(registry, config);
 
@@ -72,7 +75,7 @@ export function createAgentRuntime(
     confirmations,
   );
   const loop = new AgentLoop(
-    new ShivaAgentPlanner(provider),
+    new ShivaAgentPlanner(provider, onTrace),
     executor,
     registry,
     config.agentMaxSteps,
@@ -82,6 +85,7 @@ export function createAgentRuntime(
     undefined,
     onAuditError,
     config.agentRequestTimeoutMs,
+    onTrace,
   );
   return {
     orchestrator: new ShivaOrchestrator(loop),
