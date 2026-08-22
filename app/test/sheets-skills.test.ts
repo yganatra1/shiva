@@ -219,6 +219,11 @@ test("sheets_read, sheets_update, and sheets_add_tab reach the client and return
   );
   assert.deepEqual(update, { success: true, data: client.writeResult });
   assert.equal(client.written.length, 1);
+  assert.match(
+    registry.list().find((skill) => skill.name === "sheets_update")
+      ?.description ?? "",
+    /use sheets_read.*live header\/current structure/i,
+  );
 
   const addTab = await executor.execute(
     "sheets_add_tab",

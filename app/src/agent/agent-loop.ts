@@ -200,6 +200,7 @@ export class AgentLoop {
           if (
             error instanceof AgentPlannerError &&
             !selectedSkills &&
+            !openPacks &&
             !frozenPacks &&
             observations.length === 0
           ) {
@@ -528,7 +529,12 @@ export class AgentLoop {
         maxStepsError.name,
         monotonicStartedAt,
       );
-      if (observations.length === 0) {
+      if (
+        observations.length === 0 &&
+        !selectedSkills &&
+        !openPacks &&
+        !frozenPacks
+      ) {
         return {
           kind: "direct_chat",
           runId,
@@ -536,6 +542,15 @@ export class AgentLoop {
           steps: completedSteps,
           observations: [],
           plannerFallback: plannerFallbackReason,
+        };
+      }
+      if (observations.length === 0) {
+        return {
+          kind: "response",
+          runId,
+          response: buildPlannerFailureResponse(observations),
+          steps: completedSteps,
+          observations: [],
         };
       }
       return {
@@ -824,7 +839,7 @@ function buildPlannerFailureResponse(
     return confirmation.result.error.message;
   }
   if (observations.length === 0) {
-    return "I couldn't produce a valid tool plan for this request.";
+    return "I couldn't produce a valid tool plan for this request, so no action was executed.";
   }
   return "I completed the available tool step, but the planner returned invalid structured output twice, so I stopped instead of repeating the request.";
 }

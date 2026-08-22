@@ -8,7 +8,7 @@ The model may propose an action, but it is never the security authority. Every m
 user request
     |
     v
-planner -> frozen skill scope -> strict input validation
+planner -> frozen pack scope -> strict input validation
                                       |
                                       v
                          runtime-owned action metadata
@@ -74,7 +74,7 @@ An action that requires approval creates a PostgreSQL `action_confirmations` rec
 - a change in execution settings or a riskier runtime reclassification makes the approval stale;
 - approval is atomically claimed as `EXECUTING`, so concurrent or repeated approvals cannot execute it twice;
 - a successful claimed action becomes `EXECUTED`; a claimed action that fails or is invalidated becomes `FAILED`, while an explicit rejection remains `DENIED`;
-- approval never widens the planner's frozen skill scope;
+- approval never widens the planner's frozen pack scope;
 - sanitized audit arguments are never treated as executable credentials or payloads.
 
 The statuses are `PENDING`, `APPROVED`, `DENIED`, `EXPIRED`, `EXECUTING`, `EXECUTED`, and `FAILED`. Immediately before any allowed write starts, the executor rechecks the persisted settings revision. Execution-control skills also commit with compare-and-set against the exact revision evaluated by policy. The design keeps approval state separate from the model so a trusted-device or passkey approver can be added later without replacing the execution policy.
@@ -87,9 +87,9 @@ Lockdown is intentionally stronger than ordinary `SAFE` mode: `SAFE` can offer a
 
 ## Planner and evidence boundaries
 
-Every ordinary turn reaches semantic planning. The first skill call declares the complete minimal skill set for the original request; the agent loop validates, canonicalizes, and freezes that scope. Later attempts to add or replace skills are rejected before execution and returned as deterministic corrective feedback. The executor repeats the scope check as defense in depth.
+Every ordinary turn reaches semantic planning. `open_packs` reveals one or more capability packs without authorizing an action. The first skill call freezes the opened packs; every registered skill inside those packs remains available for a discovered chain such as `sheets_find` → `sheets_read` → `sheets_update`, allowing Shiva to inspect a live sheet before appending a correctly aligned row. When the planner directly calls known skills without `open_packs`, the loop freezes the union of every pack represented by that first call's validated `selectedSkills`. The executor still receives the concrete allowed skill names and repeats the request-scope check as defense in depth.
 
-Malformed planner output is retried once. A second failure before any tool execution falls back to grounded core chat with no claim of external work. Once an observation exists, Shiva must continue from that evidence. A success response requires a `success=true` observation for every selected skill, and a failure response requires an actual failed observation. Runs remain bounded by `AGENT_MAX_STEPS` and `AGENT_REQUEST_TIMEOUT_MS`.
+Malformed planner output is retried once. A common Gemma discriminator slip—using a currently visible skill name as `type` while the matching `skill` field is present—is normalized locally and then passed through the same strict schema. Grounded core-chat fallback is available only before a pack is opened and before execution begins. Once `open_packs` has selected a capability area, either a second invalid planner result or max-step exhaustion without a tool observation returns a deterministic statement that no action executed; neither path can enter normal chat and invent a write result. After an observation, the same stop preserves that evidence instead of consuming the remaining step budget. The model does not declare a response `success` or `failure`: runtime observations own execution status, so a successful search with zero matches can still be reported honestly as “not found.” Runs remain bounded by `AGENT_MAX_STEPS` and `AGENT_REQUEST_TIMEOUT_MS`.
 
 An identical same-run skill replay is suppressed using a canonical skill-and-arguments key. The original observation remains authoritative, which prevents repeated side effects and avoids hammering an unavailable integration.
 
@@ -108,7 +108,7 @@ Audit payloads are bounded and recursively redact credential-shaped fields, labe
 
 Google OAuth credentials stay inside runtime providers. The recommended expense grant is offline access with `https://www.googleapis.com/auth/drive.file`; Shiva never needs the user's Google password. The legacy `EXPENSE_SHEET_ID` path uses Application Default Credentials and a sheet explicitly shared with that identity. PostgreSQL stores no Google token or expense row.
 
-The Brave key remains server-side. Public-page fetching rejects URL credentials and local/private/reserved destinations after DNS resolution, rechecks redirects, and bounds content type, size, and time. Conversation text, pages, snippets, workspace files, and tool results are untrusted data and cannot approve an action, change execution mode, disable lockdown, or widen the frozen skill scope.
+The Brave key remains server-side. Public-page fetching rejects URL credentials and local/private/reserved destinations after DNS resolution, rechecks redirects, and bounds content type, size, and time. Conversation text, pages, snippets, workspace files, and tool results are untrusted data and cannot approve an action, change execution mode, disable lockdown, or widen the frozen pack scope.
 
 The current `workspace_terminal` capability is technically read-only in every execution mode. It exposes only bounded inspection commands and read-only Git subcommands, with no shell, stdin, redirection, interpreter, network program, package manager, or mutation operation. Direct reads and recursive `rg`/Git content searches share a case-insensitive deny policy for `.env*` other than `.env.example` and conventional credential, token, password, and private-key files or stores. Other repository content remains inspectable so Shiva can understand and evolve its own code. `FULL_ACCESS` cannot create a capability that the registered tool, operating system, or provider does not supply. If workspace mutation is added later, ordinary writes will follow the same global mode policy and genuinely sensitive operations will use one exact persisted confirmation.
 

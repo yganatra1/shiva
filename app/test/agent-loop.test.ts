@@ -668,7 +668,7 @@ test("agent loop feeds an out-of-scope call back to the planner for correction",
   assert.match(contexts[1]?.plannerFeedback ?? "", /fixed to exactly these skills/i);
 });
 
-test("agent loop never executes a repeated adversarial cross-skill call", async () => {
+test("agent loop never executes or chat-falls-back from a repeated adversarial cross-skill call", async () => {
   const registry = new SkillRegistry();
   let expenseExecutions = 0;
   let webExecutions = 0;
@@ -720,7 +720,11 @@ test("agent loop never executes a repeated adversarial cross-skill call", async 
     allowedSkills: ["web_research"],
   });
 
-  assert.equal(result.kind, "direct_chat");
+  assert.equal(result.kind, "response");
+  assert.equal(
+    result.response,
+    "I couldn't produce a valid tool plan for this request, so no action was executed.",
+  );
   assert.equal(expenseExecutions, 0);
   assert.equal(webExecutions, 0);
 });
@@ -916,6 +920,10 @@ test("provider-neutral planner requests strict JSON and validates the decision",
     /\"outcome\"/,
   );
   assert.match(inputs[0]?.messages[0]?.content ?? "", /Never claim an action succeeded/);
+  assert.match(
+    inputs[0]?.messages[0]?.content ?? "",
+    /Never say a row was added or changed unless a sheets_update observation.*success=true/i,
+  );
   assert.equal(inputs[0]?.temperature, 0);
 });
 
@@ -1188,7 +1196,7 @@ test("open_packs is additive and reveals only the opened packs' skills before a 
   );
 });
 
-test("open_packs is rejected once the skill scope is frozen", async () => {
+test("open_packs is rejected once the pack scope is frozen", async () => {
   const packs = new PackRegistry();
   packs.register({ name: "alpha", description: "Alpha pack." });
   const registry = new SkillRegistry(packs);
@@ -1329,13 +1337,18 @@ test("the unscoped planner prompt scales with pack count, not with each pack's s
   );
 });
 
-test("an opened pack remains callable across a discovered find-then-read chain", async () => {
+test("an opened pack remains callable across a discovered find-read-append chain", async () => {
   const packs = new PackRegistry();
   packs.register({ name: "google", description: "Google workspace tools." });
   const registry = new SkillRegistry(packs);
   const calls: string[] = [];
   registry.register({
-    ...fixtureSkill("sheets_find", "google"),
+    name: "sheets_find",
+    description: "Finds a Google Sheet.",
+    inputDescription: '{ "query": string }',
+    inputSchema: z.object({ query: z.string().min(1) }).strict(),
+    pack: "google",
+    execution: { mutability: "read", impact: "normal" },
     async execute() {
       calls.push("sheets_find");
       return { success: true, data: { matches: [{ id: "sheet-1" }] } };
@@ -1348,6 +1361,14 @@ test("an opened pack remains callable across a discovered find-then-read chain",
       return { success: true, data: { values: [["total", "1250"]] } };
     },
   });
+  registry.register({
+    ...fixtureSkill("sheets_update", "google"),
+    execution: { mutability: "write", impact: "normal" },
+    async execute() {
+      calls.push("sheets_update");
+      return { success: true, data: { updatedRange: "Sheet1!A3:C3" } };
+    },
+  });
 
   const contexts: AgentPlanningContext[] = [];
   const decisions: AgentDecision[] = [
@@ -1356,7 +1377,7 @@ test("an opened pack remains callable across a discovered find-then-read chain",
       type: "skill_call",
       skill: "sheets_find",
       selectedSkills: ["sheets_find"],
-      arguments: {},
+      arguments: { query: "Expense 2026" },
       authorization: "user_authorized",
     },
     {
@@ -1366,7 +1387,14 @@ test("an opened pack remains callable across a discovered find-then-read chain",
       arguments: {},
       authorization: "user_authorized",
     },
-    { type: "respond", message: "The total is INR 1,250." },
+    {
+      type: "skill_call",
+      skill: "sheets_update",
+      selectedSkills: ["sheets_find", "sheets_read", "sheets_update"],
+      arguments: {},
+      authorization: "user_authorized",
+    },
+    { type: "respond", message: "I read the current columns and added the row." },
   ];
   const loop = new AgentLoop(
     {
@@ -1384,11 +1412,11 @@ test("an opened pack remains callable across a discovered find-then-read chain",
 
   const result = await loop.run(request);
 
-  assert.deepEqual(calls, ["sheets_find", "sheets_read"]);
-  assert.equal(result.response, "The total is INR 1,250.");
+  assert.deepEqual(calls, ["sheets_find", "sheets_read", "sheets_update"]);
+  assert.equal(result.response, "I read the current columns and added the row.");
   assert.deepEqual(
     contexts[2]?.skills.map((skill) => skill.name).sort(),
-    ["sheets_find", "sheets_read"],
+    ["sheets_find", "sheets_read", "sheets_update"],
   );
 });
 
@@ -1543,6 +1571,203 @@ test("two invalid planner outputs after execution stop without consuming twelve 
   assert.equal(providerCalls, 4);
   assert.equal(result.steps, 3);
   assert.match(result.response ?? "", /invalid structured output twice/i);
+});
+
+test("invalid planner output after open_packs never falls back to ungrounded chat", async () => {
+  const packs = new PackRegistry();
+  packs.register({ name: "google", description: "Google workspace tools." });
+  const registry = new SkillRegistry(packs);
+  registry.register(fixtureSkill("sheets_find", "google"));
+  const replies = [
+    '{"type":"open_packs","packs":["google"]}',
+    '{"type":"sheets_find","query":"Expense 2026"}',
+    '{"type":"sheets_find","query":"Expense 2026"}',
+  ];
+  let providerCalls = 0;
+  const loop = new AgentLoop(
+    new ShivaAgentPlanner({
+      async chat() {
+        providerCalls += 1;
+        const content = replies.shift();
+        if (!content) throw new Error("No fake provider reply available.");
+        return { content };
+      },
+      async *streamChat() {
+        throw new Error("Planner decisions must use structured chat().");
+      },
+    }),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+    12,
+  );
+
+  const result = await loop.run({
+    ...request,
+    userMessage: "Add 10000 in groceries to Expense 2026.",
+  });
+
+  assert.equal(providerCalls, 3);
+  assert.equal(result.kind, "response");
+  assert.equal(result.steps, 2);
+  assert.equal(result.observations.length, 0);
+  assert.equal(
+    result.response,
+    "I couldn't produce a valid tool plan for this request, so no action was executed.",
+  );
+});
+
+test("a pack-opened run reaching max steps never falls back to ungrounded chat", async () => {
+  const packs = new PackRegistry();
+  packs.register({ name: "google", description: "Google workspace tools." });
+  const registry = new SkillRegistry(packs);
+  const decisions: AgentDecision[] = [
+    { type: "open_packs", packs: ["google"] },
+    { type: "open_packs", packs: ["google"] },
+  ];
+  const loop = new AgentLoop(
+    {
+      async decide() {
+        const decision = decisions.shift();
+        if (!decision) throw new Error("No fake decision available.");
+        return decision;
+      },
+    },
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+    2,
+  );
+
+  const result = await loop.run({
+    ...request,
+    userMessage: "Add 10000 in groceries to Expense 2026.",
+  });
+
+  assert.equal(result.kind, "response");
+  assert.equal(result.steps, 2);
+  assert.equal(result.observations.length, 0);
+  assert.equal(
+    result.response,
+    "I couldn't produce a valid tool plan for this request, so no action was executed.",
+  );
+});
+
+test("the captured sheets_find discriminator error repairs on its one retry", async () => {
+  const packs = new PackRegistry();
+  packs.register({ name: "google", description: "Google workspace tools." });
+  const registry = new SkillRegistry(packs);
+  let executions = 0;
+  registry.register({
+    name: "sheets_find",
+    description: "Finds a Google Sheet.",
+    inputDescription: '{ "query": string }',
+    inputSchema: z.object({ query: z.string().min(1) }).strict(),
+    pack: "google",
+    execution: { mutability: "read", impact: "normal" },
+    async execute() {
+      executions += 1;
+      return { success: true, data: { matches: [{ id: "sheet-1" }] } };
+    },
+  });
+  const replies = [
+    '{"type":"open_packs","packs":["google"]}',
+    '{"type":"sheets_find","query":"Expense 2026"}',
+    '{"type":"sheets_find","selectedSkills":["sheets_find"],"skill":"sheets_find","arguments":{"query":"Expense 2026"},"authorization":"user_authorized"}',
+    '{"type":"respond","message":"I found the sheet."}',
+  ];
+  let providerCalls = 0;
+  const loop = new AgentLoop(
+    new ShivaAgentPlanner({
+      async chat() {
+        providerCalls += 1;
+        const content = replies.shift();
+        if (!content) throw new Error("No fake provider reply available.");
+        return { content };
+      },
+      async *streamChat() {
+        throw new Error("Planner decisions must use structured chat().");
+      },
+    }),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+    12,
+  );
+
+  const result = await loop.run({
+    ...request,
+    userMessage: "Find Expense 2026.",
+  });
+
+  assert.equal(providerCalls, 4);
+  assert.equal(executions, 1);
+  assert.equal(result.response, "I found the sheet.");
+});
+
+test("planner format failure preserves an exact pending confirmation question", async () => {
+  const confirmationId = "40000000-0000-4000-8000-000000000099";
+  const confirmations = new ConfirmationService(
+    new InMemoryConfirmationStore(),
+    300_000,
+    () => confirmationId,
+  );
+  const registry = new SkillRegistry();
+  let executions = 0;
+  registry.register({
+    ...fixtureSkill("sensitive_fixture", "test"),
+    execution: {
+      mutability: "write",
+      impact: "sensitive",
+      confirmationReason: "Switch to Full Access?",
+    },
+    async execute() {
+      executions += 1;
+      return { success: true, data: {} };
+    },
+  });
+  const replies = [
+    '{"type":"skill_call","skill":"sensitive_fixture","selectedSkills":["sensitive_fixture"],"arguments":{},"authorization":"user_authorized"}',
+    '{"type":"not_a_decision"}',
+    '{"type":"not_a_decision"}',
+  ];
+  let providerCalls = 0;
+  const planner = new ShivaAgentPlanner({
+    async chat() {
+      providerCalls += 1;
+      const content = replies.shift();
+      if (!content) throw new Error("No fake provider reply available.");
+      return { content };
+    },
+    async *streamChat() {
+      throw new Error("Planner decisions must use structured chat().");
+    },
+  });
+  const loop = new AgentLoop(
+    planner,
+    new SkillExecutor(
+      registry,
+      new ExecutionPolicyEngine(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      confirmations,
+    ),
+    registry,
+    12,
+    () => new Date("2026-08-20T00:00:00Z"),
+  );
+
+  const result = await loop.run({
+    ...request,
+    userMessage: "Switch to full access.",
+  });
+
+  assert.equal(executions, 0);
+  assert.equal(providerCalls, 3);
+  assert.equal(result.steps, 2);
+  assert.equal(
+    result.response,
+    "Switch to Full Access? Reply yes to approve this exact action or no to cancel.",
+  );
 });
 
 test("a successful empty search can produce an honest no-match response", async () => {
