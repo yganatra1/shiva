@@ -14,9 +14,9 @@ import type {
   AgentRequest,
   AgentRunResult,
 } from "./types.js";
-import { AgentPlannerError } from "./planner.js";
+import { AgentPlannerError, type AgentTraceLogger } from "./planner.js";
 
-export const DEFAULT_MAX_AGENT_STEPS = 8;
+export const DEFAULT_MAX_AGENT_STEPS = 12;
 export const DEFAULT_AGENT_REQUEST_TIMEOUT_MS = 300_000;
 
 export class AgentMaxStepsError extends Error {
@@ -55,6 +55,7 @@ export class AgentLoop {
     private readonly monotonicNow: () => number = () => performance.now(),
     private readonly onAuditError: (error: unknown) => void = () => {},
     private readonly requestTimeoutMs = DEFAULT_AGENT_REQUEST_TIMEOUT_MS,
+    private readonly onTrace?: AgentTraceLogger,
   ) {
     if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 32) {
       throw new RangeError("Agent max steps must be an integer from 1 to 32.");
@@ -148,6 +149,12 @@ export class AgentLoop {
           : withoutSkillScope(baseRequest);
         const correctionForAttempt = plannerFeedback;
         plannerFeedback = undefined;
+        if (correctionForAttempt) {
+          this.onTrace?.(
+            { runId, step, correctionForAttempt },
+            "agent loop feeding correction into next call",
+          );
+        }
         const planningContext = {
           request: scopedRequest,
           packs: this.registry.listPacks(),
@@ -186,6 +193,7 @@ export class AgentLoop {
           }
           throw error;
         }
+        this.onTrace?.({ runId, step, decision }, "agent loop received decision");
         throwIfAborted(scopedRequest.signal);
 
         if (
@@ -304,6 +312,7 @@ export class AgentLoop {
             null,
             monotonicStartedAt,
           );
+          this.onTrace?.({ runId, step, result }, "agent loop terminal decision");
           return result;
         }
 
@@ -327,6 +336,7 @@ export class AgentLoop {
             null,
             monotonicStartedAt,
           );
+          this.onTrace?.({ runId, step, result }, "agent loop terminal decision");
           return result;
         }
 
@@ -350,6 +360,7 @@ export class AgentLoop {
             null,
             monotonicStartedAt,
           );
+          this.onTrace?.({ runId, step, result }, "agent loop terminal decision");
           return result;
         }
 
@@ -378,6 +389,7 @@ export class AgentLoop {
             null,
             monotonicStartedAt,
           );
+          this.onTrace?.({ runId, step, result }, "agent loop terminal decision");
           return result;
         }
 
@@ -420,6 +432,10 @@ export class AgentLoop {
           arguments: decision.arguments,
           result,
         });
+        this.onTrace?.(
+          { runId, step, skill: decision.skill, arguments: decision.arguments, result },
+          "agent loop executed skill",
+        );
       }
 
       const maxStepsError = new AgentMaxStepsError(

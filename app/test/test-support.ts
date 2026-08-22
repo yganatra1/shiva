@@ -54,6 +54,7 @@ export const testConfig: AppConfig = {
   asrRequestTimeoutMs: 1_000,
   ttsRequestTimeoutMs: 1_000,
   performanceLogging: false,
+  agentTraceLog: false,
   nodeEnv: "test",
 };
 

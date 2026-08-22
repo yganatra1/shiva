@@ -4,6 +4,9 @@ import { z } from "zod";
 export const IMPLEMENTED_DEVICE_COMMAND_TYPES = [
   "device.contacts.search",
   "device.phone.call",
+  "device.notifications.list",
+  "device.notifications.read",
+  "device.camera.capture",
 ] as const;
 
 /**
@@ -13,13 +16,10 @@ export const IMPLEMENTED_DEVICE_COMMAND_TYPES = [
  * just answer UNSUPPORTED.
  */
 export const PLANNED_DEVICE_COMMAND_TYPES = [
-  "device.notifications.list",
-  "device.notifications.read",
   "device.notifications.reply",
   "device.sms.send",
   "device.sms.read",
   "device.location.get",
-  "device.camera.capture",
   "device.microphone.record",
   "device.microphone.stream",
   "device.whatsapp.send",

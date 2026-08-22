@@ -140,7 +140,7 @@ const environmentSchema = z
     .default("00000000-0000-4000-8000-000000000001"),
   SHIVA_USER_NAME: z.string().trim().min(1).max(255).default("Yash"),
   SHIVA_TIME_ZONE: timeZoneSchema.default("Asia/Kolkata"),
-  AGENT_MAX_STEPS: z.coerce.number().int().min(1).max(32).default(8),
+  AGENT_MAX_STEPS: z.coerce.number().int().min(1).max(32).default(12),
   AGENT_REQUEST_TIMEOUT_MS: z.coerce
     .number()
     .int()
@@ -230,6 +230,7 @@ const environmentSchema = z
     .max(600_000)
     .default(120_000),
   SHIVA_PERF_LOG: booleanEnvironmentSchema.default(false),
+  SHIVA_AGENT_TRACE_LOG: booleanEnvironmentSchema.default(true),
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
@@ -300,6 +301,8 @@ export interface AppConfig {
   readonly asrRequestTimeoutMs: number;
   readonly ttsRequestTimeoutMs: number;
   readonly performanceLogging: boolean;
+  /** Full per-step planner prompt/response/decision tracing — verbose, opt-in. */
+  readonly agentTraceLog: boolean;
   readonly nodeEnv: "development" | "test" | "production";
 }
 
@@ -374,6 +377,7 @@ export function loadConfig(): AppConfig {
     asrRequestTimeoutMs: result.data.ASR_REQUEST_TIMEOUT_MS,
     ttsRequestTimeoutMs: result.data.TTS_REQUEST_TIMEOUT_MS,
     performanceLogging: result.data.SHIVA_PERF_LOG,
+    agentTraceLog: result.data.SHIVA_AGENT_TRACE_LOG,
     nodeEnv: result.data.NODE_ENV,
   };
 }

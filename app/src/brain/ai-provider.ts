@@ -3,6 +3,8 @@ export type ChatRole = "system" | "user" | "assistant";
 export interface ChatMessage {
   readonly role: ChatRole;
   readonly content: string;
+  /** Base64-encoded image bytes (no data: URI prefix), for a vision-capable model. */
+  readonly images?: readonly string[];
 }
 
 export interface ChatInput {

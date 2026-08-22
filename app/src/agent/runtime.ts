@@ -58,7 +58,7 @@ export function createAgentRuntime(
   // and registerFinanceSkills still works, in case this is ever reverted.
   registerGoogleSkills(registry, config);
   const deviceDispatcher = new DeviceCommandDispatcher();
-  registerDeviceSkills(registry, deviceDispatcher);
+  registerDeviceSkills(registry, deviceDispatcher, provider);
   registerWebSkills(registry, config);
 
   const audit = new AgentAuditRepository(database);

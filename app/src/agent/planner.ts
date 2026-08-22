@@ -170,19 +170,23 @@ export class AgentPlannerError extends Error {
   override readonly name = "AgentPlannerError";
 }
 
+export type AgentTraceLogger = (
+  detail: Record<string, unknown>,
+  message: string,
+) => void;
+
 export class ShivaAgentPlanner implements AgentPlanner {
-  constructor(private readonly provider: AIProvider) {}
+  constructor(
+    private readonly provider: AIProvider,
+    private readonly onTrace?: AgentTraceLogger,
+  ) {}
 
   async decide(context: AgentPlanningContext): Promise<AgentDecision> {
+    const systemPrompt = buildPlannerPrompt(context);
+    const userInput = buildIterationInput(context);
     const messages: ChatMessage[] = [
-      {
-        role: "system",
-        content: buildPlannerPrompt(context),
-      },
-      {
-        role: "user",
-        content: buildIterationInput(context),
-      },
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userInput },
     ];
     let firstFailure: AgentPlannerError | undefined;
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -197,6 +201,15 @@ export class ShivaAgentPlanner implements AgentPlanner {
                   "Your previous decision was rejected because it was not one exact valid JSON object matching the supplied decision schema. Retry once. Return JSON only; do not add markdown or commentary.",
               },
             ];
+      this.onTrace?.(
+        {
+          step: context.step,
+          attempt,
+          systemPrompt,
+          userInput,
+        },
+        "agent planner request",
+      );
       const result = await this.provider.chat({
         messages: attemptMessages,
         responseFormat: decisionResponseFormat,
@@ -209,9 +222,23 @@ export class ShivaAgentPlanner implements AgentPlanner {
         ...(context.request.signal ? { signal: context.request.signal } : {}),
       });
       try {
-        return parseDecision(result.content);
+        const decision = parseDecision(result.content);
+        this.onTrace?.(
+          { step: context.step, attempt, rawResponse: result.content, decision },
+          "agent planner response",
+        );
+        return decision;
       } catch (error: unknown) {
         if (!(error instanceof AgentPlannerError)) throw error;
+        this.onTrace?.(
+          {
+            step: context.step,
+            attempt,
+            rawResponse: result.content,
+            parseError: error.message,
+          },
+          "agent planner response rejected",
+        );
         firstFailure ??= error;
       }
     }

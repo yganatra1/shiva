@@ -35,7 +35,7 @@ export function createPackRegistry(): PackRegistry {
   packs.register({
     name: "device",
     description:
-      "Act through the connected Android phone: search contacts, place calls.",
+      "Act through the connected Android phone: search contacts, place calls, read notifications, capture and describe photos.",
   });
   return packs;
 }

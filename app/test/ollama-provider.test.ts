@@ -84,6 +84,34 @@ test("the provider sends the infinite keep-alive sentinel as a number", async (c
   assert.equal(typeof requestBody.keep_alive, "number");
 });
 
+test("the provider forwards a message's images to Ollama untouched", async (context) => {
+  let requestBody: unknown;
+  const upstream = createServer((request, response) => {
+    const bodyParts: Buffer[] = [];
+    request.on("data", (part: Buffer) => bodyParts.push(part));
+    request.on("end", () => {
+      requestBody = JSON.parse(Buffer.concat(bodyParts).toString("utf8")) as unknown;
+      response.setHeader("content-type", "application/x-ndjson");
+      response.write(
+        `${JSON.stringify({ done: false, message: { content: "A cat." } })}\n`,
+      );
+      response.end(`${JSON.stringify({ done: true })}\n`);
+    });
+  });
+  context.after(() => closeServer(upstream));
+
+  await createProvider(await listenOnRandomPort(upstream), 1_000).chat({
+    messages: [
+      { role: "user", content: "Describe this.", images: ["ZmFrZS1qcGVn"] },
+    ],
+  });
+
+  assert.ok(isRecord(requestBody));
+  const messages = requestBody.messages;
+  assert.ok(Array.isArray(messages));
+  assert.deepEqual((messages[0] as { images?: string[] }).images, ["ZmFrZS1qcGVn"]);
+});
+
 test("the provider forwards an explicit temperature and omits it by default", async (context) => {
   const requestBodies: unknown[] = [];
   const upstream = createServer((request, response) => {
