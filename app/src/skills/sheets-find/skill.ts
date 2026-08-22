@@ -8,12 +8,10 @@ import {
   type DriveFile,
 } from "../../tools/drive/client.js";
 
-const inputSchema = z
-  .object({
-    query: z.string().trim().min(1).max(200),
-    maxResults: z.number().int().min(1).max(25).default(10),
-  })
-  .strict();
+const inputSchema = z.object({
+  query: z.string().trim().min(1).max(200),
+  maxResults: z.number().int().min(1).max(25).default(10),
+});
 
 export type SheetsFindInput = z.infer<typeof inputSchema>;
 export interface SheetsFindOutput {

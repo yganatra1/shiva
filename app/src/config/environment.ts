@@ -165,6 +165,7 @@ const environmentSchema = z
     .min(1_000)
     .max(120_000)
     .default(15_000),
+  DEVICE_WS_TOKEN: optionalSecretSchema,
   GOOGLE_OAUTH_CLIENT_ID: optionalSecretSchema,
   GOOGLE_OAUTH_CLIENT_SECRET: optionalSecretSchema,
   GOOGLE_OAUTH_REFRESH_TOKEN: optionalSecretSchema,
@@ -276,6 +277,8 @@ export interface AppConfig {
   readonly confirmationTtlMs: number;
   readonly expenseSheetId?: string;
   readonly expenseSheetRequestTimeoutMs: number;
+  /** Required Android companion app connection token; unset means no auth is enforced. */
+  readonly deviceWsToken?: string;
   readonly googleUserOAuth?: {
     readonly clientId: string;
     readonly clientSecret: string;
@@ -339,6 +342,9 @@ export function loadConfig(): AppConfig {
       : {}),
     expenseSheetRequestTimeoutMs:
       result.data.EXPENSE_SHEET_REQUEST_TIMEOUT_MS,
+    ...(result.data.DEVICE_WS_TOKEN
+      ? { deviceWsToken: result.data.DEVICE_WS_TOKEN }
+      : {}),
     ...(result.data.GOOGLE_OAUTH_CLIENT_ID &&
     result.data.GOOGLE_OAUTH_CLIENT_SECRET &&
     result.data.GOOGLE_OAUTH_REFRESH_TOKEN

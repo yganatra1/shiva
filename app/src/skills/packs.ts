@@ -32,5 +32,10 @@ export function createPackRegistry(): PackRegistry {
     description:
       "Create, read, and update Google Sheets with whatever structure the task needs.",
   });
+  packs.register({
+    name: "device",
+    description:
+      "Act through the connected Android phone: search contacts, place calls.",
+  });
   return packs;
 }

@@ -8,12 +8,10 @@ import {
   type CellValue,
 } from "../../tools/sheets/client.js";
 
-const inputSchema = z
-  .object({
-    spreadsheetId: z.string().trim().min(5).max(256),
-    range: z.string().trim().min(1).max(300),
-  })
-  .strict();
+const inputSchema = z.object({
+  spreadsheetId: z.string().trim().min(5).max(256),
+  range: z.string().trim().min(1).max(300),
+});
 
 export type SheetsReadInput = z.infer<typeof inputSchema>;
 export interface SheetsReadOutput {

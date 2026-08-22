@@ -1,6 +1,7 @@
 import type { AIProvider } from "../brain/ai-provider.js";
 import type { AppConfig } from "../config/environment.js";
 import type { ShivaDatabase } from "../database/pool.js";
+import { DeviceCommandDispatcher } from "../device/device-command-dispatcher.js";
 import {
   ConfirmationService,
   DrizzleConfirmationStore,
@@ -16,6 +17,7 @@ import { registerExecutionControlSkills } from "../skills/execution-control/regi
 import { registerCoreSkills } from "../skills/core/register.js";
 import { registerSystemSkills } from "../skills/system/register.js";
 import { registerGoogleSkills } from "../skills/google/register.js";
+import { registerDeviceSkills } from "../skills/device/register.js";
 import { registerWebSkills } from "../skills/web/register.js";
 import { createPackRegistry } from "../skills/packs.js";
 import { SkillRegistry } from "../skills/registry.js";
@@ -28,6 +30,7 @@ import type { AgentOrchestratorPort } from "./types.js";
 export interface AgentRuntime {
   readonly orchestrator: AgentOrchestratorPort;
   readonly executionStatus: ExecutionStatusService;
+  readonly deviceDispatcher: DeviceCommandDispatcher;
 }
 
 export function createAgentRuntime(
@@ -54,6 +57,8 @@ export function createAgentRuntime(
   // fixed-schema expense ledger. Their code, tools, and tests are untouched
   // and registerFinanceSkills still works, in case this is ever reverted.
   registerGoogleSkills(registry, config);
+  const deviceDispatcher = new DeviceCommandDispatcher();
+  registerDeviceSkills(registry, deviceDispatcher);
   registerWebSkills(registry, config);
 
   const audit = new AgentAuditRepository(database);
@@ -85,5 +90,6 @@ export function createAgentRuntime(
       confirmations,
       config.userId,
     ),
+    deviceDispatcher,
   };
 }

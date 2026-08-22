@@ -123,6 +123,13 @@ export class SkillExecutor {
     const parsed = skill.inputSchema.safeParse(input);
     if (!parsed.success) {
       const state = await this.policy.getState();
+      const validationIssues = parsed.error.issues.map((issue) => ({
+        code: issue.code,
+        path: issue.path.map((part) =>
+          typeof part === "symbol" ? part.description ?? "symbol" : part,
+        ),
+        message: sanitizeAuditText(issue.message, 300),
+      }));
       return this.auditOnlyFailure(
         skill.name,
         input,
@@ -132,16 +139,10 @@ export class SkillExecutor {
         context,
         "failed",
         "INVALID_SKILL_INPUT",
-        "The skill arguments did not match its validated input contract.",
-        {
-          validationIssues: parsed.error.issues.map((issue) => ({
-            code: issue.code,
-            path: issue.path.map((part) =>
-              typeof part === "symbol" ? part.description ?? "symbol" : part,
-            ),
-            message: sanitizeAuditText(issue.message, 300),
-          })),
-        },
+        // The specific issues must reach the caller, not just the audit log —
+        // otherwise a retry is a blind guess instead of an actual correction.
+        `The skill arguments did not match its validated input contract: ${describeValidationIssues(validationIssues)}`,
+        { validationIssues },
       );
     }
 
@@ -627,6 +628,27 @@ interface SkillAuditDiagnostics {
 
 function failure(code: string, message: string): SkillFailure {
   return { success: false, error: { code, message } };
+}
+
+const MAX_DESCRIBED_VALIDATION_ISSUES = 5;
+
+function describeValidationIssues(
+  issues: readonly {
+    readonly path: readonly (string | number)[];
+    readonly message: string;
+  }[],
+): string {
+  const described = issues
+    .slice(0, MAX_DESCRIBED_VALIDATION_ISSUES)
+    .map((issue) => {
+      const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+      return `${path}: ${issue.message}`;
+    });
+  const omitted = issues.length - described.length;
+  return (
+    described.join("; ") +
+    (omitted > 0 ? ` (+${omitted} more issue${omitted === 1 ? "" : "s"})` : "")
+  );
 }
 
 function sanitizeErrorCode(value: string | null): string | null {

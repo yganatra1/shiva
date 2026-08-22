@@ -13,14 +13,12 @@ const cellSchema = z.union([
   z.boolean(),
   z.null(),
 ]);
-const inputSchema = z
-  .object({
-    spreadsheetId: z.string().trim().min(5).max(256),
-    range: z.string().trim().min(1).max(300),
-    values: z.array(z.array(cellSchema).max(50)).min(1).max(500),
-    mode: z.enum(["update", "append"]).default("append"),
-  })
-  .strict();
+const inputSchema = z.object({
+  spreadsheetId: z.string().trim().min(5).max(256),
+  range: z.string().trim().min(1).max(300),
+  values: z.array(z.array(cellSchema).max(50)).min(1).max(500),
+  mode: z.enum(["update", "append"]).default("append"),
+});
 
 export type SheetsUpdateInput = z.infer<typeof inputSchema>;
 export interface SheetsUpdateOutput {

@@ -9,6 +9,7 @@ import {
 } from "./api/chat-route.js";
 import { registerErrorHandling } from "./api/error-handler.js";
 import { registerExecutionSettingsRoute } from "./api/execution-settings-route.js";
+import { registerDeviceSocketRoute } from "./api/device-socket-route.js";
 import { registerHealthRoute } from "./api/health-route.js";
 import { registerVoiceRoutes } from "./api/voice-route.js";
 import { registerVoiceSocketRoute } from "./api/voice-socket-route.js";
@@ -18,6 +19,7 @@ import { OllamaEmbeddingProvider } from "./brain/ollama-embedding-provider.js";
 import { OllamaProvider } from "./brain/ollama-provider.js";
 import type { AppConfig } from "./config/environment.js";
 import { createDatabase } from "./database/pool.js";
+import { DeviceCommandDispatcher } from "./device/device-command-dispatcher.js";
 import { MemoryExtractor } from "./memory/memory-extractor.js";
 import { MemoryRanker } from "./memory/memory-ranker.js";
 import { MemoryRepository } from "./memory/memory-repository.js";
@@ -67,6 +69,7 @@ export interface AppOverrides {
   readonly voicePlaybackCoordinator?: VoicePlaybackCoordinator;
   readonly agentOrchestrator?: AgentOrchestratorPort;
   readonly executionStatus?: ExecutionStatusPort;
+  readonly deviceDispatcher?: DeviceCommandDispatcher;
 }
 
 export function createApp(config: AppConfig, overrides: AppOverrides = {}): FastifyInstance {
@@ -153,6 +156,10 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     overrides.executionStatus ??
     agentRuntime?.executionStatus ??
     createInMemoryExecutionStatus(config);
+  const deviceDispatcher =
+    overrides.deviceDispatcher ??
+    agentRuntime?.deviceDispatcher ??
+    new DeviceCommandDispatcher();
   const chatService = new ShivaChatService({
     provider,
     repository,
@@ -206,6 +213,10 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
       ttsProvider,
       playbackCoordinator: voicePlaybackCoordinator,
       ...(voicePerformance ? { performance: voicePerformance } : {}),
+    });
+    registerDeviceSocketRoute(instance, {
+      dispatcher: deviceDispatcher,
+      ...(config.deviceWsToken ? { authToken: config.deviceWsToken } : {}),
     });
   });
 

@@ -27,12 +27,18 @@ export class SheetsClientError extends Error {
   }
 }
 
-/** One tab's worth of structure for spreadsheet creation. */
+/**
+ * One tab's worth of structure for spreadsheet creation. Only `name` is
+ * required — the rest is deliberately optional so a caller struggling to
+ * produce the full nested shape in one attempt can create a bare, reliably
+ * correct tab first and populate it with a separate writeValues() call
+ * afterward, rather than needing every field right on the first try.
+ */
 export interface TabDefinition {
   readonly name: string;
-  readonly headers: readonly string[];
+  readonly headers?: readonly string[];
   readonly rows?: readonly (readonly CellValue[])[];
-  /** Header text -> allowed values. Adds an enforced dropdown to that column. */
+  /** Header text -> allowed values. Adds an enforced dropdown to that column. Requires headers. */
   readonly columnOptions?: Readonly<Record<string, readonly string[]>>;
 }
 
@@ -56,7 +62,7 @@ export interface CreatedSpreadsheet {
 export interface AddTabInput {
   readonly spreadsheetId: string;
   readonly name: string;
-  readonly headers: readonly string[];
+  readonly headers?: readonly string[];
   readonly rows?: readonly (readonly CellValue[])[];
   readonly columnOptions?: Readonly<Record<string, readonly string[]>>;
   readonly signal?: AbortSignal;
@@ -177,7 +183,7 @@ export class GoogleSheetsClient {
     validateTabs([
       {
         name: input.name,
-        headers: input.headers,
+        ...(input.headers ? { headers: input.headers } : {}),
         ...(input.rows ? { rows: input.rows } : {}),
         ...(input.columnOptions ? { columnOptions: input.columnOptions } : {}),
       },
@@ -196,7 +202,7 @@ export class GoogleSheetsClient {
                 addSheet: {
                   properties: {
                     title: input.name,
-                    gridProperties: { frozenRowCount: 1 },
+                    gridProperties: { frozenRowCount: input.headers ? 1 : 0 },
                   },
                 },
               },
@@ -206,15 +212,18 @@ export class GoogleSheetsClient {
       );
       const tab = readAddedTab(payload, input.name);
 
-      const headerUrl = this.valuesUrl(input.spreadsheetId, `'${input.name}'!A1`);
-      headerUrl.searchParams.set("valueInputOption", "USER_ENTERED");
-      await this.requestJson(headerUrl, token, signal, {
-        method: "PUT",
-        body: JSON.stringify({
-          majorDimension: "ROWS",
-          values: [[...input.headers], ...(input.rows ?? [])],
-        }),
-      });
+      const initialRows = [
+        ...(input.headers ? [input.headers] : []),
+        ...(input.rows ?? []),
+      ];
+      if (initialRows.length > 0) {
+        const headerUrl = this.valuesUrl(input.spreadsheetId, `'${input.name}'!A1`);
+        headerUrl.searchParams.set("valueInputOption", "USER_ENTERED");
+        await this.requestJson(headerUrl, token, signal, {
+          method: "PUT",
+          body: JSON.stringify({ majorDimension: "ROWS", values: initialRows }),
+        });
+      }
 
       await this.applyColumnValidations(
         input.spreadsheetId,
@@ -222,7 +231,7 @@ export class GoogleSheetsClient {
         [
           {
             name: input.name,
-            headers: input.headers,
+            ...(input.headers ? { headers: input.headers } : {}),
             ...(input.columnOptions ? { columnOptions: input.columnOptions } : {}),
           },
         ],
@@ -291,8 +300,12 @@ export class GoogleSheetsClient {
       const sheetId = createdTabs.find((created) => created.name === tab.name)
         ?.sheetId;
       if (sheetId === undefined) return [];
-      return Object.entries(options).map(([header, values]) => {
-        const columnIndex = tab.headers.indexOf(header);
+      return Object.entries(options).flatMap(([header, values]) => {
+        const columnIndex = tab.headers?.indexOf(header) ?? -1;
+        // Guarded here defensively; validateTabs already rejects this
+        // combination, but a dropdown on a column that doesn't exist would
+        // otherwise silently corrupt an unrelated column instead of erroring.
+        if (columnIndex < 0) return [];
         return {
           setDataValidation: {
             range: {
@@ -473,33 +486,36 @@ export function sheetsErrorToFailure(
 }
 
 function tabToSheetPayload(tab: TabDefinition, index: number): unknown {
-  const headerRow = {
-    values: tab.headers.map((header) => ({
-      userEnteredValue: { stringValue: header },
-      userEnteredFormat: {
-        textFormat: HEADER_TEXT_FORMAT,
-        backgroundColor: HEADER_BACKGROUND_COLOR,
-      },
-    })),
-  };
+  const headerRow = tab.headers
+    ? {
+        values: tab.headers.map((header) => ({
+          userEnteredValue: { stringValue: header },
+          userEnteredFormat: {
+            textFormat: HEADER_TEXT_FORMAT,
+            backgroundColor: HEADER_BACKGROUND_COLOR,
+          },
+        })),
+      }
+    : undefined;
   const dataRows = (tab.rows ?? []).map((row) => ({
     values: row.map((cell) => ({ userEnteredValue: userEnteredValue(cell) })),
   }));
-  const columnMetadata = tab.headers.map((header) => ({
+  const columnMetadata = tab.headers?.map((header) => ({
     pixelSize: columnWidthFor(header),
   }));
   return {
     properties: {
       title: tab.name,
       index,
-      gridProperties: { frozenRowCount: 1 },
+      // A bare tab with no header row yet has nothing useful to freeze.
+      gridProperties: { frozenRowCount: headerRow ? 1 : 0 },
     },
     data: [
       {
         startRow: 0,
         startColumn: 0,
-        rowData: [headerRow, ...dataRows],
-        columnMetadata,
+        rowData: headerRow ? [headerRow, ...dataRows] : dataRows,
+        ...(columnMetadata ? { columnMetadata } : {}),
       },
     ],
   };
@@ -533,23 +549,28 @@ function validateTabs(tabs: readonly TabDefinition[]): void {
     throw new SheetsClientError("INVALID_INPUT", "Tab names must be unique.");
   }
   for (const tab of tabs) {
+    if (tab.name.trim().length === 0 || tab.name.length > SHEETS_MAX_TITLE_LENGTH) {
+      throw new SheetsClientError(
+        "INVALID_INPUT",
+        "Each tab's name must be non-empty and within bounds.",
+      );
+    }
     if (
-      tab.name.trim().length === 0 ||
-      tab.name.length > SHEETS_MAX_TITLE_LENGTH ||
-      tab.headers.length === 0 ||
-      tab.headers.length > SHEETS_MAX_HEADERS ||
-      tab.headers.some((header) => header.trim().length === 0) ||
-      new Set(tab.headers.map((header) => header.trim().toLowerCase())).size !==
-        tab.headers.length
+      tab.headers &&
+      (tab.headers.length === 0 ||
+        tab.headers.length > SHEETS_MAX_HEADERS ||
+        tab.headers.some((header) => header.trim().length === 0) ||
+        new Set(tab.headers.map((header) => header.trim().toLowerCase())).size !==
+          tab.headers.length)
     ) {
       throw new SheetsClientError(
         "INVALID_INPUT",
-        "Each tab's name and headers must be non-empty, unique, and within bounds.",
+        "When given, a tab's headers must be non-empty, unique, and within bounds.",
       );
     }
     if (tab.rows) {
       validateValues(tab.rows);
-      if (tab.rows.some((row) => row.length > tab.headers.length)) {
+      if (tab.headers && tab.rows.some((row) => row.length > tab.headers!.length)) {
         throw new SheetsClientError(
           "INVALID_INPUT",
           "A data row had more cells than declared headers.",
@@ -558,7 +579,7 @@ function validateTabs(tabs: readonly TabDefinition[]): void {
     }
     if (tab.columnOptions) {
       for (const [header, values] of Object.entries(tab.columnOptions)) {
-        if (!tab.headers.includes(header)) {
+        if (!tab.headers?.includes(header)) {
           throw new SheetsClientError(
             "INVALID_INPUT",
             `columnOptions referenced header '${header}', which is not in this tab's headers.`,

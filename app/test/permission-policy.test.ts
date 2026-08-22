@@ -92,6 +92,34 @@ test("FULL_ACCESS executes normal reads and authorized ordinary writes", async (
   assert.deepEqual(executed, ["read:status", "write:saved"]);
 });
 
+test("an invalid input's specific validation issues reach the caller, not just the audit log", async () => {
+  const registry = new SkillRegistry();
+  registerValueSkill(
+    registry,
+    "value_example",
+    { mutability: "read", impact: "normal" },
+    () => {},
+  );
+  const { executor } = createHarness(registry, { mode: "FULL_ACCESS" });
+
+  // registerValueSkill's schema is z.object({ value: z.string() }).strict():
+  // this omits the required field and adds an unrecognized one, matching the
+  // exact shape of failure a struggling model produces in practice.
+  const result = await executor.execute(
+    "value_example",
+    { wrongKey: "oops" },
+    context(),
+  );
+
+  assert.equal(result.success, false);
+  if (result.success) return;
+  assert.equal(result.error.code, "INVALID_SKILL_INPUT");
+  // The message must name the actual problem, not just say "invalid" —
+  // otherwise a retry is a blind guess instead of an actual correction.
+  assert.match(result.error.message, /value/);
+  assert.match(result.error.message, /wrongKey/);
+});
+
 test("FULL_ACCESS still requires confirmation for a sensitive action", async () => {
   const registry = new SkillRegistry();
   let executions = 0;

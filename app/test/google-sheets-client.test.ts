@@ -162,6 +162,35 @@ test("createSpreadsheet rejects duplicate tab names and columnOptions referencin
   );
 });
 
+test("createSpreadsheet builds a bare, headerless tab with no header row or frozen row", async () => {
+  const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
+  const sheets = client(async (input, init) => {
+    requests.push({ url: String(input), init });
+    return jsonResponse({
+      spreadsheetId: "sheet-123",
+      sheets: [{ properties: { title: "Sheet1", sheetId: 0 } }],
+    });
+  });
+
+  const result = await sheets.createSpreadsheet({
+    title: "Untitled Spreadsheet",
+    tabs: [{ name: "Sheet1" }],
+  });
+
+  assert.deepEqual(result.tabs, [{ name: "Sheet1", sheetId: 0 }]);
+  // Only the create call — no columnOptions means no follow-up batchUpdate.
+  assert.equal(requests.length, 1);
+  const body = JSON.parse(String(requests[0]?.init?.body)) as {
+    sheets: Array<{
+      properties: { gridProperties: { frozenRowCount: number } };
+      data: Array<{ rowData: unknown[]; columnMetadata?: unknown[] }>;
+    }>;
+  };
+  assert.equal(body.sheets[0]?.properties.gridProperties.frozenRowCount, 0);
+  assert.deepEqual(body.sheets[0]?.data[0]?.rowData, []);
+  assert.equal(body.sheets[0]?.data[0]?.columnMetadata, undefined);
+});
+
 test("addTab adds a sheet, writes its header/rows, and applies its dropdowns", async () => {
   const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
   const sheets = client(async (input, init) => {
@@ -189,6 +218,22 @@ test("addTab adds a sheet, writes its header/rows, and applies its dropdowns", a
   assert.match(requests[0]?.url ?? "", /:batchUpdate$/);
   assert.equal(requests[1]?.init?.method, "PUT");
   assert.match(requests[2]?.url ?? "", /:batchUpdate$/);
+});
+
+test("addTab with no headers, rows, or columnOptions only calls addSheet", async () => {
+  const requests: Array<{ url: string }> = [];
+  const sheets = client(async (input) => {
+    requests.push({ url: String(input) });
+    return jsonResponse({
+      replies: [{ addSheet: { properties: { sheetId: 9, title: "Notes" } } }],
+    });
+  });
+
+  const tab = await sheets.addTab({ spreadsheetId: "sheet-123", name: "Notes" });
+
+  assert.deepEqual(tab, { name: "Notes", sheetId: 9 });
+  assert.equal(requests.length, 1);
+  assert.match(requests[0]?.url ?? "", /:batchUpdate$/);
 });
 
 test("getValues normalizes rows and passes through an empty result", async () => {

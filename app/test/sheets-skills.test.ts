@@ -145,6 +145,54 @@ test("sheets_create builds a multi-tab spreadsheet and reports it as configured,
   assert.deepEqual(summary?.execution, { mutability: "write", impact: "normal" });
 });
 
+test("sheets_create defaults everything and never fails on unrecognized or malformed structure", async () => {
+  const client = new FakeSheetsClient();
+  const registry = registryWithGooglePack(client, new FakeDriveClient());
+  const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
+
+  // No title, no tabs at all: the simplest possible call a struggling model
+  // might send when it isn't confident about the full shape.
+  const bare = await executor.execute("sheets_create", {}, context, {
+    userAuthorized: true,
+  });
+  assert.equal(bare.success, true);
+  assert.deepEqual(client.created[0], {
+    title: "Untitled Spreadsheet",
+    tabs: [{ name: "Sheet1" }],
+  });
+
+  // A tab missing its name, an unrecognized sibling key (as if the model had
+  // written columnHeaders instead of headers), and a columnOptions entry
+  // referencing a header that doesn't exist — none of it should fail the call.
+  const messy = await executor.execute(
+    "sheets_create",
+    {
+      title: "  ",
+      extraTopLevelKey: "ignored",
+      tabs: [
+        {
+          headers: ["Date", "Amount"],
+          columnHeaders: ["wrong key, ignored"],
+          columnOptions: { Amount: ["10", "20"], NotAHeader: ["x"] },
+        },
+      ],
+    },
+    context,
+    { userAuthorized: true },
+  );
+  assert.equal(messy.success, true);
+  assert.deepEqual(client.created[1], {
+    title: "Untitled Spreadsheet",
+    tabs: [
+      {
+        name: "Sheet1",
+        headers: ["Date", "Amount"],
+        columnOptions: { Amount: ["10", "20"] },
+      },
+    ],
+  });
+});
+
 test("sheets_read, sheets_update, and sheets_add_tab reach the client and return its result", async () => {
   const client = new FakeSheetsClient();
   const registry = registryWithGooglePack(client, new FakeDriveClient());
@@ -184,6 +232,25 @@ test("sheets_read, sheets_update, and sheets_add_tab reach the client and return
   );
   assert.deepEqual(addTab, { success: true, data: client.addTabResult });
   assert.equal(client.addedTabs.length, 1);
+});
+
+test("sheets_add_tab defaults name and drops columnOptions with no matching header", async () => {
+  const client = new FakeSheetsClient();
+  const registry = registryWithGooglePack(client, new FakeDriveClient());
+  const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
+
+  const result = await executor.execute(
+    "sheets_add_tab",
+    { spreadsheetId: "sheet-1", columnOptions: { Category: ["Food"] } },
+    context,
+    { userAuthorized: true },
+  );
+
+  assert.equal(result.success, true);
+  assert.deepEqual(client.addedTabs[0], {
+    spreadsheetId: "sheet-1",
+    name: "New Tab",
+  });
 });
 
 test("sheets_find searches Drive and returns ranked matches", async () => {
