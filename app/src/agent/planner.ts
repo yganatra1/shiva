@@ -133,13 +133,7 @@ const decisionResponseFormat = {
           enum: ["user_authorized", "unrequested"],
         },
       },
-      required: [
-        "type",
-        "skill",
-        "selectedSkills",
-        "arguments",
-        "authorization",
-      ],
+      required: ["type", "skill", "selectedSkills", "arguments"],
       additionalProperties: false,
     },
     {

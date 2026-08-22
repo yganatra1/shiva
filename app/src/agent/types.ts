@@ -33,7 +33,7 @@ export type AgentDecision =
       readonly selectedSkills: readonly string[];
       readonly arguments: Readonly<Record<string, unknown>>;
       /** Planner interpretation only; runtime metadata remains authoritative. */
-      readonly authorization: "user_authorized" | "unrequested";
+      readonly authorization?: "user_authorized" | "unrequested" | undefined;
     }
   | {
       readonly type: "approve_confirmation";
