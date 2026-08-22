@@ -377,9 +377,11 @@ function parseDecision(
 
 /**
  * Gemma occasionally emits a registered skill name as the decision `type`
- * while also providing the complete skill_call envelope. Repair only that
- * discriminator when the named skill is currently visible; strict schema
- * validation still rejects every other malformed or missing field.
+ * while otherwise providing the complete skill_call envelope. In that form,
+ * `type` already identifies the skill, so it may also omit the redundant
+ * `skill` field. Repair those two envelope fields only when the named skill is
+ * currently visible; strict schema validation still rejects every other
+ * malformed or missing field.
  */
 function normalizeSkillCallDiscriminator(
   payload: unknown,
@@ -390,11 +392,11 @@ function normalizeSkillCallDiscriminator(
   if (
     typeof type !== "string" ||
     !visibleSkillNames.has(type) ||
-    payload.skill !== type
+    (payload.skill !== undefined && payload.skill !== type)
   ) {
     return payload;
   }
-  return { ...payload, type: "skill_call" };
+  return { ...payload, type: "skill_call", skill: type };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1483,14 +1483,14 @@ test("a direct multi-pack plan freezes every validated selected skill pack", asy
   );
 });
 
-test("planner repairs a visible skill name used as the skill_call discriminator", async () => {
+test("planner repairs a visible skill discriminator when the redundant skill field is omitted", async () => {
   let providerCalls = 0;
   const planner = new ShivaAgentPlanner({
     async chat() {
       providerCalls += 1;
       return {
         content:
-          '{"type":"sheets_find","skill":"sheets_find","selectedSkills":["sheets_find"],"arguments":{"query":"Expense 2026"},"authorization":"user_authorized"}',
+          '{"type":"sheets_find","selectedSkills":["sheets_find"],"arguments":{"query":"Expense 2026"},"authorization":"user_authorized"}',
       };
     },
     async *streamChat() {
