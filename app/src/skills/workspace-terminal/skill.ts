@@ -31,6 +31,7 @@ export class WorkspaceTerminalSkill
   readonly inputDescription =
     '{ "command": "pwd|ls|rg|cat|head|tail|wc|git", "args"?: [literal arguments]; git permits status/ls-files/diff/log/grep only; safe source/documentation access excludes credentials and runtime-private paths; no shell, writes, or paths outside Shiva }';
   readonly inputSchema: z.ZodType<WorkspaceTerminalSkillInput> = inputSchema;
+  readonly pack = "system";
   readonly execution = { mutability: "read", impact: "normal" } as const;
   readonly configured = true;
 

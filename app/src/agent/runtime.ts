@@ -12,29 +12,13 @@ import {
 import { ExecutionStatusService } from "../security/execution-status.js";
 import { ExecutionPolicyEngine } from "../security/policy-engine.js";
 import { SkillExecutor } from "../skills/executor.js";
-import {
-  GetExecutionModeSkill,
-  SetExecutionModeSkill,
-  SetLockdownSkill,
-} from "../skills/execution-control/skills.js";
-import { ExpenseReportSkill } from "../skills/expense-report/skill.js";
-import { LearnAboutShivaSkill } from "../skills/learn-about-shiva/skill.js";
-import { WorkspaceTerminalSkill } from "../skills/workspace-terminal/skill.js";
-import { RecordExpenseSkill } from "../skills/record-expense/skill.js";
+import { registerExecutionControlSkills } from "../skills/execution-control/register.js";
+import { registerCoreSkills } from "../skills/core/register.js";
+import { registerSystemSkills } from "../skills/system/register.js";
+import { registerFinanceSkills } from "../skills/finance/register.js";
+import { registerWebSkills } from "../skills/web/register.js";
+import { createPackRegistry } from "../skills/packs.js";
 import { SkillRegistry } from "../skills/registry.js";
-import { WebResearchSkill } from "../skills/web-research/skill.js";
-import { ExpenseInsertTool } from "../tools/expenses/insert.js";
-import { ExpenseListTool } from "../tools/expenses/list.js";
-import {
-  GoogleAuthAccessTokenProvider,
-} from "../tools/expenses/google-sheets.js";
-import { ManagedGoogleSheetsExpenseRepository } from "../tools/expenses/google-sheets-manager.js";
-import { GoogleUserOAuthAccessTokenProvider } from "../tools/expenses/google-user-oauth.js";
-import { DrizzleExpenseSheetBindingStore } from "../tools/expenses/sheet-binding-repository.js";
-import { WebOpenTool } from "../tools/web/open.js";
-import { BraveWebSearchTool } from "../tools/web/search.js";
-import { FileSystemWorkspaceReader } from "../tools/workspace/reader.js";
-import { ReadOnlyWorkspaceTerminal } from "../tools/workspace/terminal.js";
 import { AgentLoop } from "./agent-loop.js";
 import { AgentAuditRepository } from "./audit.js";
 import { ShivaOrchestrator } from "./orchestrator.js";
@@ -52,7 +36,7 @@ export function createAgentRuntime(
   config: AppConfig,
   onAuditError: (error: unknown) => void = () => {},
 ): AgentRuntime {
-  const registry = new SkillRegistry();
+  const registry = new SkillRegistry(createPackRegistry());
   const executionState = new ExecutionStateService(
     new DrizzleExecutionStateStore(database),
     config.maxExecutionMode,
@@ -61,50 +45,11 @@ export function createAgentRuntime(
     new DrizzleConfirmationStore(database),
     config.confirmationTtlMs,
   );
-  registry.register(new GetExecutionModeSkill(executionState));
-  registry.register(new SetExecutionModeSkill(executionState));
-  registry.register(new SetLockdownSkill(executionState, confirmations));
-  const workspace = new FileSystemWorkspaceReader();
-  registry.register(new LearnAboutShivaSkill(workspace));
-  registry.register(
-    new WorkspaceTerminalSkill(new ReadOnlyWorkspaceTerminal()),
-  );
-  if (config.googleUserOAuth || config.expenseSheetId) {
-    const accessTokenProvider = config.googleUserOAuth
-      ? new GoogleUserOAuthAccessTokenProvider(config.googleUserOAuth)
-      : new GoogleAuthAccessTokenProvider();
-    const expenses = new ManagedGoogleSheetsExpenseRepository({
-      bindingStore: new DrizzleExpenseSheetBindingStore(database),
-      accessTokenProvider,
-      requestTimeoutMs: config.expenseSheetRequestTimeoutMs,
-      ...(config.expenseSheetId
-        ? { bootstrapSpreadsheetId: config.expenseSheetId }
-        : {}),
-    });
-    registry.register(new RecordExpenseSkill(new ExpenseInsertTool(expenses)));
-    registry.register(new ExpenseReportSkill(new ExpenseListTool(expenses)));
-  } else {
-    registry.register(new RecordExpenseSkill());
-    registry.register(new ExpenseReportSkill());
-  }
-
-  if (config.braveSearchApiKey) {
-    registry.register(
-      new WebResearchSkill(
-        new BraveWebSearchTool({
-          apiKey: config.braveSearchApiKey,
-          baseUrl: config.braveSearchUrl,
-          requestTimeoutMs: config.webRequestTimeoutMs,
-        }),
-        new WebOpenTool({
-          requestTimeoutMs: config.webRequestTimeoutMs,
-          maxContentBytes: config.webMaxContentBytes,
-        }),
-      ),
-    );
-  } else {
-    registry.register(new WebResearchSkill());
-  }
+  registerExecutionControlSkills(registry, executionState, confirmations);
+  registerCoreSkills(registry);
+  registerSystemSkills(registry);
+  registerFinanceSkills(registry, config, database);
+  registerWebSkills(registry, config);
 
   const audit = new AgentAuditRepository(database);
   const executor = new SkillExecutor(

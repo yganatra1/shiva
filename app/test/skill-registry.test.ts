@@ -3,6 +3,11 @@ import { test } from "node:test";
 import { z } from "zod";
 
 import {
+  DuplicatePackError,
+  InvalidPackDefinitionError,
+  PackRegistry,
+} from "../src/skills/pack-registry.js";
+import {
   DuplicateSkillError,
   InvalidSkillDefinitionError,
   SkillRegistry,
@@ -14,6 +19,7 @@ const exampleSkill: ShivaSkill<{ value: string }, { echoed: string }> = {
   name: "echo_value",
   description: "Echoes a validated value.",
   inputDescription: '{ "value": "non-empty string" }',
+  pack: "test_pack",
   inputSchema: z.object({ value: z.string().min(1) }).strict(),
   execution: {
     mutability: "read",
@@ -35,6 +41,7 @@ test("skill registry stores type-erased skills and exposes safe summaries", asyn
       name: "echo_value",
       description: "Echoes a validated value.",
       inputDescription: '{ "value": "non-empty string" }',
+      pack: "test_pack",
       configured: true,
       execution: {
         mutability: "read",
@@ -114,5 +121,78 @@ test("skill registry rejects duplicate, malformed, and unknown skill names", () 
         } as never,
       }),
     InvalidSkillDefinitionError,
+  );
+  assert.throws(
+    () =>
+      registry.register({
+        ...exampleSkill,
+        name: "invalid_pack_name",
+        pack: "Not A Pack",
+      }),
+    InvalidSkillDefinitionError,
+  );
+});
+
+test("skill registry enforces pack existence only when a PackRegistry is supplied", () => {
+  const withoutPacks = new SkillRegistry();
+  withoutPacks.register({ ...exampleSkill, pack: "anything_snake_case" });
+  assert.equal(withoutPacks.hasPack("anything_snake_case"), false);
+
+  const packs = new PackRegistry();
+  packs.register({ name: "test_pack", description: "A pack used in tests." });
+  const withPacks = new SkillRegistry(packs);
+  withPacks.register(exampleSkill);
+  assert.equal(withPacks.hasPack("test_pack"), true);
+
+  assert.throws(
+    () =>
+      withPacks.register({
+        ...exampleSkill,
+        name: "unknown_pack_skill",
+        pack: "nonexistent_pack",
+      }),
+    InvalidSkillDefinitionError,
+  );
+});
+
+test("skill registry groups skills into a pack-level catalog", () => {
+  const packs = new PackRegistry();
+  packs.register({ name: "test_pack", description: "A pack used in tests." });
+  packs.register({ name: "empty_pack", description: "Has no skills yet." });
+  const registry = new SkillRegistry(packs);
+  registry.register(exampleSkill);
+  registry.register({
+    ...exampleSkill,
+    name: "echo_value_two",
+    configured: false,
+  });
+
+  assert.deepEqual(registry.listPacks(), [
+    {
+      name: "test_pack",
+      description: "A pack used in tests.",
+      skillCount: 2,
+      configured: true,
+    },
+  ]);
+});
+
+test("PackRegistry rejects duplicate and malformed pack names", () => {
+  const packs = new PackRegistry();
+  packs.register({ name: "test_pack", description: "A pack used in tests." });
+
+  assert.equal(packs.has("test_pack"), true);
+  assert.equal(packs.has("missing_pack"), false);
+  assert.throws(
+    () => packs.register({ name: "test_pack", description: "Duplicate." }),
+    DuplicatePackError,
+  );
+  assert.throws(
+    () => packs.register({ name: "Not Snake Case", description: "Bad name." }),
+    InvalidPackDefinitionError,
+  );
+  assert.throws(
+    () => packs.register({ name: "empty_description", description: "  " }),
+    InvalidPackDefinitionError,
   );
 });

@@ -374,6 +374,7 @@ test("an approved action is claimed as EXECUTING and finalized as EXECUTED", asy
     description: "Waits inside a confirmed write for lifecycle inspection.",
     inputDescription: '{ "value": string }',
     inputSchema: z.object({ value: z.string() }).strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "normal" },
     async execute(input) {
       signalStarted();
@@ -419,6 +420,7 @@ test("a confirmed action that fails is finalized as FAILED, not EXECUTED", async
     description: "Returns a controlled failure after confirmation.",
     inputDescription: '{ "value": string }',
     inputSchema: z.object({ value: z.string() }).strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "normal" },
     async execute() {
       return {
@@ -589,6 +591,7 @@ test("credential-shaped values are absent from skill audit input and result", as
           .strict(),
       })
       .strict(),
+    pack: "test",
     execution: { mutability: "read", impact: "normal" },
     async execute() {
       return {
@@ -702,6 +705,7 @@ function registerValueSkill(
     name,
     description: `Runs the ${name} fixture.`,
     inputDescription: '{ "value": string }',
+    pack: "test",
     inputSchema: z.object({ value: z.string() }).strict(),
     execution,
     async execute(input) {

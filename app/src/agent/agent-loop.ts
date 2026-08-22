@@ -103,6 +103,7 @@ export class AgentLoop {
       signal: scopedSignal,
     };
     let selectedSkills: readonly string[] | undefined;
+    let openPacks: readonly string[] | undefined;
     let pendingConfirmation:
       | Awaited<ReturnType<SkillExecutor["getPendingConfirmation"]>>
       | undefined;
@@ -149,10 +150,14 @@ export class AgentLoop {
         plannerFeedback = undefined;
         const planningContext = {
           request: scopedRequest,
-          skills: allowedSkillSummaries(
-            this.registry,
-            scopedRequest.allowedSkills,
-          ),
+          packs: this.registry.listPacks(),
+          openPacks: openPacks ?? [],
+          skills: selectedSkills
+            ? allowedSkillSummaries(this.registry, selectedSkills)
+            : allowedSkillSummaries(
+                this.registry,
+                openPacks ? skillsInPacks(this.registry, openPacks) : [],
+              ),
           observations: [...observations],
           step,
           maxSteps: this.maxSteps,
@@ -230,6 +235,29 @@ export class AgentLoop {
             arguments: approval?.arguments ?? {},
             result: resolved.result,
           });
+          continue;
+        }
+
+        if (decision.type === "open_packs") {
+          if (selectedSkills) {
+            plannerFeedback =
+              "open_packs was rejected because this run's skill scope is already frozen. Continue with an allowed skill_call within the frozen scope, or return a grounded response.";
+            continue;
+          }
+          try {
+            const requested = normalizePackScope(decision.packs, this.registry);
+            openPacks = openPacks
+              ? [...new Set([...openPacks, ...requested])].sort()
+              : requested;
+          } catch (error: unknown) {
+            if (!(error instanceof AgentEvidenceError)) throw error;
+            const validPackNames = this.registry
+              .listPacks()
+              .map((pack) => pack.name)
+              .join(", ");
+            plannerFeedback = `Your previous open_packs call used an invalid or empty pack list. Choose only from this exact pack catalog: ${validPackNames}.`;
+            continue;
+          }
           continue;
         }
 
@@ -548,6 +576,34 @@ function allowedSkillSummaries(
   return summaries.filter((skill) => allowed.has(skill.name));
 }
 
+function skillsInPacks(
+  registry: SkillRegistry,
+  packs: readonly string[],
+): readonly string[] {
+  const wanted = new Set(packs);
+  return registry
+    .list()
+    .filter((skill) => wanted.has(skill.pack))
+    .map((skill) => skill.name);
+}
+
+function normalizePackScope(
+  packs: readonly string[],
+  registry: SkillRegistry,
+): readonly string[] {
+  if (packs.length === 0 || packs.length > 16) {
+    throw new AgentEvidenceError("The planner selected an invalid pack list.");
+  }
+  const normalized = [...new Set(packs)].sort();
+  if (
+    normalized.length !== packs.length ||
+    normalized.some((pack) => !registry.hasPack(pack))
+  ) {
+    throw new AgentEvidenceError("The planner selected an invalid pack list.");
+  }
+  return normalized;
+}
+
 function withoutSkillScope(request: AgentRequest): AgentRequest {
   const {
     allowedSkills: _allowedSkills,
@@ -680,11 +736,16 @@ function describeCapabilities(registry: SkillRegistry): string {
   if (skills.length === 0) {
     return "I currently have no registered external skills. My normal conversation and memory capabilities remain available.";
   }
-  const lines = skills.map(
-    (skill) =>
-      `- ${skill.name}: ${skill.description} (${skill.configured ? "configured" : "registered, but its external integration is not configured"})`,
-  );
-  return `I currently have ${skills.length} registered skill${skills.length === 1 ? "" : "s"}:\n${lines.join("\n")}\n\nI also retain my normal conversation, memory, text, and voice paths outside this skill count.`;
+  const packs = registry.listPacks();
+  const sections = packs.map((pack) => {
+    const packSkills = skills.filter((skill) => skill.pack === pack.name);
+    const lines = packSkills.map(
+      (skill) =>
+        `  - ${skill.name}: ${skill.description} (${skill.configured ? "configured" : "registered, but its external integration is not configured"})`,
+    );
+    return `${pack.name} — ${pack.description}\n${lines.join("\n")}`;
+  });
+  return `I currently have ${skills.length} registered skill${skills.length === 1 ? "" : "s"} across ${packs.length} capability area${packs.length === 1 ? "" : "s"}:\n${sections.join("\n")}\n\nI also retain my normal conversation, memory, text, and voice paths outside this skill count.`;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

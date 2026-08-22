@@ -61,6 +61,7 @@ test("agent and skill success are auditable around actual execution", async () =
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number() }).strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "normal" },
     async execute() {
       events.push("execute");
@@ -145,6 +146,7 @@ test("expense agent and skill audit payloads are redacted without changing obser
     inputSchema: z
       .object({ amount: z.number(), description: z.string() })
       .strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "normal" },
     async execute() {
       return { success: true, data: privateRecordResult };
@@ -155,6 +157,7 @@ test("expense agent and skill audit payloads are redacted without changing obser
     description: "Reads an expense report.",
     inputDescription: '{ "from": string, "to": string }',
     inputSchema: z.object({ from: z.string(), to: z.string() }).strict(),
+    pack: "test",
     execution: { mutability: "read", impact: "normal" },
     async execute() {
       return { success: true, data: privateReportResult };
@@ -264,6 +267,7 @@ test("expense failure audit keeps status and error code but redacts its payload"
     description: "Reads an expense report.",
     inputDescription: '{ "from": string }',
     inputSchema: z.object({ from: z.string() }).strict(),
+    pack: "test",
     execution: { mutability: "read", impact: "normal" },
     async execute() {
       return {
@@ -328,6 +332,7 @@ test("agent requests are redacted while non-expense skill payloads remain intact
     description: "Researches the web.",
     inputDescription: '{ "query": string }',
     inputSchema: z.object({ query: z.string() }).strict(),
+    pack: "test",
     execution: { mutability: "read", impact: "normal" },
     async execute() {
       return { success: true, data: webResult };
@@ -422,6 +427,7 @@ test("skill audit recursively redacts nested secrets without changing execution 
           .strict(),
       })
       .strict(),
+    pack: "test",
     execution: { mutability: "read", impact: "normal" },
     async execute() {
       return { success: true, data: privateResult };
@@ -492,6 +498,7 @@ test("max-step termination is finalized without leaking error text", async () =>
     description: "Always fails for the bounded-loop fixture.",
     inputDescription: "{}",
     inputSchema: z.object({}).strict(),
+    pack: "test",
     execution: { mutability: "read", impact: "normal" },
     async execute() {
       return {
@@ -549,6 +556,7 @@ test("a successful side effect remains successful when audit finalization fails"
     description: "Records one expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "normal" },
     async execute(input) {
       writes += 1;

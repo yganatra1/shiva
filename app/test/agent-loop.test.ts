@@ -19,12 +19,14 @@ import type {
   AgentRequest,
 } from "../src/agent/types.js";
 import type { ChatInput } from "../src/brain/ai-provider.js";
+import type { PackSummary, ShivaSkill } from "../src/skills/types.js";
 import {
   ConfirmationService,
   InMemoryConfirmationStore,
 } from "../src/security/confirmation.js";
 import { ExecutionPolicyEngine } from "../src/security/policy-engine.js";
 import { SkillExecutor } from "../src/skills/executor.js";
+import { PackRegistry } from "../src/skills/pack-registry.js";
 import { SkillRegistry } from "../src/skills/registry.js";
 
 const request: AgentRequest = {
@@ -44,6 +46,7 @@ test("agent loop executes a skill, observes confirmed output, then responds", as
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "normal" },
     async execute(input) {
       executionCount += 1;
@@ -114,6 +117,7 @@ test("agent loop resumes only the exact action approved by a pending confirmatio
     inputSchema: z
       .object({ target: z.string().min(1), force: z.boolean() })
       .strict(),
+    pack: "test",
     execution: {
       mutability: "write",
       impact: "sensitive",
@@ -239,6 +243,7 @@ test("agent loop denies a pending confirmation without executing its action", as
     description: "Executes one sensitive fixture action.",
     inputDescription: '{ "target": string }',
     inputSchema: z.object({ target: z.string().min(1) }).strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "sensitive" },
     async execute() {
       executionCount += 1;
@@ -321,6 +326,7 @@ test("agent loop executes an identical skill call only once per run", async () =
     inputSchema: z
       .object({ amount: z.number().positive(), description: z.string() })
       .strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "normal" },
     async execute(input) {
       executionCount += 1;
@@ -380,6 +386,7 @@ test("agent loop does not re-execute an identical unavailable skill", async () =
     description: "Researches the web.",
     inputDescription: '{ "query": string }',
     inputSchema: z.object({ query: z.string() }).strict(),
+    pack: "test",
     execution: { mutability: "read", impact: "normal" },
     async execute() {
       executions += 1;
@@ -437,6 +444,7 @@ test("agent loop preserves distinct record_expense calls in one run", async () =
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "normal" },
     async execute(input) {
       executedAmounts.push(input.amount);
@@ -489,6 +497,7 @@ test("agent loop corrects a response that is missing required skill evidence", a
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "normal" },
     async execute() {
       executions += 1;
@@ -542,6 +551,7 @@ test("agent loop accepts an early failure from a selected prerequisite skill", a
     description: "Researches the web.",
     inputDescription: '{ "query": string }',
     inputSchema: z.object({ query: z.string() }).strict(),
+    pack: "test",
     execution: { mutability: "read", impact: "normal" },
     async execute() {
       return {
@@ -555,6 +565,7 @@ test("agent loop accepts an early failure from a selected prerequisite skill", a
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "normal" },
     async execute() {
       expenseExecutions += 1;
@@ -606,6 +617,7 @@ test("agent loop feeds an out-of-scope call back to the planner for correction",
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "normal" },
     async execute() {
       expenseExecutions += 1;
@@ -617,6 +629,7 @@ test("agent loop feeds an out-of-scope call back to the planner for correction",
     description: "Researches the web.",
     inputDescription: '{ "query": string }',
     inputSchema: z.object({ query: z.string() }).strict(),
+    pack: "test",
     execution: { mutability: "read", impact: "normal" },
     async execute() {
       webExecutions += 1;
@@ -673,6 +686,7 @@ test("agent loop never executes a repeated adversarial cross-skill call", async 
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
+    pack: "test",
     execution: { mutability: "write", impact: "normal" },
     async execute() {
       expenseExecutions += 1;
@@ -684,6 +698,7 @@ test("agent loop never executes a repeated adversarial cross-skill call", async 
     description: "Researches the web.",
     inputDescription: '{ "query": string }',
     inputSchema: z.object({ query: z.string() }).strict(),
+    pack: "test",
     execution: { mutability: "read", impact: "normal" },
     async execute(input) {
       webExecutions += 1;
@@ -726,6 +741,7 @@ test("agent loop corrects clarification attempted after tool execution", async (
     description: "Researches the web.",
     inputDescription: '{ "query": string }',
     inputSchema: z.object({ query: z.string() }).strict(),
+    pack: "test",
     execution: { mutability: "read", impact: "normal" },
     async execute() {
       return { success: true, data: { answer: "grounded" } };
@@ -879,12 +895,15 @@ test("provider-neutral planner requests strict JSON and validates the decision",
 
   const decision = await planner.decide({
     request,
+    packs: [],
+    openPacks: [],
     skills: [
       {
         name: "record_expense",
         description: "Records an expense.",
         inputDescription: '{ "amount": number }',
         configured: true,
+        pack: "test",
         execution: { mutability: "write", impact: "normal" },
       },
     ],
@@ -923,12 +942,15 @@ test("planner skill calls fail closed when authorization is omitted", async () =
   await assert.rejects(
     planner.decide({
       request,
+      packs: [],
+      openPacks: [],
       skills: [
         {
           name: "record_expense",
           description: "Records an expense.",
           inputDescription: '{ "amount": number }',
           configured: true,
+          pack: "test",
           execution: { mutability: "write", impact: "normal" },
         },
       ],
@@ -997,4 +1019,234 @@ test("orchestrator leaves semantic skill selection to the planner", async () => 
   });
 
   assert.equal(captured?.allowedSkills, undefined);
+});
+
+function fixtureSkill(
+  name: string,
+  pack: string,
+): ShivaSkill<Record<string, never>, Record<string, never>> {
+  return {
+    name,
+    description: `${name} fixture skill.`,
+    inputDescription: "{}",
+    pack,
+    inputSchema: z.object({}).strict(),
+    execution: { mutability: "read", impact: "normal" },
+    async execute() {
+      return { success: true, data: {} };
+    },
+  };
+}
+
+test("open_packs is additive and reveals only the opened packs' skills before a skill_call freezes the scope", async () => {
+  const packs = new PackRegistry();
+  packs.register({ name: "alpha", description: "Alpha pack." });
+  packs.register({ name: "beta", description: "Beta pack." });
+  const registry = new SkillRegistry(packs);
+  registry.register(fixtureSkill("alpha_skill", "alpha"));
+  let betaExecutions = 0;
+  registry.register({
+    ...fixtureSkill("beta_skill", "beta"),
+    async execute() {
+      betaExecutions += 1;
+      return { success: true, data: { done: true } };
+    },
+  });
+
+  const contexts: AgentPlanningContext[] = [];
+  const decisions: AgentDecision[] = [
+    { type: "open_packs", packs: ["alpha"] },
+    { type: "open_packs", packs: ["beta"] },
+    {
+      type: "skill_call",
+      skill: "beta_skill",
+      selectedSkills: ["beta_skill"],
+      arguments: {},
+      authorization: "user_authorized",
+    },
+    { type: "respond", outcome: "success", message: "Done." },
+  ];
+  const planner: AgentPlanner = {
+    async decide(context) {
+      contexts.push(context);
+      const decision = decisions.shift();
+      if (!decision) throw new Error("No fake decision available.");
+      return decision;
+    },
+  };
+  const loop = new AgentLoop(
+    planner,
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+    8,
+    () => new Date("2026-08-20T00:00:00Z"),
+    () => "30000000-0000-4000-8000-000000000003",
+  );
+
+  const result = await loop.run(request);
+
+  assert.equal(betaExecutions, 1);
+  assert.equal(result.response, "Done.");
+
+  assert.deepEqual(contexts[0]?.openPacks, []);
+  assert.deepEqual(contexts[0]?.skills, []);
+  assert.equal(contexts[0]?.packs.length, 2);
+
+  assert.deepEqual(contexts[1]?.openPacks, ["alpha"]);
+  assert.deepEqual(
+    contexts[1]?.skills.map((skill) => skill.name),
+    ["alpha_skill"],
+  );
+
+  assert.deepEqual(contexts[2]?.openPacks, ["alpha", "beta"]);
+  assert.deepEqual(
+    contexts[2]?.skills.map((skill) => skill.name).sort(),
+    ["alpha_skill", "beta_skill"],
+  );
+
+  assert.deepEqual(
+    contexts[3]?.skills.map((skill) => skill.name),
+    ["beta_skill"],
+  );
+});
+
+test("open_packs is rejected once the skill scope is frozen", async () => {
+  const packs = new PackRegistry();
+  packs.register({ name: "alpha", description: "Alpha pack." });
+  const registry = new SkillRegistry(packs);
+  registry.register(fixtureSkill("alpha_skill", "alpha"));
+
+  const feedbacks: (string | undefined)[] = [];
+  const decisions: AgentDecision[] = [
+    {
+      type: "skill_call",
+      skill: "alpha_skill",
+      selectedSkills: ["alpha_skill"],
+      arguments: {},
+      authorization: "user_authorized",
+    },
+    { type: "open_packs", packs: ["alpha"] },
+    { type: "respond", outcome: "success", message: "Done." },
+  ];
+  const planner: AgentPlanner = {
+    async decide(context) {
+      feedbacks.push(context.plannerFeedback);
+      const decision = decisions.shift();
+      if (!decision) throw new Error("No fake decision available.");
+      return decision;
+    },
+  };
+  const loop = new AgentLoop(
+    planner,
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+    8,
+    () => new Date("2026-08-20T00:00:00Z"),
+    () => "30000000-0000-4000-8000-000000000003",
+  );
+
+  const result = await loop.run(request);
+
+  assert.equal(result.response, "Done.");
+  assert.match(feedbacks[2] ?? "", /already frozen/);
+});
+
+test("an invalid open_packs request is corrected without crashing the run", async () => {
+  const packs = new PackRegistry();
+  packs.register({ name: "alpha", description: "Alpha pack." });
+  const registry = new SkillRegistry(packs);
+  registry.register(fixtureSkill("alpha_skill", "alpha"));
+
+  const feedbacks: (string | undefined)[] = [];
+  const decisions: AgentDecision[] = [
+    { type: "open_packs", packs: ["nonexistent_pack"] },
+    { type: "open_packs", packs: ["alpha"] },
+    {
+      type: "skill_call",
+      skill: "alpha_skill",
+      selectedSkills: ["alpha_skill"],
+      arguments: {},
+      authorization: "user_authorized",
+    },
+    { type: "respond", outcome: "success", message: "Done." },
+  ];
+  const planner: AgentPlanner = {
+    async decide(context) {
+      feedbacks.push(context.plannerFeedback);
+      const decision = decisions.shift();
+      if (!decision) throw new Error("No fake decision available.");
+      return decision;
+    },
+  };
+  const loop = new AgentLoop(
+    planner,
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+    8,
+    () => new Date("2026-08-20T00:00:00Z"),
+    () => "30000000-0000-4000-8000-000000000003",
+  );
+
+  const result = await loop.run(request);
+
+  assert.equal(result.response, "Done.");
+  assert.match(feedbacks[1] ?? "", /invalid or empty pack list/);
+  assert.match(feedbacks[1] ?? "", /alpha/);
+});
+
+test("the unscoped planner prompt scales with pack count, not with each pack's skill count", async () => {
+  const makePacks = (count: number): PackSummary[] =>
+    Array.from({ length: count }, (_, index) => ({
+      name: `pack_${index}`,
+      description:
+        `Synthetic capability pack number ${index} used to verify the ` +
+        "unscoped prompt does not scale with total registered skill count.",
+      // A high skillCount on every pack: if the prompt ever regresses into
+      // rendering full per-skill blocks for an unscoped turn (today's
+      // pre-middle-layer behavior), this is what would balloon the size.
+      skillCount: 20,
+      configured: true,
+    }));
+
+  async function promptFor(packs: PackSummary[]): Promise<string> {
+    const inputs: ChatInput[] = [];
+    const planner = new ShivaAgentPlanner({
+      async chat(input) {
+        inputs.push(input);
+        return { content: '{"type":"direct_chat"}' };
+      },
+      async *streamChat() {
+        throw new Error("Planner decisions must use structured chat().");
+      },
+    });
+    await planner.decide({
+      request,
+      packs,
+      openPacks: [],
+      skills: [],
+      observations: [],
+      step: 1,
+      maxSteps: 8,
+      now: new Date("2026-08-20T00:00:00Z"),
+    });
+    return inputs[0]?.messages[0]?.content ?? "";
+  }
+
+  const smallPrompt = await promptFor(makePacks(2));
+  const largePrompt = await promptFor(makePacks(40));
+
+  assert.match(smallPrompt, /No skill definitions are visible yet/);
+  assert.match(largePrompt, /No skill definitions are visible yet/);
+
+  const perExtraPackCost =
+    (largePrompt.length - smallPrompt.length) / (40 - 2);
+  // Rendering a pack line costs roughly 150-250 characters. Rendering one
+  // full skill definition block costs roughly 250-400 characters, and each
+  // synthetic pack above claims 20 skills — so a regression back into
+  // per-skill rendering on an unscoped turn would push this well past 1,000
+  // characters per pack. 600 cleanly separates the two.
+  assert.ok(
+    perExtraPackCost < 600,
+    `Expected roughly constant per-pack prompt cost, got ${perExtraPackCost.toFixed(1)} characters/pack (small=${smallPrompt.length}, large=${largePrompt.length}).`,
+  );
 });

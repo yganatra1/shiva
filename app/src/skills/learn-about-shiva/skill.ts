@@ -24,6 +24,7 @@ export class LearnAboutShivaSkill
   readonly inputDescription =
     '{ "focus"?: "optional topic to locate in Shiva documentation/source" }';
   readonly inputSchema: z.ZodType<LearnAboutShivaInput> = inputSchema;
+  readonly pack = "core";
   readonly execution = { mutability: "read", impact: "normal" } as const;
   readonly configured = true;
 

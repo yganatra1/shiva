@@ -64,6 +64,12 @@ export interface ShivaSkill<TInput, TOutput> {
   readonly name: string;
   readonly description: string;
   readonly inputDescription: string;
+  /**
+   * Discovery grouping only (see PackRegistry) — never a security boundary.
+   * An unscoped planner turn sees pack descriptions instead of every skill;
+   * opening a pack reveals the full definitions of the skills inside it.
+   */
+  readonly pack: string;
   /** Whether the external dependency required by this skill is configured. */
   readonly configured?: boolean;
   readonly inputSchema: z.ZodType<TInput>;
@@ -89,6 +95,7 @@ export interface RegisteredSkill {
   readonly name: string;
   readonly description: string;
   readonly inputDescription: string;
+  readonly pack: string;
   readonly configured: boolean;
   readonly inputSchema: z.ZodType<unknown>;
   readonly execution: SkillExecutionMetadata;
@@ -106,6 +113,16 @@ export interface SkillSummary {
   readonly name: string;
   readonly description: string;
   readonly inputDescription: string;
+  readonly pack: string;
   readonly configured: boolean;
   readonly execution: SkillExecutionMetadata;
+}
+
+/** Level-1 catalog entry — a pack's own metadata plus its skill count. */
+export interface PackSummary {
+  readonly name: string;
+  readonly description: string;
+  readonly skillCount: number;
+  /** True when at least one skill in the pack has a configured integration. */
+  readonly configured: boolean;
 }

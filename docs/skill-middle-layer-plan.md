@@ -2,7 +2,7 @@
 
 ## Status
 
-**v2 — reviewed, direction approved, still pre-implementation.** Codex's execution-mode/confirmation migration (SAFE/AUTO/FULL_ACCESS) is functionally complete — as of 2026-08-22 it's fully staged in the working tree (`git status` shows every affected file staged) but **not yet committed to `main`**. This version folds in an external review pass (2026-08-22) that approved the pack-based approach and requested five specific changes, all incorporated below. Phase 0 (resync once that work is actually committed) is still the required first step before writing any of this.
+**v3 — Phases 0-3 implemented and passing (227/227 tests, typecheck, build all clean); Phase 4 not started.** Codex's execution-mode/confirmation migration (SAFE/AUTO/FULL_ACCESS) committed to `main` as `2cf01b2` on 2026-08-22. Phases 0-3 below (`PackRegistry`, the `open_packs` mechanism, and the per-pack authoring scaffolding) were implemented directly on top of that commit the same day, still uncommitted in the working tree pending the user's review. Phase 4 (building out the ~90-skill catalog) has not started — most of it needs credentials/infrastructure that don't exist yet (see Phase 4 in §6).
 
 This doc is the concrete engineering plan for turning `docs/skill-addition.md`'s "three levels" vision into working code, scaling from the 7 skills registered today toward the ~100-tool catalog in that doc, without dumping 100 tool schemas into every planner call.
 
@@ -136,6 +136,16 @@ Add `open_packs` (with union-merge semantics, §2 point 5), the pack-level promp
 
 **Phase 3 — authoring scaffolding.**
 `defineSkill()` helper, per-pack `register.ts` modules, `runtime.ts` becomes an orchestrator. No new user-facing skills yet — this phase just makes Phase 4 additions cheap and uniform.
+
+**Phases 0-3 implementation notes (2026-08-22):**
+- `SkillRegistry`'s `PackRegistry` dependency ended up **optional**, not required: `validateDefinition` always format-checks `skill.pack` (snake_case, non-empty) but only enforces pack *existence* when a `PackRegistry` was actually supplied to the constructor. This was a pragmatic call made during implementation, not in the original plan — it let ~30 pre-existing test fixtures across `agent-audit.test.ts`, `agent-loop.test.ts`, `audit-sanitizer.test.ts`, and `permission-policy.test.ts` add one required field each without also having to construct and seed a `PackRegistry` for concerns unrelated to packs. Production wiring (`createAgentRuntime`) always supplies one, so real skills get full validation; only ad-hoc test fixtures get the lenient path.
+- `SkillRegistry.hasPack(name)` was added (delegates to the injected `PackRegistry`) so `agent-loop.ts` never needs a second registry reference — it validates `open_packs` requests entirely through the `SkillRegistry` it already holds.
+- Actual pack seed for the 5 packs backing today's 8 skills: `execution_control` (`get_execution_mode`, `set_execution_mode`, `set_lockdown`), `core` (`learn_about_shiva`), `system` (`workspace_terminal`), `finance` (`record_expense`, `expense_report`), `web` (`web_research`) — in [app/src/skills/packs.ts](app/src/skills/packs.ts).
+- `AgentPlanningContext` carries `packs` (always the full catalog) and `openPacks` (this run's opened set, for the prompt's "already opened" line) as new required fields alongside the existing `skills`.
+- Files added: `skills/pack-registry.ts`, `skills/packs.ts`, `skills/define-skill.ts`, `skills/execution-control/register.ts`, `skills/core/register.ts`, `skills/system/register.ts`, `skills/finance/register.ts`, `skills/web/register.ts`.
+- Files edited: `skills/types.ts`, `skills/registry.ts`, `agent/types.ts`, `agent/planner.ts`, `agent/agent-loop.ts`, `agent/runtime.ts`, all 8 existing skill definitions, plus the 5 test files above.
+- New tests in `agent-loop.test.ts`: additive multi-hop `open_packs` narrowing skill visibility correctly and freezing exactly as before; `open_packs` rejected with corrective feedback once frozen; an invalid pack name self-corrects without crashing the run; a prompt-budget regression test proving the unscoped prompt's cost scales with pack count (~150-250 chars/pack), not with each pack's registered skill count. New tests in `skill-registry.test.ts`: `PackRegistry` duplicate/malformed-name rejection, pack-existence enforcement only when supplied, and `listPacks()` grouping/aggregation.
+- Verification: `npm test` 227/227, `npm run typecheck` clean, `npm run build` clean, `git diff --check` clean. No database migration needed — packs are pure in-memory registry state, never persisted.
 
 **Phase 4 — build out the catalog, pack by pack.** Suggested order, cheapest/highest-value first:
 1. `system` read paths, `docker` read paths — no new credentials needed
