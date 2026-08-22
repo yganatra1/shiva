@@ -53,7 +53,8 @@ import {
   type VoicePerformanceLogSink,
 } from "./voice/voice-performance.js";
 
-const API_BODY_LIMIT_BYTES = 256 * 1024;
+/** Chat may include a base64 JPEG (~1.5M chars) for vision turns. */
+const API_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 const API_REQUEST_TIMEOUT_MS = 30_000;
 const VOICE_SOCKET_MAX_FRAME_BYTES = 4 * 1024 * 1024;
 

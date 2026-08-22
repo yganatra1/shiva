@@ -86,8 +86,11 @@ export class ShivaChatService {
     conversationId?: string,
     signal?: AbortSignal,
     interaction: ChatInteractionContext = { mode: "text" },
+    images?: readonly string[],
   ): Promise<PreparedChat> {
     const performance = interaction.performance;
+    const attachedImages = normalizeChatImages(images);
+    const persistedMessage = persistableUserMessage(message, attachedImages);
     await measureChatPerformance(performance, "resolve-user", () =>
       this.options.repository.ensureUser(
         this.options.userId,
@@ -107,7 +110,12 @@ export class ShivaChatService {
     const userMessage = await measureChatPerformance(
       performance,
       "save-message",
-      () => this.options.repository.addMessage(conversation.id, "user", message),
+      () =>
+        this.options.repository.addMessage(
+          conversation.id,
+          "user",
+          persistedMessage,
+        ),
     );
     const recentMessages = await measureChatPerformance(
       performance,
@@ -118,7 +126,7 @@ export class ShivaChatService {
           this.options.workingMemoryMessageLimit,
         ),
     );
-    const explicitRequest = isExplicitMemoryRequest(message);
+    const explicitRequest = isExplicitMemoryRequest(persistedMessage);
     const explicitMemory = explicitRequest
       ? await measureChatPerformance(performance, "explicit-memory", () =>
           this.options.memoryService.rememberExplicitInteraction({
@@ -131,9 +139,9 @@ export class ShivaChatService {
           }),
         )
       : undefined;
-    const relevantMemory = isFillerMessage(message)
+    const relevantMemory = isFillerMessage(persistedMessage)
       ? { memories: [] }
-      : await this.retrieveMemorySafely(message, signal, performance);
+      : await this.retrieveMemorySafely(persistedMessage, signal, performance);
     const messages = measureChatPerformanceSync(
       performance,
       "prompt-build",
@@ -143,12 +151,13 @@ export class ShivaChatService {
           relevantMemory.systemMessage,
           explicitMemory,
           interaction.mode,
+          attachedImages,
         ),
     );
     const agentResult =
       !explicitRequest && this.options.agentOrchestrator
         ? await this.options.agentOrchestrator.run({
-            userMessage: message,
+            userMessage: persistedMessage,
             conversationId: conversation.id,
             userId: this.options.userId,
             userName: this.options.userName,
@@ -156,7 +165,8 @@ export class ShivaChatService {
             // The agent planner owns its system contract. Preserve voice,
             // memory, and conversation context without injecting the direct
             // chat system prompt as a competing planner instruction.
-            contextMessages: priorPlannerContext(messages, message),
+            contextMessages: priorPlannerContext(messages, persistedMessage),
+            ...(attachedImages.length > 0 ? { images: attachedImages } : {}),
             ...(signal ? { signal } : {}),
           })
         : undefined;
@@ -328,17 +338,55 @@ function buildMessages(
   memoryContext?: ChatMessage,
   explicitMemory?: ExplicitMemoryResult,
   interactionMode: ChatInteractionMode = "text",
+  images: readonly string[] = [],
 ): readonly ChatMessage[] {
+  const mapped = recentMessages.map((message, index) => {
+    const isLatestUser =
+      images.length > 0 &&
+      message.role === "user" &&
+      index === recentMessages.length - 1;
+    return {
+      role: message.role,
+      content: message.content,
+      ...(isLatestUser ? { images } : {}),
+    } satisfies ChatMessage;
+  });
   return [
     { role: "system", content: SHIVA_SYSTEM_PROMPT },
     ...(interactionMode === "voice" ? [VOICE_RESPONSE_GUIDANCE] : []),
     ...(explicitMemory ? [explicitMemoryInstruction(explicitMemory)] : []),
     ...(memoryContext ? [memoryContext] : []),
-    ...recentMessages.map((message) => ({
-      role: message.role,
-      content: message.content,
-    })),
+    ...mapped,
   ];
+}
+
+function normalizeChatImages(
+  images: readonly string[] | undefined,
+): readonly string[] {
+  if (!images || images.length === 0) return [];
+  return images
+    .map((image) => stripDataUrlPrefix(image.trim()))
+    .filter((image) => image.length > 0);
+}
+
+function stripDataUrlPrefix(value: string): string {
+  const marker = "base64,";
+  const index = value.indexOf(marker);
+  if (value.startsWith("data:") && index >= 0) {
+    return value.slice(index + marker.length);
+  }
+  return value;
+}
+
+function persistableUserMessage(
+  message: string,
+  images: readonly string[],
+): string {
+  const trimmed = message.trim();
+  if (trimmed.length > 0) return trimmed;
+  if (images.length === 1) return "[User attached a photo.]";
+  if (images.length > 1) return `[User attached ${images.length} photos.]`;
+  return trimmed;
 }
 
 function priorPlannerContext(

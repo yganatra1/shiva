@@ -60,6 +60,8 @@ export interface AgentRequest {
   readonly userName: string;
   readonly timeZone: string;
   readonly contextMessages: readonly ChatMessage[];
+  /** Base64 images attached to this chat turn (no data: URI prefix). */
+  readonly images?: readonly string[];
   readonly allowedSkills?: readonly string[];
   readonly signal?: AbortSignal;
 }

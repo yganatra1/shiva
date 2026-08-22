@@ -43,7 +43,8 @@ const decisionSchema = z.discriminatedUnion("type", [
         .refine((skills) => new Set(skills).size === skills.length),
       arguments: z.record(z.string(), z.unknown()),
       authorization: z
-        .enum(["user_authorized", "unrequested"]),
+        .enum(["user_authorized", "unrequested"])
+        .optional(),
     })
     .strict(),
   z
@@ -343,6 +344,13 @@ function buildIterationInput(context: AgentPlanningContext): string {
       ? { correctionRequired: context.plannerFeedback }
       : {}),
     task: context.request.userMessage,
+    ...(context.request.images && context.request.images.length > 0
+      ? {
+          attachedImages: context.request.images.length,
+          attachedImageNote:
+            "The user attached image(s) to this chat turn. Prefer skills that can use vision or describe photos when relevant. The images are available to the response model for this turn.",
+        }
+      : {}),
     taskRule:
       "This exact current task is authoritative and supersedes conflicting names, values, or intent in the reference-only conversation. If it corrects an earlier value, use the corrected value immediately and do not repeat the old invocation.",
   });

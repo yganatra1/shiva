@@ -16,6 +16,9 @@ import {
 import { ApiError } from "./api-error.js";
 
 const MAX_MESSAGE_CHARACTERS = 20_000;
+/** Base64 JPEG from the phone — keep under Ollama / Fastify body comfort. */
+const MAX_CHAT_IMAGE_BASE64_CHARS = 1_500_000;
+const MAX_CHAT_IMAGES = 4;
 
 interface ChatRouteOptions {
   readonly performanceLogging: boolean;
@@ -24,15 +27,26 @@ interface ChatRouteOptions {
 
 const chatRequestSchema = z
   .object({
-    message: z
-      .string()
-      .max(MAX_MESSAGE_CHARACTERS)
-      .refine((message) => message.trim().length > 0, {
-        message: "Message must contain non-whitespace characters.",
-      }),
+    message: z.string().max(MAX_MESSAGE_CHARACTERS),
     conversationId: z.string().uuid().optional(),
+    /** Raw base64 image bytes (no data: URI prefix) for vision-capable models. */
+    images: z
+      .array(z.string().trim().min(1).max(MAX_CHAT_IMAGE_BASE64_CHARS))
+      .max(MAX_CHAT_IMAGES)
+      .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const hasText = value.message.trim().length > 0;
+    const hasImages = (value.images?.length ?? 0) > 0;
+    if (!hasText && !hasImages) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Message must contain text and/or at least one image.",
+        path: ["message"],
+      });
+    }
+  });
 
 export function registerChatRoute(
   app: FastifyInstance,
@@ -99,7 +113,7 @@ function registerStreamingChatRoute(
         throw new ApiError(
           400,
           "INVALID_REQUEST",
-          `Request body must contain a non-empty message of at most ${MAX_MESSAGE_CHARACTERS.toLocaleString("en-US")} characters.`,
+          `Request body must contain a message (text and/or images) of at most ${MAX_MESSAGE_CHARACTERS.toLocaleString("en-US")} characters.`,
         );
       }
 
@@ -126,6 +140,7 @@ function registerStreamingChatRoute(
             mode: interactionMode,
             ...(performance ? { performance } : {}),
           },
+          parsedRequest.data.images,
         );
         reply.header("x-shiva-conversation-id", preparedChat.conversationId);
 
