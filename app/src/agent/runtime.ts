@@ -1,8 +1,22 @@
 import type { AIProvider } from "../brain/ai-provider.js";
 import type { AppConfig } from "../config/environment.js";
 import type { ShivaDatabase } from "../database/pool.js";
-import { PermissionPolicyEngine } from "../security/policy-engine.js";
+import {
+  ConfirmationService,
+  DrizzleConfirmationStore,
+} from "../security/confirmation.js";
+import {
+  DrizzleExecutionStateStore,
+  ExecutionStateService,
+} from "../security/execution-state.js";
+import { ExecutionStatusService } from "../security/execution-status.js";
+import { ExecutionPolicyEngine } from "../security/policy-engine.js";
 import { SkillExecutor } from "../skills/executor.js";
+import {
+  GetExecutionModeSkill,
+  SetExecutionModeSkill,
+  SetLockdownSkill,
+} from "../skills/execution-control/skills.js";
 import { ExpenseReportSkill } from "../skills/expense-report/skill.js";
 import { LearnAboutShivaSkill } from "../skills/learn-about-shiva/skill.js";
 import { WorkspaceTerminalSkill } from "../skills/workspace-terminal/skill.js";
@@ -27,13 +41,29 @@ import { ShivaOrchestrator } from "./orchestrator.js";
 import { ShivaAgentPlanner } from "./planner.js";
 import type { AgentOrchestratorPort } from "./types.js";
 
+export interface AgentRuntime {
+  readonly orchestrator: AgentOrchestratorPort;
+  readonly executionStatus: ExecutionStatusService;
+}
+
 export function createAgentRuntime(
   database: ShivaDatabase,
   provider: AIProvider,
   config: AppConfig,
   onAuditError: (error: unknown) => void = () => {},
-): AgentOrchestratorPort {
+): AgentRuntime {
   const registry = new SkillRegistry();
+  const executionState = new ExecutionStateService(
+    new DrizzleExecutionStateStore(database),
+    config.maxExecutionMode,
+  );
+  const confirmations = new ConfirmationService(
+    new DrizzleConfirmationStore(database),
+    config.confirmationTtlMs,
+  );
+  registry.register(new GetExecutionModeSkill(executionState));
+  registry.register(new SetExecutionModeSkill(executionState));
+  registry.register(new SetLockdownSkill(executionState, confirmations));
   const workspace = new FileSystemWorkspaceReader();
   registry.register(new LearnAboutShivaSkill(workspace));
   registry.register(
@@ -79,11 +109,12 @@ export function createAgentRuntime(
   const audit = new AgentAuditRepository(database);
   const executor = new SkillExecutor(
     registry,
-    new PermissionPolicyEngine(),
+    new ExecutionPolicyEngine(executionState),
     audit,
     undefined,
     undefined,
     onAuditError,
+    confirmations,
   );
   const loop = new AgentLoop(
     new ShivaAgentPlanner(provider),
@@ -97,5 +128,12 @@ export function createAgentRuntime(
     onAuditError,
     config.agentRequestTimeoutMs,
   );
-  return new ShivaOrchestrator(loop);
+  return {
+    orchestrator: new ShivaOrchestrator(loop),
+    executionStatus: new ExecutionStatusService(
+      executionState,
+      confirmations,
+      config.userId,
+    ),
+  };
 }

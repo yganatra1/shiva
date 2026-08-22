@@ -33,11 +33,18 @@ export class ExpenseReportSkill
     '{ "from"?: inclusive RFC3339 timestamp, "until"?: exclusive RFC3339 timestamp, "limit"?: number of detail rows, 1-25 }';
   readonly inputSchema: z.ZodType<ExpenseReportInput> =
     expenseReportInputSchema;
-  readonly permissions = ["expenses.read"] as const;
+  readonly execution = { mutability: "read", impact: "normal" } as const;
   readonly configured: boolean;
 
   constructor(private readonly listTool?: ExpenseListTool) {
     this.configured = listTool !== undefined;
+  }
+
+  classifyExecution(
+    _input: ExpenseReportInput,
+    context: Parameters<ShivaSkill<ExpenseReportInput, ExpenseReportOutput>["execute"]>[1],
+  ) {
+    return this.listTool?.classifyExecution(context) ?? this.execution;
   }
 
   async execute(

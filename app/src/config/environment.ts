@@ -2,6 +2,11 @@ import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
+import {
+  executionModeSchema,
+  type ExecutionMode,
+} from "../security/execution-mode.js";
+
 const rootEnvironmentPath = fileURLToPath(
   new URL("../../../.env", import.meta.url),
 );
@@ -142,6 +147,17 @@ const environmentSchema = z
     .min(1_000)
     .max(1_800_000)
     .default(300_000),
+  SHIVA_MAX_EXECUTION_MODE: z
+    .string()
+    .trim()
+    .pipe(executionModeSchema)
+    .default("FULL_ACCESS"),
+  SHIVA_CONFIRMATION_TTL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(3_600_000)
+    .default(300_000),
   EXPENSE_SHEET_ID: optionalSheetIdSchema,
   EXPENSE_SHEET_REQUEST_TIMEOUT_MS: z.coerce
     .number()
@@ -256,6 +272,8 @@ export interface AppConfig {
   readonly timeZone: string;
   readonly agentMaxSteps: number;
   readonly agentRequestTimeoutMs: number;
+  readonly maxExecutionMode: ExecutionMode;
+  readonly confirmationTtlMs: number;
   readonly expenseSheetId?: string;
   readonly expenseSheetRequestTimeoutMs: number;
   readonly googleUserOAuth?: {
@@ -314,6 +332,8 @@ export function loadConfig(): AppConfig {
     timeZone: result.data.SHIVA_TIME_ZONE,
     agentMaxSteps: result.data.AGENT_MAX_STEPS,
     agentRequestTimeoutMs: result.data.AGENT_REQUEST_TIMEOUT_MS,
+    maxExecutionMode: result.data.SHIVA_MAX_EXECUTION_MODE,
+    confirmationTtlMs: result.data.SHIVA_CONFIRMATION_TTL_MS,
     ...(result.data.EXPENSE_SHEET_ID
       ? { expenseSheetId: result.data.EXPENSE_SHEET_ID }
       : {}),

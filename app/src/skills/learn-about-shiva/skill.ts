@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { sanitizeAuditText } from "../../security/audit-sanitizer.js";
 import type { ShivaSkill, SkillResult } from "../types.js";
 import type {
   WorkspaceOverview,
@@ -23,7 +24,7 @@ export class LearnAboutShivaSkill
   readonly inputDescription =
     '{ "focus"?: "optional topic to locate in Shiva documentation/source" }';
   readonly inputSchema: z.ZodType<LearnAboutShivaInput> = inputSchema;
-  readonly permissions = ["workspace.read"] as const;
+  readonly execution = { mutability: "read", impact: "normal" } as const;
   readonly configured = true;
 
   constructor(private readonly workspace: WorkspaceReaderPort) {}
@@ -33,6 +34,19 @@ export class LearnAboutShivaSkill
     context: Parameters<ShivaSkill<LearnAboutShivaInput, WorkspaceOverview>["execute"]>[1],
   ): Promise<SkillResult<WorkspaceOverview>> {
     const overview = await this.workspace.overview(input.focus, context.signal);
-    return { success: true, data: overview };
+    return {
+      success: true,
+      data: {
+        ...overview,
+        documents: overview.documents.map((document) => ({
+          ...document,
+          content: sanitizeAuditText(document.content, 12_000),
+        })),
+        matches: overview.matches.map((match) => ({
+          ...match,
+          excerpt: sanitizeAuditText(match.excerpt, 240),
+        })),
+      },
+    };
   }
 }

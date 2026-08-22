@@ -30,12 +30,14 @@ test("numeric SHIVA_KEEP_ALIVE values are normalized for the Ollama API", () => 
   }
 });
 
-test("agent and expense-sheet configuration is normalized without exposing secrets", () => {
+test("agent, execution, and expense-sheet configuration is normalized without exposing secrets", () => {
   withEnvironment(
     {
       SHIVA_TIME_ZONE: " Asia/Kolkata ",
       AGENT_MAX_STEPS: "6",
       AGENT_REQUEST_TIMEOUT_MS: "240000",
+      SHIVA_MAX_EXECUTION_MODE: " AUTO ",
+      SHIVA_CONFIRMATION_TTL_MS: "420000",
       EXPENSE_SHEET_ID: " sheet-id_123 ",
       EXPENSE_SHEET_REQUEST_TIMEOUT_MS: "9000",
       GOOGLE_OAUTH_CLIENT_ID: " oauth-client ",
@@ -48,6 +50,8 @@ test("agent and expense-sheet configuration is normalized without exposing secre
       assert.equal(config.timeZone, "Asia/Kolkata");
       assert.equal(config.agentMaxSteps, 6);
       assert.equal(config.agentRequestTimeoutMs, 240_000);
+      assert.equal(config.maxExecutionMode, "AUTO");
+      assert.equal(config.confirmationTtlMs, 420_000);
       assert.equal(config.expenseSheetId, "sheet-id_123");
       assert.equal(config.expenseSheetRequestTimeoutMs, 9_000);
       assert.deepEqual(config.googleUserOAuth, {
@@ -67,6 +71,8 @@ test("invalid agent configuration fails at startup", () => {
     AGENT_REQUEST_TIMEOUT_MS: "999",
     EXPENSE_SHEET_ID: "https://docs.google.com/spreadsheets/d/not-an-id",
     GOOGLE_OAUTH_CLIENT_ID: "incomplete-oauth-client",
+    GOOGLE_OAUTH_CLIENT_SECRET: "",
+    GOOGLE_OAUTH_REFRESH_TOKEN: "",
     BRAVE_SEARCH_URL: "https://example.com",
   }, () => {
     assert.throws(
@@ -83,6 +89,25 @@ test("invalid agent configuration fails at startup", () => {
         !/Olympus/.test(error.message),
     );
   });
+});
+
+test("invalid execution configuration fails at startup", () => {
+  withEnvironment(
+    {
+      SHIVA_MAX_EXECUTION_MODE: "UNRESTRICTED",
+      SHIVA_CONFIRMATION_TTL_MS: "3600001",
+    },
+    () => {
+      assert.throws(
+        () => loadConfig(),
+        (error: unknown) =>
+          error instanceof ConfigurationError &&
+          /SHIVA_MAX_EXECUTION_MODE/.test(error.message) &&
+          /SHIVA_CONFIRMATION_TTL_MS/.test(error.message) &&
+          !/UNRESTRICTED/.test(error.message),
+      );
+    },
+  );
 });
 
 function withEnvironment(

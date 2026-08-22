@@ -2,20 +2,13 @@ import { and, eq } from "drizzle-orm";
 
 import type { ShivaDatabase } from "../database/pool.js";
 import { agentRuns, skillRuns } from "../database/schema.js";
+import type {
+  ActionImpact,
+  ActionMutability,
+  ExecutionMode,
+} from "../security/execution-mode.js";
 
 export const REDACTED_AGENT_REQUEST = "[agent request redacted]";
-export const REDACTED_SKILL_PAYLOAD = Object.freeze({
-  redacted: true,
-});
-
-export function isRedactedAuditSkill(skill: string): boolean {
-  return (
-    skill === "record_expense" ||
-    skill === "expense_report" ||
-    skill === "learn_about_shiva" ||
-    skill === "workspace_terminal"
-  );
-}
 
 export type AgentRunStatus =
   | "running"
@@ -54,7 +47,10 @@ export interface StartSkillRunInput {
   readonly conversationId: string;
   readonly skill: string;
   readonly input: unknown;
-  readonly permissions: readonly string[];
+  readonly executionMode: ExecutionMode;
+  readonly mutability: ActionMutability;
+  readonly impact: ActionImpact;
+  readonly confirmationId: string | null;
   readonly startedAt: Date;
 }
 
@@ -120,7 +116,10 @@ export class AgentAuditRepository implements AgentAuditPort {
       conversationId: input.conversationId,
       skill: input.skill,
       input: input.input,
-      permissions: [...input.permissions],
+      executionMode: input.executionMode,
+      mutability: input.mutability,
+      impact: input.impact,
+      confirmationId: input.confirmationId,
       startedAt: input.startedAt,
     });
   }

@@ -34,3 +34,21 @@ pgdata/
 *.swo
 
 .tmp
+android
+# Android companion app
+android/.gradle/
+android/.idea/
+android/local.properties
+android/**/build/
+android/*.iml
+android/captures/
+android/.cxx/
+android/app/release/
+android/**/*.apk
+android/**/*.aab
+android/**/*.ap_
+android/**/*.dex
+android/**/*.jks
+android/**/*.keystore
+android/**/*.key
+android/keystore.properties

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { sanitizeAuditText } from "../../security/audit-sanitizer.js";
 import type { ShivaSkill, SkillResult } from "../types.js";
 import {
   ALLOWED_COMMANDS,
@@ -28,9 +29,9 @@ export class WorkspaceTerminalSkill
   readonly description =
     "Runs one bounded read-only terminal inspection command inside the Shiva repository. Use repeated calls to explore files, search source, read relevant text, and inspect Git state before diagnosing the project.";
   readonly inputDescription =
-    '{ "command": "pwd|ls|rg|cat|head|tail|wc|git", "args"?: [literal arguments]; git permits status/ls-files/diff/log/grep only; complete repository read access, but no shell, writes, or paths outside Shiva }';
+    '{ "command": "pwd|ls|rg|cat|head|tail|wc|git", "args"?: [literal arguments]; git permits status/ls-files/diff/log/grep only; safe source/documentation access excludes credentials and runtime-private paths; no shell, writes, or paths outside Shiva }';
   readonly inputSchema: z.ZodType<WorkspaceTerminalSkillInput> = inputSchema;
-  readonly permissions = ["workspace.read"] as const;
+  readonly execution = { mutability: "read", impact: "normal" } as const;
   readonly configured = true;
 
   constructor(private readonly terminal: ReadOnlyWorkspaceTerminal) {}
@@ -45,7 +46,14 @@ export class WorkspaceTerminalSkill
         args: input.args ?? [],
         ...(context.signal ? { signal: context.signal } : {}),
       });
-      return { success: true, data: result };
+      return {
+        success: true,
+        data: {
+          ...result,
+          stdout: sanitizeAuditText(result.stdout, 64 * 1024),
+          stderr: sanitizeAuditText(result.stderr, 64 * 1024),
+        },
+      };
     } catch (error: unknown) {
       if (context.signal?.aborted) throw error;
       if (error instanceof WorkspaceTerminalError) {

@@ -33,6 +33,8 @@ export interface ListExpensesInput {
  * Google Sheet; callers must not assume database-generated metadata exists.
  */
 export interface ExpenseRepositoryPort {
+  /** True when a list call must first create or upgrade provider resources. */
+  listRequiresProvisioning?(userId: string): Promise<boolean>;
   insertExpense(input: InsertExpenseInput): Promise<ExpenseRecord>;
   listExpenses(input: ListExpensesInput): Promise<readonly ExpenseRecord[]>;
 }

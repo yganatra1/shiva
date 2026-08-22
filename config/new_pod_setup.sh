@@ -630,6 +630,9 @@ apt install -y \
   postgresql-client-18 \
   postgresql-18-pgvector
 
+mkdir -p /workspace/shiva/runtime
+ln -s /root/.nvm /workspace/shiva/runtime/nvm
+
 # ------------------------------------------------------------
 # Final checks
 # ------------------------------------------------------------

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { PermissionPolicyEngine } from "../src/security/policy-engine.js";
+import { ExecutionPolicyEngine } from "../src/security/policy-engine.js";
+import {
+  ExecutionStateService,
+  InMemoryExecutionStateStore,
+} from "../src/security/execution-state.js";
 import { ExpenseReportSkill } from "../src/skills/expense-report/skill.js";
 import { SkillExecutor } from "../src/skills/executor.js";
 import { RecordExpenseSkill } from "../src/skills/record-expense/skill.js";
@@ -20,7 +24,12 @@ class InMemoryExpenseSheet implements ExpenseRepositoryPort {
   readonly rows: ExpenseRecord[] = [];
   failInsert = false;
   listCalls = 0;
+  requiresProvisioning = false;
   private sequence = 1;
+
+  async listRequiresProvisioning(): Promise<boolean> {
+    return this.requiresProvisioning;
+  }
 
   async insertExpense(input: InsertExpenseInput): Promise<ExpenseRecord> {
     if (this.failInsert) throw new Error("private Google Sheets failure");
@@ -65,6 +74,7 @@ test("record_expense appends to the sheet before reporting success", async () =>
     "record_expense",
     { amount: 450, description: "Pizza", category: "Food" },
     context,
+    { userAuthorized: true },
   );
 
   assert.equal(result.success, true);
@@ -89,11 +99,13 @@ test("expense_report reads the sheet afresh and totals currencies exactly", asyn
     "record_expense",
     { amount: 10.1, currency: "inr", description: "Coffee" },
     context,
+    { userAuthorized: true },
   );
   await executor.execute(
     "record_expense",
     { amount: 20.25, description: "Lunch" },
     context,
+    { userAuthorized: true },
   );
 
   const first = await executor.execute("expense_report", { limit: 1 }, context);
@@ -194,6 +206,46 @@ test("expense_report keeps detail JSON within its character budget without trunc
   assert.deepEqual(report.totalsByCurrency, { INR: "3086.25" });
 });
 
+test("expense_report classifies first-use provisioning as a write and a ready ledger as a read", async () => {
+  const sheet = new InMemoryExpenseSheet();
+  const registry = new SkillRegistry();
+  registry.register(new ExpenseReportSkill(new ExpenseListTool(sheet)));
+  const state = new ExecutionStateService(
+    new InMemoryExecutionStateStore({
+      executionMode: "SAFE",
+      lockdown: false,
+      revision: 0,
+      updatedAt: context.now(),
+      updatedBy: null,
+    }),
+    "FULL_ACCESS",
+  );
+  const executor = new SkillExecutor(registry, new ExecutionPolicyEngine(state));
+
+  const readyRead = await executor.execute(
+    "expense_report",
+    {},
+    context,
+    { userAuthorized: true },
+  );
+  assert.equal(readyRead.success, true);
+  assert.equal(sheet.listCalls, 1);
+
+  sheet.requiresProvisioning = true;
+  const firstUse = await executor.execute(
+    "expense_report",
+    {},
+    context,
+    { userAuthorized: true },
+  );
+  assert.equal(firstUse.success, false);
+  if (!firstUse.success) {
+    assert.equal(firstUse.error.code, "CONFIRMATION_REQUIRED");
+    assert.match(firstUse.error.message, /Safe mode/i);
+  }
+  assert.equal(sheet.listCalls, 1);
+});
+
 test("record_expense rejects invalid precision and never claims a failed sheet append", async () => {
   const sheet = new InMemoryExpenseSheet();
   const executor = expenseExecutor(sheet);
@@ -202,6 +254,7 @@ test("record_expense rejects invalid precision and never claims a failed sheet a
     "record_expense",
     { amount: 1.234, description: "Invalid" },
     context,
+    { userAuthorized: true },
   );
   assert.equal(invalid.success, false);
   assert.equal(sheet.rows.length, 0);
@@ -211,6 +264,7 @@ test("record_expense rejects invalid precision and never claims a failed sheet a
     "record_expense",
     { amount: 99, description: "Will fail" },
     context,
+    { userAuthorized: true },
   );
   assert.deepEqual(failed, {
     success: false,
@@ -225,5 +279,5 @@ function expenseExecutor(repository: ExpenseRepositoryPort): SkillExecutor {
   const registry = new SkillRegistry();
   registry.register(new RecordExpenseSkill(new ExpenseInsertTool(repository)));
   registry.register(new ExpenseReportSkill(new ExpenseListTool(repository)));
-  return new SkillExecutor(registry, new PermissionPolicyEngine());
+  return new SkillExecutor(registry, new ExecutionPolicyEngine());
 }

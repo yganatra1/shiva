@@ -174,7 +174,7 @@ src/
 │       └── list.ts
 │
 ├── security/
-│   ├── permissions.ts
+│   ├── execution-mode.ts
 │   └── policy-engine.ts
 │
 ├── memory/
@@ -200,7 +200,10 @@ export interface ShivaSkill<TInput = unknown, TOutput = unknown> {
 
   inputSchema: z.ZodType<TInput>;
 
-  permissions: string[];
+  execution: {
+    mutability: "read" | "write";
+    impact: "normal" | "sensitive";
+  };
 
   execute(
     input: TInput,
@@ -218,7 +221,7 @@ const recordExpenseSkill = {
   description:
     "Records a personal expense when the user says they spent, paid, bought or wants to note an expense.",
 
-  permissions: ["expenses.write"],
+  execution: { mutability: "write", impact: "normal" },
 
   inputSchema: z.object({
     amount: z.number().positive(),
@@ -574,68 +577,23 @@ That gives you the "manage agents internally" architecture you're looking for wi
 
 ---
 
-# 10. Permissions Start Now
+# 10. Execution Policy Starts Now
 
-Even with only two skills:
-
-```text
-web.read
-expenses.read
-expenses.write
-```
-
-Skill definitions declare what they require.
-
-For example:
+Each skill declares only lightweight action metadata:
 
 ```ts
-permissions: ["expenses.write"]
+execution: { mutability: "write", impact: "normal" }
 ```
 
-The executor checks permissions **before calling the skill**.
+The centralized executor combines that classification with Shiva's persisted
+`SAFE`, `AUTO`, or `FULL_ACCESS` mode before calling the skill. Normal explicit
+actions run without repetitive prompts in `AUTO` and `FULL_ACCESS`; writes ask
+in `SAFE`; sensitive actions always create an exact, expiring confirmation.
+The runtime owns this decision, not Gemma.
 
-Not Gemma.
-
-Later:
-
-```text
-gmail.read
-gmail.draft
-gmail.send
-
-sheets.read
-sheets.write
-
-calendar.read
-calendar.write
-
-filesystem.read
-filesystem.write
-
-system.execute
-
-payments.execute
-```
-
-And eventually your policy can say:
-
-```text
-expenses.write → AUTO
-
-calendar.write → AUTO
-
-gmail.draft → AUTO
-
-gmail.send → CONFIRM
-
-filesystem.delete → CONFIRM
-
-system.execute → CONFIRM
-
-payments.execute → STRONG CONFIRMATION
-```
-
-Perfect match for the security architecture we already wanted.
+Provider scopes, service credentials, operating-system permissions, and the
+available tool adapters remain the real capability boundary. Shiva does not
+duplicate those systems with granular permission keys.
 
 ---
 
@@ -661,8 +619,9 @@ For every action store:
 conversation
 user
 skill
-input
-permission
+sanitized input
+execution mode and action classification
+confirmation id, when required
 result
 success/failure
 started_at
@@ -676,7 +635,7 @@ So later if Shiva does something unexpected, we can see:
 19:51:02 user request
 19:51:03 Gemma chose record_expense
 19:51:03 amount=1250
-19:51:03 permission approved
+19:51:03 AUTO normal write allowed
 19:51:04 DB INSERT success
 19:51:05 response returned
 ```
@@ -781,7 +740,7 @@ Exactly what you want.
 **Skill 1:** `web_research`
 **Skill 2:** `record_expense`
 **Primitive tools:** `web.search`, `web.open`, `expense.insert`, `expense.list`
-**Security:** permission registry
+**Security:** global execution mode + action classification
 **Safety:** Zod validation + max agent steps
 **Observability:** `agent_runs` + `skill_runs`
 **Persistence:** PostgreSQL

@@ -23,6 +23,18 @@ export type AgentDecision =
       /** Immutable request scope selected from the original user task. */
       readonly selectedSkills: readonly string[];
       readonly arguments: Readonly<Record<string, unknown>>;
+      /** Planner interpretation only; runtime metadata remains authoritative. */
+      readonly authorization: "user_authorized" | "unrequested";
+    }
+  | {
+      readonly type: "approve_confirmation";
+      readonly confirmationId: string;
+      readonly skill: string;
+      readonly arguments: Readonly<Record<string, unknown>>;
+    }
+  | {
+      readonly type: "deny_confirmation";
+      readonly confirmationId: string;
     };
 
 export interface AgentObservation {
@@ -51,6 +63,15 @@ export interface AgentPlanningContext {
   readonly maxSteps: number;
   readonly now: Date;
   readonly plannerFeedback?: string;
+  readonly pendingConfirmation?: {
+    readonly id: string;
+    readonly skill: string;
+    readonly sanitizedArguments: unknown;
+    readonly reason: string;
+    readonly expiresAt: string;
+    readonly mutability: "read" | "write";
+    readonly impact: "normal" | "sensitive";
+  };
 }
 
 export type AgentRunResult =

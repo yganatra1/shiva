@@ -40,7 +40,7 @@ export class WebResearchSkill
   readonly inputDescription =
     '{ "query": "2-400 character search", "additionalQueries"?: [up to 2 alternate searches], "maxSources"?: 1-6 }';
   readonly inputSchema: z.ZodType<WebResearchInput> = inputSchema;
-  readonly permissions = ["web.read"] as const;
+  readonly execution = { mutability: "read", impact: "normal" } as const;
   readonly configured: boolean;
 
   constructor(

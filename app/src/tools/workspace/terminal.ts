@@ -3,6 +3,12 @@ import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  isBlockedWorkspacePath,
+  WORKSPACE_GIT_EXCLUDES,
+  WORKSPACE_RG_EXCLUDES,
+} from "./path-policy.js";
+
 const DEFAULT_WORKSPACE_ROOT = fileURLToPath(
   new URL("../../../../", import.meta.url),
 );
@@ -275,6 +281,8 @@ export class ReadOnlyWorkspaceTerminal {
       "--color=never",
       "--hidden",
       "--no-ignore",
+      "--glob-case-insensitive",
+      ...WORKSPACE_RG_EXCLUDES.flatMap((pattern) => ["--glob", pattern]),
       ...prepared,
       "--",
       ...(paths.length > 0 ? paths : ["."]),
@@ -336,14 +344,13 @@ export class ReadOnlyWorkspaceTerminal {
       "--no-ext-diff",
       "--no-textconv",
       ...options,
+      "--",
       ...(paths.length > 0
-        ? [
-            "--",
-            ...(await Promise.all(
-              paths.map((entry) => this.validateSyntacticPath(entry)),
-            )),
-          ]
-        : []),
+        ? await Promise.all(
+            paths.map((entry) => this.validateSyntacticPath(entry)),
+          )
+        : ["."]),
+      ...WORKSPACE_GIT_EXCLUDES,
     ];
   }
 
@@ -372,7 +379,12 @@ export class ReadOnlyWorkspaceTerminal {
       }
     }
     if (!hasPattern) throw denied("git grep requires a pattern.");
-    return [...prepared, ...(paths.length > 0 ? ["--", ...paths] : [])];
+    return [
+      ...prepared,
+      "--",
+      ...(paths.length > 0 ? paths : ["."]),
+      ...WORKSPACE_GIT_EXCLUDES,
+    ];
   }
 
   private async validateExistingPath(
@@ -393,6 +405,11 @@ export class ReadOnlyWorkspaceTerminal {
       ) {
         throw pathDenied();
       }
+      const resolvedRelative = path
+        .relative(rootRealPath, targetRealPath)
+        .split(path.sep)
+        .join("/");
+      if (isBlockedWorkspacePath(resolvedRelative)) throw pathDenied();
       if (!allowDirectory && !metadata.isFile()) {
         throw pathDenied();
       }
@@ -420,7 +437,8 @@ export class ReadOnlyWorkspaceTerminal {
     const normalized = path.posix.normalize(trimmed.replace(/^\.\//, ""));
     if (
       normalized === ".." ||
-      normalized.startsWith("../")
+      normalized.startsWith("../") ||
+      isBlockedWorkspacePath(normalized)
     ) {
       throw pathDenied();
     }

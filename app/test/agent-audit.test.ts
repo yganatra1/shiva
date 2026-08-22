@@ -11,7 +11,7 @@ import type {
   StartSkillRunInput,
 } from "../src/agent/audit.js";
 import type { AgentPlanner, AgentRequest } from "../src/agent/types.js";
-import { PermissionPolicyEngine } from "../src/security/policy-engine.js";
+import { ExecutionPolicyEngine } from "../src/security/policy-engine.js";
 import { SkillExecutor } from "../src/skills/executor.js";
 import { SkillRegistry } from "../src/skills/registry.js";
 
@@ -61,7 +61,7 @@ test("agent and skill success are auditable around actual execution", async () =
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number() }).strict(),
-    permissions: ["expenses.write"],
+    execution: { mutability: "write", impact: "normal" },
     async execute() {
       events.push("execute");
       return { success: true, data: { expenseId: "expense-1" } };
@@ -77,6 +77,7 @@ test("agent and skill success are auditable around actual execution", async () =
             skill: "record_expense",
             selectedSkills: ["record_expense"],
             arguments: { amount: 10 },
+            authorization: "user_authorized" as const,
           }
         : {
             type: "respond" as const,
@@ -87,7 +88,7 @@ test("agent and skill success are auditable around actual execution", async () =
   };
   const executor = new SkillExecutor(
     registry,
-    new PermissionPolicyEngine(),
+    new ExecutionPolicyEngine(),
     audit,
     () => "40000000-0000-4000-8000-000000000004",
     () => 10,
@@ -110,6 +111,10 @@ test("agent and skill success are auditable around actual execution", async () =
   assert.equal(audit.agentFinishes[0]?.status, "succeeded");
   assert.equal(audit.agentFinishes[0]?.stepCount, 2);
   assert.equal(audit.skillStarts[0]?.skill, "record_expense");
+  assert.equal(audit.skillStarts[0]?.executionMode, "AUTO");
+  assert.equal(audit.skillStarts[0]?.mutability, "write");
+  assert.equal(audit.skillStarts[0]?.impact, "normal");
+  assert.equal(audit.skillStarts[0]?.confirmationId, null);
   assert.equal(audit.skillFinishes[0]?.status, "succeeded");
 });
 
@@ -140,7 +145,7 @@ test("expense agent and skill audit payloads are redacted without changing obser
     inputSchema: z
       .object({ amount: z.number(), description: z.string() })
       .strict(),
-    permissions: ["expenses.write"],
+    execution: { mutability: "write", impact: "normal" },
     async execute() {
       return { success: true, data: privateRecordResult };
     },
@@ -150,7 +155,7 @@ test("expense agent and skill audit payloads are redacted without changing obser
     description: "Reads an expense report.",
     inputDescription: '{ "from": string, "to": string }',
     inputSchema: z.object({ from: z.string(), to: z.string() }).strict(),
-    permissions: ["expenses.read"],
+    execution: { mutability: "read", impact: "normal" },
     async execute() {
       return { success: true, data: privateReportResult };
     },
@@ -162,12 +167,14 @@ test("expense agent and skill audit payloads are redacted without changing obser
       skill: "record_expense",
       selectedSkills: ["expense_report", "record_expense"],
       arguments: privateRecordInput,
+      authorization: "user_authorized" as const,
     },
     {
       type: "skill_call" as const,
       skill: "expense_report",
       selectedSkills: ["expense_report", "record_expense"],
       arguments: privateReportInput,
+      authorization: "user_authorized" as const,
     },
     {
       type: "respond" as const,
@@ -177,7 +184,7 @@ test("expense agent and skill audit payloads are redacted without changing obser
   ];
   const executor = new SkillExecutor(
     registry,
-    new PermissionPolicyEngine(),
+    new ExecutionPolicyEngine(),
     audit,
   );
   const loop = new AgentLoop(
@@ -257,7 +264,7 @@ test("expense failure audit keeps status and error code but redacts its payload"
     description: "Reads an expense report.",
     inputDescription: '{ "from": string }',
     inputSchema: z.object({ from: z.string() }).strict(),
-    permissions: ["expenses.read"],
+    execution: { mutability: "read", impact: "normal" },
     async execute() {
       return {
         success: false,
@@ -270,7 +277,7 @@ test("expense failure audit keeps status and error code but redacts its payload"
   });
   const executor = new SkillExecutor(
     registry,
-    new PermissionPolicyEngine(),
+    new ExecutionPolicyEngine(),
     audit,
   );
 
@@ -285,6 +292,7 @@ test("expense failure audit keeps status and error code but redacts its payload"
       timeZone: request.timeZone,
       now: () => new Date("2026-08-20T00:00:00Z"),
     },
+    { userAuthorized: true },
   );
 
   assert.deepEqual(result, {
@@ -320,7 +328,7 @@ test("agent requests are redacted while non-expense skill payloads remain intact
     description: "Researches the web.",
     inputDescription: '{ "query": string }',
     inputSchema: z.object({ query: z.string() }).strict(),
-    permissions: ["web.read"],
+    execution: { mutability: "read", impact: "normal" },
     async execute() {
       return { success: true, data: webResult };
     },
@@ -331,6 +339,7 @@ test("agent requests are redacted while non-expense skill payloads remain intact
       skill: "web_research",
       selectedSkills: ["web_research"],
       arguments: webInput,
+      authorization: "user_authorized" as const,
     },
     {
       type: "respond" as const,
@@ -346,7 +355,7 @@ test("agent requests are redacted while non-expense skill payloads remain intact
         return decision;
       },
     },
-    new SkillExecutor(registry, new PermissionPolicyEngine(), audit),
+    new SkillExecutor(registry, new ExecutionPolicyEngine(), audit),
     registry,
     8,
     undefined,
@@ -369,6 +378,112 @@ test("agent requests are redacted while non-expense skill payloads remain intact
   });
 });
 
+test("skill audit recursively redacts nested secrets without changing execution results", async () => {
+  const audit = new RecordingAudit();
+  const registry = new SkillRegistry();
+  const privateInput = {
+    query: "PUBLIC_QUERY",
+    transport: {
+      apiKey: "INPUT_API_KEY_SECRET",
+      nested: [
+        {
+          authorization: "Bearer input-private-token",
+          note: "password=INPUT_PASSWORD_SECRET",
+        },
+      ],
+    },
+  };
+  const privateResult = {
+    answer: "PUBLIC_ANSWER",
+    diagnostic: {
+      refreshToken: "RESULT_REFRESH_TOKEN_SECRET",
+      detail: "Bearer result-private-token",
+    },
+  };
+  registry.register({
+    name: "nested_audit_fixture",
+    description: "Returns a nested audit-sanitization fixture.",
+    inputDescription: '{ "query": string, "transport": object }',
+    inputSchema: z
+      .object({
+        query: z.string(),
+        transport: z
+          .object({
+            apiKey: z.string(),
+            nested: z.array(
+              z
+                .object({
+                  authorization: z.string(),
+                  note: z.string(),
+                })
+                .strict(),
+            ),
+          })
+          .strict(),
+      })
+      .strict(),
+    execution: { mutability: "read", impact: "normal" },
+    async execute() {
+      return { success: true, data: privateResult };
+    },
+  });
+
+  const result = await new SkillExecutor(
+    registry,
+    new ExecutionPolicyEngine(),
+    audit,
+  ).execute("nested_audit_fixture", privateInput, {
+    agentRunId: "30000000-0000-4000-8000-000000000003",
+    conversationId: request.conversationId,
+    userId: request.userId,
+    userName: request.userName,
+    timeZone: request.timeZone,
+    now: () => new Date("2026-08-20T00:00:00Z"),
+  });
+
+  assert.deepEqual(result, { success: true, data: privateResult });
+  assert.deepEqual(audit.skillStarts[0]?.input, {
+    query: "PUBLIC_QUERY",
+    transport: {
+      apiKey: "[REDACTED]",
+      nested: [
+        {
+          authorization: "[REDACTED]",
+          note: "password=[REDACTED]",
+        },
+      ],
+    },
+  });
+  assert.deepEqual(audit.skillFinishes[0]?.result, {
+    success: true,
+    data: {
+      answer: "PUBLIC_ANSWER",
+      diagnostic: {
+        refreshToken: "[REDACTED]",
+        detail: "Bearer [REDACTED]",
+      },
+    },
+  });
+  assert.equal(audit.skillStarts[0]?.executionMode, "AUTO");
+  assert.equal(audit.skillStarts[0]?.mutability, "read");
+  assert.equal(audit.skillStarts[0]?.impact, "normal");
+  assert.equal(audit.skillStarts[0]?.confirmationId, null);
+
+  const persistedPayloads = JSON.stringify({
+    input: audit.skillStarts[0]?.input,
+    result: audit.skillFinishes[0]?.result,
+  });
+  for (const secret of [
+    "INPUT_API_KEY_SECRET",
+    "input-private-token",
+    "INPUT_PASSWORD_SECRET",
+    "RESULT_REFRESH_TOKEN_SECRET",
+    "result-private-token",
+  ]) {
+    assert.equal(persistedPayloads.includes(secret), false);
+  }
+});
+
 test("max-step termination is finalized without leaking error text", async () => {
   const audit = new RecordingAudit();
   const registry = new SkillRegistry();
@@ -377,7 +492,7 @@ test("max-step termination is finalized without leaking error text", async () =>
     description: "Always fails for the bounded-loop fixture.",
     inputDescription: "{}",
     inputSchema: z.object({}).strict(),
-    permissions: ["web.read"],
+    execution: { mutability: "read", impact: "normal" },
     async execute() {
       return {
         success: false,
@@ -392,12 +507,13 @@ test("max-step termination is finalized without leaking error text", async () =>
         skill: "missing",
         selectedSkills: ["missing"],
         arguments: {},
+        authorization: "user_authorized",
       };
     },
   };
   const executor = new SkillExecutor(
     registry,
-    new PermissionPolicyEngine(),
+    new ExecutionPolicyEngine(),
     audit,
   );
   const loop = new AgentLoop(
@@ -433,7 +549,7 @@ test("a successful side effect remains successful when audit finalization fails"
     description: "Records one expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
-    permissions: ["expenses.write"],
+    execution: { mutability: "write", impact: "normal" },
     async execute(input) {
       writes += 1;
       return {
@@ -444,7 +560,7 @@ test("a successful side effect remains successful when audit finalization fails"
   });
   const executor = new SkillExecutor(
     registry,
-    new PermissionPolicyEngine(),
+    new ExecutionPolicyEngine(),
     audit,
     () => "40000000-0000-4000-8000-000000000004",
     () => 10,
@@ -462,6 +578,7 @@ test("a successful side effect remains successful when audit finalization fails"
       timeZone: request.timeZone,
       now: () => new Date("2026-08-20T00:00:00Z"),
     },
+    { userAuthorized: true },
   );
 
   assert.deepEqual(result, {
@@ -491,7 +608,7 @@ test("agent audit finalization cannot replace an already successful clarificatio
         };
       },
     },
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
     8,
     undefined,

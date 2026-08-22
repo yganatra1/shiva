@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
+  boolean,
   check,
   index,
   integer,
@@ -49,6 +50,22 @@ export const expenseSheetBindingStatus = pgEnum(
   "expense_sheet_binding_status",
   ["provisioning", "ready"],
 );
+export const executionMode = pgEnum("execution_mode", [
+  "SAFE",
+  "AUTO",
+  "FULL_ACCESS",
+]);
+export const actionMutability = pgEnum("action_mutability", ["read", "write"]);
+export const actionImpact = pgEnum("action_impact", ["normal", "sensitive"]);
+export const confirmationStatus = pgEnum("confirmation_status", [
+  "PENDING",
+  "APPROVED",
+  "DENIED",
+  "EXPIRED",
+  "EXECUTING",
+  "EXECUTED",
+  "FAILED",
+]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
@@ -61,6 +78,27 @@ export const users = pgTable("users", {
     .$onUpdate(() => new Date())
     .notNull(),
 });
+
+/** The single durable, host-wide execution-control record. */
+export const systemSettings = pgTable(
+  "system_settings",
+  {
+    key: text("key").primaryKey().default("global"),
+    executionMode: executionMode("execution_mode").default("AUTO").notNull(),
+    lockdown: boolean("lockdown").default(false).notNull(),
+    revision: integer("revision").default(0).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedBy: uuid("updated_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+  },
+  (table) => [
+    check("system_settings_singleton", sql`${table.key} = 'global'`),
+    check("system_settings_revision_nonnegative", sql`${table.revision} >= 0`),
+  ],
+);
 
 /**
  * Per-user pointer to Shiva's externally stored expense ledger.
@@ -207,6 +245,61 @@ export const agentRuns = pgTable(
   ],
 );
 
+/**
+ * One-time, action-bound conversational approvals. Arguments are sanitized
+ * before storage; the hash binds approval to the exact validated invocation.
+ */
+export const actionConfirmations = pgTable(
+  "action_confirmations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    agentRunId: uuid("agent_run_id")
+      .notNull()
+      .references(() => agentRuns.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    skill: text("skill").notNull(),
+    sanitizedArguments: jsonb("sanitized_arguments").$type<unknown>().notNull(),
+    actionHash: text("action_hash").notNull(),
+    reason: text("reason").notNull(),
+    executionMode: executionMode("execution_mode").notNull(),
+    mutability: actionMutability("mutability").notNull(),
+    impact: actionImpact("impact").notNull(),
+    settingsRevision: integer("settings_revision").notNull(),
+    status: confirmationStatus("status").default("PENDING").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedBy: uuid("resolved_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+  },
+  (table) => [
+    check("action_confirmations_skill_not_empty", sql`length(btrim(${table.skill})) > 0`),
+    check("action_confirmations_hash_shape", sql`${table.actionHash} ~ '^[a-f0-9]{64}$'`),
+    check("action_confirmations_reason_not_empty", sql`length(btrim(${table.reason})) > 0`),
+    check("action_confirmations_expiry_after_creation", sql`${table.expiresAt} > ${table.createdAt}`),
+    check(
+      "action_confirmations_settings_revision_nonnegative",
+      sql`${table.settingsRevision} >= 0`,
+    ),
+    check(
+      "action_confirmations_resolution_shape",
+      sql`(${table.status} = 'PENDING' AND ${table.resolvedAt} IS NULL AND ${table.resolvedBy} IS NULL) OR (${table.status} <> 'PENDING' AND ${table.resolvedAt} IS NOT NULL)`,
+    ),
+    uniqueIndex("action_confirmations_one_pending_per_conversation")
+      .on(table.userId, table.conversationId)
+      .where(sql`${table.status} = 'PENDING'`),
+    index("action_confirmations_expiry_idx").on(table.status, table.expiresAt),
+  ],
+);
+
 export const skillRuns = pgTable(
   "skill_runs",
   {
@@ -222,7 +315,13 @@ export const skillRuns = pgTable(
       .references(() => conversations.id, { onDelete: "cascade" }),
     skill: text("skill").notNull(),
     input: jsonb("input").$type<unknown>().notNull(),
-    permissions: text("permissions").array().notNull(),
+    executionMode: executionMode("execution_mode").default("AUTO").notNull(),
+    mutability: actionMutability("mutability").default("read").notNull(),
+    impact: actionImpact("impact").default("normal").notNull(),
+    confirmationId: uuid("confirmation_id").references(
+      () => actionConfirmations.id,
+      { onDelete: "set null" },
+    ),
     result: jsonb("result").$type<unknown>(),
     status: skillRunStatus("status").default("running").notNull(),
     errorCode: text("error_code"),

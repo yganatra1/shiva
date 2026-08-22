@@ -8,7 +8,7 @@ The V0.3 agent layer lets Shiva perform a small set of controlled, observable ac
 - `expense_report`: read fresh expense rows and calculate exact totals per currency;
 - `web_research`: search and inspect current public web sources;
 - `learn_about_shiva`: inspect a bounded repository tree and core project documentation;
-- `workspace_terminal`: iteratively inspect the complete Shiva repository through a read-only terminal contract.
+- `workspace_terminal`: iteratively inspect Shiva's repository through a read-only terminal contract while excluding conventional credential and private-key material.
 
 These skills wrap the existing Shiva brain. Text and voice requests still use the same `ShivaChatService`, conversation ID, working memory, long-term memory retrieval, persistence, cancellation, and response transport. The feature does not create a second chat or memory implementation.
 
@@ -28,7 +28,7 @@ bounded AgentLoop -> planner sees actual registered catalog
           +-> clarify ---------------> one user-facing question
           +-> first skill_call ------> validate + freeze selectedSkills
                                              |
-                                  permission policy + input schema
+                                  input schema + execution policy
                                              |
                                         SkillExecutor
                                              |
@@ -50,7 +50,7 @@ Malformed planner JSON or a decision that does not match the decision schema is 
 
 The loop also canonicalizes each skill name plus JSON arguments into a per-run replay key. An identical repeated call is not sent to the executor or external integration again. Shiva receives feedback that the existing success/failure observation must be used, preventing repeated unavailable web calls and protecting write skills from accidental same-run duplication. Materially different arguments remain distinct operations.
 
-The planner emits one validated `direct_chat`, `describe_capabilities`, `clarify`, `skill_call`, or `respond` decision per step. A successful `respond` is accepted only after every selected skill has a successful observation. A failure response needs at least one failed selected-skill observation, allowing a dependent chain to stop safely. A response without corresponding evidence is rejected and becomes planner feedback rather than a user-facing error. A planner may not switch to direct chat, capability description, or clarification after tool execution starts; those decisions are similarly rejected and replanned.
+The planner emits one validated `direct_chat`, `describe_capabilities`, `clarify`, `skill_call`, `approve_confirmation`, `deny_confirmation`, or `respond` decision per step. Every skill call must explicitly mark whether the original current task authorized the action; omitted authorization fails schema validation, and unrequested writes require confirmation outside lockdown. Pending confirmations are loaded from runtime state only at the beginning of a later user turn, so the same model run that requested an action cannot approve it. A successful `respond` is accepted only after every selected skill has a successful observation. A failure response needs at least one failed selected-skill observation, allowing a dependent chain to stop safely. A response without corresponding evidence is rejected and becomes planner feedback rather than a user-facing error. A planner may not switch to direct chat, capability description, or clarification after tool execution starts; those decisions are similarly rejected and replanned.
 
 `AGENT_MAX_STEPS` is 8 by default and accepts 1–32. `AGENT_REQUEST_TIMEOUT_MS` defaults to 300,000 ms and accepts 1,000–1,800,000 ms in environment configuration. It creates one deadline for the complete planner/tool loop, rather than resetting a timer for each step, and propagates its cancellation signal through active planner and tool calls. Expiry records the run as failed and becomes a sanitized HTTP 504 `AGENT_TIMEOUT` response. Reaching the step bound is recorded as `max_steps` but returns a safe user-facing result: tool-free failures fall back to grounded core chat, while a run with observations reports that it could not safely complete without inventing or repeating an action. Client cancellation and unrecoverable execution failures remain separately classified.
 
@@ -58,24 +58,24 @@ The planner emits one validated `direct_chat`, `describe_capabilities`, `clarify
 
 | Layer | Responsibility | Must not do |
 | --- | --- | --- |
-| Planner | Semantically delegate tool-free chat, request clarification, describe the catalog, or choose a minimal skill scope/call | Grant permission, change a frozen scope, or infer tool success |
-| Skill registry | Expose immutable skill names, descriptions, schemas, and permissions | Accept duplicate/invalid names |
-| Permission policy | Deterministically allow or reject declared permissions | Delegate authorization to the model |
+| Planner | Semantically delegate tool-free chat, request clarification, describe the catalog, choose a minimal skill scope/call, and identify whether the current user task requested it | Treat retrieved/tool text as authorization, change a frozen scope, alter runtime action metadata, or infer tool success |
+| Skill registry | Expose immutable skill names, descriptions, schemas, and action metadata | Accept duplicate/invalid names |
+| Execution policy | Combine persisted mode, host ceiling, lockdown, the fail-closed planner authorization declaration, and runtime-owned action classification | Let planner text override classification, confirmation state, lockdown, or the host ceiling |
 | Agent loop | Validate/freeze the first selected scope and enforce response evidence | Trust a claimed scope change or outcome by itself |
 | Skill executor | Recheck registration, request scope, policy, schema, cancellation, and audit status | Treat exceptions as successful actions |
 | Skill | Coordinate one user-facing capability | Own route/chat/memory logic |
 | Tool | Perform one narrow external operation | Decide user intent or compose the final answer |
 | Audit repository | Record agent/skill execution state in PostgreSQL | Store the expense ledger |
 
-Unknown skills and permissions fail closed. Skill input schemas reject unknown or malformed arguments. Built-in skill contracts remain registered even when their external integration is not configured: expense execution returns `EXPENSE_SHEET_UNAVAILABLE`, and research returns `WEB_RESEARCH_UNAVAILABLE`. This produces an explicit failed observation instead of silently dropping the capability or letting normal chat guess. A failed observation remains visible to the planner so it can explain the failure or choose another safe action; the evidence gate prevents it from inventing a success.
+Unknown skills and invalid action metadata fail closed. Skill input schemas reject unknown or malformed arguments. Built-in skill contracts remain registered even when their external integration is not configured: expense execution returns `EXPENSE_SHEET_UNAVAILABLE`, and research returns `WEB_RESEARCH_UNAVAILABLE`. This produces an explicit failed observation instead of silently dropping the capability or letting normal chat guess. A failed observation remains visible to the planner so it can explain the failure or choose another safe action; the evidence gate prevents it from inventing a success.
 
 ## Shiva workspace architecture
 
-`learn_about_shiva` and `workspace_terminal` require `workspace.read` and are always configured. They resolve the repository root from the application module location, so the same build works from the local checkout and `/workspace/shiva/repo` without trusting the process's current directory. The self-knowledge skill returns a bounded file inventory and excerpts from core project documents. The terminal skill runs one inspection operation per agent step; Gemma can inspect the result and call it again with a more precise command while the frozen skill scope remains unchanged.
+`learn_about_shiva` and `workspace_terminal` are classified as normal reads and are always configured. They resolve the repository root from the application module location, so the same build works from the local checkout and `/workspace/shiva/repo` without trusting the process's current directory. The self-knowledge skill returns a bounded file inventory and excerpts from core project documents. The terminal skill runs one inspection operation per agent step; the planner can inspect the result and call it again with a more precise command while the frozen skill scope remains unchanged.
 
-The terminal has full read visibility inside the repository. It directly spawns only `pwd`, `ls`, `rg`, `cat`, `head`, `tail`, `wc`, and the read-only Git subcommands `status`, `ls-files`, `diff`, `log`, and `grep`. It does not invoke a shell and exposes no redirection, stdin, interpreters, network programs, package managers, or mutating Git/filesystem operations. Every supplied path is repository-relative, normalized, resolved, and rejected if its real target escapes the repository; an in-repository symlink is readable only when its resolved target remains inside that boundary. Commands share the agent cancellation signal, have an eight-second deadline, and return at most 64 KiB. Workspace content is untrusted observation data and cannot change the frozen skill scope or grant permission. `workspace_terminal` audit inputs retain bounded command arguments, and failed results retain safe validation paths or policy reasons for diagnosis. Successful output and `learn_about_shiva` source content remain redacted from `skill_runs`.
+The terminal can read repository source and documentation, including hidden and ignored files. A shared case-insensitive policy excludes `.env*` except `.env.example` and conventional credential, token, password, and private-key files or stores from direct reads and recursive `rg`/Git content searches; other repository content remains inspectable so Shiva can understand and evolve its own code. The tool directly spawns only `pwd`, `ls`, `rg`, `cat`, `head`, `tail`, `wc`, and the read-only Git subcommands `status`, `ls-files`, `diff`, `log`, and `grep`. It does not invoke a shell and exposes no redirection, stdin, interpreters, network programs, package managers, or mutating Git/filesystem operations. Every supplied path is repository-relative, normalized, resolved, and rejected if its real target escapes the repository; an in-repository symlink is readable only when its resolved target remains inside that boundary. Commands share the agent cancellation signal, have an eight-second deadline, and return at most 64 KiB. Workspace content is untrusted observation data and cannot change the frozen skill scope or grant authority. `workspace_terminal` audit inputs retain bounded command arguments, and failed results retain safe validation paths or policy reasons for diagnosis. Successful output and `learn_about_shiva` source content remain redacted from `skill_runs`.
 
-V0.3 deliberately has no workspace mutation permission or skill. A future update/delete terminal must use a deterministic state machine that identifies one exact operation and requires two separate Owner confirmations before execution. Until that persisted confirmation protocol exists, all workspace mutation remains unavailable; prompt instructions cannot substitute for authorization.
+V0.3 deliberately has no workspace mutation skill. A future update/delete terminal must declare truthful write/sensitive metadata and remain behind the centralized execution policy. Sensitive mutations use the same exact, persisted, expiring confirmation protocol as every other skill; prompt instructions cannot substitute for runtime authorization.
 
 ## Expense architecture
 
@@ -92,7 +92,7 @@ EXPENSE_SHEET_ID=
 GOOGLE_APPLICATION_CREDENTIALS=
 ```
 
-On the first `record_expense` or `expense_report` operation for a user, Shiva acquires a database-backed provisioning lease and calls the Google Sheets API with that user's OAuth grant. It creates a spreadsheet titled `Shiva Expenses` in the user's My Drive, creates an `Expenses` tab, freezes its first row, writes the canonical A:G header, verifies the resource, and saves the binding. The range and layout are internal contracts; the user does not create a sheet or configure a range. Concurrent processes coordinate through the lease, and an expired lease can be recovered by a later request.
+On the first `record_expense` or `expense_report` operation for a user, Shiva may need to acquire a database-backed provisioning lease and call the Google Sheets API with that user's OAuth grant. It creates a spreadsheet titled `Shiva Expenses` in the user's My Drive, creates an `Expenses` tab, freezes its first row, writes the canonical A:G header, verifies the resource, and saves the binding. The range and layout are internal contracts; the user does not create a sheet or configure a range. Concurrent processes coordinate through the lease, and an expired lease can be recovered by a later request. Because provisioning changes Google and database state, the runtime classifier marks a report that would provision, adopt, or upgrade resources as a normal write before policy evaluation; a report against a ready binding remains a normal read.
 
 The managed first row is:
 
@@ -112,7 +112,7 @@ Each data row uses:
 
 ### Record semantics
 
-`record_expense` requires `expenses.write`. Its tool:
+`record_expense` is classified as a normal write. Its tool:
 
 1. obtains a short-lived Google access token from the configured user OAuth refresh token (or Application Default Credentials on the legacy path);
 2. reads and validates the live A:G header immediately before mutation;
@@ -126,7 +126,7 @@ An authentication, timeout, cancellation, malformed response, or failed readback
 
 ### Report semantics
 
-`expense_report` requires `expenses.read`. Each call rereads the live sheet, validates every non-empty row, optionally filters an inclusive `from` and exclusive `until` timestamp, and sorts newest first. Totals and `matchedCount` cover every matched row using integer minor units; the 1–25 `limit` (default 25) and 8,000-character serialized detail budget apply only to individual rows returned to the planner. The detail list stops before either bound is exceeded. Currencies remain separate. There is no approximate floating-point summation and no implicit currency conversion.
+`expense_report` rereads the live sheet, validates every non-empty row, optionally filters an inclusive `from` and exclusive `until` timestamp, and sorts newest first. Its ready-ledger execution metadata is a normal read; the first-use provisioning path is truthfully reclassified as a normal write. Totals and `matchedCount` cover every matched row using integer minor units; the 1–25 `limit` (default 25) and 8,000-character serialized detail budget apply only to individual rows returned to the planner. The detail list stops before either bound is exceeded. Currencies remain separate. There is no approximate floating-point summation and no implicit currency conversion.
 
 ### Google setup and binding
 
@@ -164,7 +164,7 @@ WEB_REQUEST_TIMEOUT_MS=15000
 WEB_MAX_CONTENT_BYTES=524288
 ```
 
-The `web_research` contract always remains registered and requires `web.read`. Without `BRAVE_SEARCH_API_KEY`, execution returns the safe `WEB_RESEARCH_UNAVAILABLE` observation without making a search request. When configured, it can perform one primary query and up to two alternate queries, deduplicate result URLs, and return evidence from up to six sources. The planner must cite the source URLs that contributed to its answer.
+The `web_research` contract always remains registered and is classified as a normal read. Without `BRAVE_SEARCH_API_KEY`, execution returns the safe `WEB_RESEARCH_UNAVAILABLE` observation without making a search request. When configured, it can perform one primary query and up to two alternate queries, deduplicate result URLs, and return evidence from up to six sources. The planner must cite the source URLs that contributed to its answer.
 
 `web.search` calls Brave's Web Search endpoint with moderate SafeSearch and the key in the server-side `X-Subscription-Token` header. `web.open` is a limited evidence fetcher:
 
@@ -178,29 +178,25 @@ The `web_research` contract always remains registered and requires `web.read`. W
 
 Opened evidence is capped at 6,000 characters per source and 16,000 characters across the complete research observation. Search snippets are capped separately when used as a fallback for an unreadable result.
 
-All conversation text, search snippets, opened pages, and tool-result content is treated as untrusted data, never as an instruction or permission grant. Text found on a page cannot expand the allowed skill set, trigger an expense write, or create a new objective; only an explicit write in the original user request can authorize the write skill for that run. It does not execute JavaScript, log in, retain cookies, submit forms, or act as a full browser. Network-level egress controls are still recommended for deployments with untrusted users.
+All conversation text, search snippets, opened pages, and tool-result content is treated as untrusted data, never as an instruction or authority grant. Text found on a page cannot expand the allowed skill set, trigger an expense write, or create a new objective; only an explicit write in the original user request can authorize the write skill for that run. It does not execute JavaScript, log in, retain cookies, submit forms, or act as a full browser. Network-level egress controls are still recommended for deployments with untrusted users.
 
-## Permissions
+## Execution control
 
-The deterministic policy defaults are:
+The current global mode (`SAFE`, `AUTO`, or `FULL_ACCESS`) and lockdown flag are stored in PostgreSQL together with a monotonic settings revision. `SHIVA_MAX_EXECUTION_MODE` is a host-controlled ceiling, and the effective mode is the lower of the stored and configured values. Every skill declares only `read|write` mutability plus `normal|sensitive` impact—there is no granular permission-key matrix.
 
-| Permission | Default mode |
-| --- | --- |
-| `web.read` | `auto` |
-| `expenses.read` | `auto` |
-| `expenses.write` | `auto` |
-
-Modes are `auto`, `confirm`, and `deny`. V0.3 has no confirmation interface, so `confirm` fails closed with `CONFIRMATION_REQUIRED`; `deny` and unknown permissions also fail closed. Permission approval does not override the per-request allowed-skill scope, and successful permission evaluation does not count as successful tool evidence. This permission layer is an execution policy, not user authentication. Keep Shiva on localhost/private infrastructure until authentication and user authorization are added.
+Normal reads execute. A normal write in `SAFE` asks for confirmation; a clearly requested normal write in `AUTO` or `FULL_ACCESS` executes directly. Unrequested writes and every sensitive action create an exact confirmation bound to the user, conversation, validated skill arguments, runtime classification, settings revision, and expiry. Approval is atomically claimed as `EXECUTING` and finishes as `EXECUTED` or `FAILED`, so it cannot be replayed; changed arguments, expiry, a settings change, or increased runtime risk makes it unusable. Execution-control changes commit with compare-and-set, and ordinary writes recheck the settings revision immediately before starting. Entering lockdown is immediate and invalidates pending approvals; ordinary writes remain blocked until leaving lockdown is confirmed. Mode increases and lockdown exits require confirmation, while authority reductions are immediate. Execution control does not replace HTTP authentication or provider/OS capability boundaries. Keep Shiva on localhost/private infrastructure until authentication and user authorization are added.
 
 ## Audit logging
 
 Drizzle migrations add these control-plane tables:
 
 - `agent_runs`: request, user/conversation IDs, status, step count, error code, start/finish timestamps, and duration;
-- `skill_runs`: parent agent run, skill name, arguments, declared permissions, sanitized result, status, error code, timestamps, and duration.
+- `skill_runs`: parent agent run, skill name, sanitized arguments/result, effective mode, action classification, confirmation ID, status, error code, timestamps, and duration;
+- `system_settings`: the singleton persisted execution mode, lockdown state, and monotonic revision;
+- `action_confirmations`: exact, expiring, revision-bound action approvals and their one-shot lifecycle;
 - `expense_sheet_bindings`: one per-user Google spreadsheet/tab pointer, schema state, and provisioning lease.
 
-Statuses distinguish success, failure, cancellation, denial, and max-step exhaustion where applicable. `agent_runs.request` always uses a constant redacted marker because every ordinary turn now reaches planning. Web skill runs may contain bounded inputs/results; expense skill runs use constant redacted payloads rather than ledger rows. Workspace terminal runs store only bounded commands/arguments and safe rejection diagnostics, never captured source output. Database access and retention must still be managed accordingly. The binding table contains resource IDs and coordination state only. None of these tables replaces or copies the Google expense ledger, and none stores Google tokens. This audit redaction does not alter the existing conversation/message or memory records created by the shared chat pipeline.
+Statuses distinguish success, failure, cancellation, denial, and max-step exhaustion where applicable. `agent_runs.request` always uses a constant redacted marker because every ordinary turn now reaches planning. Audit values are bounded and recursively sanitized for credential-shaped fields, labeled secrets, credential-bearing URLs, private keys, JWTs, and common provider-token formats; error codes and confirmation reasons use the same text sanitizer. Web skill runs may contain bounded inputs/results; expense skill runs use constant redacted payloads rather than ledger rows. Workspace terminal runs store only bounded commands/arguments and safe rejection diagnostics, never captured source output. Database access and retention must still be managed accordingly. The binding table contains resource IDs and coordination state only. None of these tables replaces or copies the Google expense ledger, and none stores Google tokens. This audit redaction does not alter the existing conversation/message or memory records created by the shared chat pipeline.
 
 Apply committed Drizzle migrations before running this feature against a real database:
 
@@ -235,6 +231,6 @@ The same requests can enter through the voice conversation path; voice only chan
 
 ## Verification and limitations
 
-The test suite uses mocks for Google authorization/Sheets responses, Brave responses, page retrieval, DNS, planners, and databases. It verifies contracts such as single-flight sheet provisioning, durable binding/lease behavior, fresh expense reads, append/readback, exact totals, permission denial, bounded agent decisions, audit lifecycle, and cross-skill observations without external credentials or model downloads.
+The test suite uses mocks for Google authorization/Sheets responses, Brave responses, page retrieval, DNS, planners, and databases. It verifies contracts such as single-flight sheet provisioning, durable binding/lease behavior, fresh expense reads, append/readback, exact totals, execution-mode decisions, exact confirmation replay protection, bounded agent decisions, audit lifecycle, and cross-skill observations without external credentials or model downloads.
 
-Those tests do not prove live Google Sheets, Brave Search, Ollama/Gemma, PostgreSQL, or RunPod configuration. Verify each configured service separately in the deployment environment. Current limitations include no in-app Google OAuth enrollment/refresh-token setup UI, no expense edit/delete, no currency conversion, no interactive confirmations, no arbitrary skill discovery, no JavaScript browser, no authenticated web sources, and no general-purpose autonomous background agent.
+Those tests do not prove live Google Sheets, Brave Search, Ollama/Gemma, PostgreSQL, or RunPod configuration. Verify each configured service separately in the deployment environment. Current limitations include no in-app Google OAuth enrollment/refresh-token setup UI, no expense edit/delete, no currency conversion, no trusted-device/passkey confirmation UI, no arbitrary skill discovery, no JavaScript browser, no authenticated web sources, and no general-purpose autonomous background agent.

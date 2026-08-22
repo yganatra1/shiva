@@ -7,7 +7,11 @@ import type {
   AgentPlanner,
   AgentRequest,
 } from "../src/agent/types.js";
-import { PermissionPolicyEngine } from "../src/security/policy-engine.js";
+import { ExecutionPolicyEngine } from "../src/security/policy-engine.js";
+import {
+  ExecutionStateService,
+  InMemoryExecutionStateStore,
+} from "../src/security/execution-state.js";
 import { SkillExecutor } from "../src/skills/executor.js";
 import { RecordExpenseSkill } from "../src/skills/record-expense/skill.js";
 import { SkillRegistry } from "../src/skills/registry.js";
@@ -43,7 +47,7 @@ class CrossSkillExpenseSheet implements ExpenseRepositoryPort {
   }
 }
 
-test("agent chains web research into a confirmed expense-sheet write before responding", async () => {
+test("agent chains web research into an authorized ordinary expense write before responding", async () => {
   const expenseSheet = new CrossSkillExpenseSheet();
   const registry = new SkillRegistry();
   registry.register(
@@ -84,6 +88,7 @@ test("agent chains web research into a confirmed expense-sheet write before resp
           skill: "web_research",
           selectedSkills: ["record_expense", "web_research"],
           arguments: { query: "latest RTX 3090 rental pricing in INR" },
+          authorization: "user_authorized",
         };
       }
       if (step === 2) {
@@ -100,6 +105,7 @@ test("agent chains web research into a confirmed expense-sheet write before resp
             description: "Shiva RTX 3090 hourly GPU cost",
             category: "Infrastructure",
           },
+          authorization: "user_authorized",
         };
       }
 
@@ -115,7 +121,7 @@ test("agent chains web research into a confirmed expense-sheet write before resp
   };
   const loop = new AgentLoop(
     planner,
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, autoPolicy()),
     registry,
     8,
     () => new Date("2026-08-20T01:30:00Z"),
@@ -159,6 +165,7 @@ test("a planner cannot claim a failed sheet write was confirmed by the executor"
       skill: "record_expense",
       selectedSkills: ["record_expense"],
       arguments: { amount: 45, description: "GPU" },
+      authorization: "user_authorized",
     },
     {
       type: "respond",
@@ -184,7 +191,7 @@ test("a planner cannot claim a failed sheet write was confirmed by the executor"
   };
   const loop = new AgentLoop(
     planner,
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, autoPolicy()),
     registry,
   );
 
@@ -201,3 +208,12 @@ test("a planner cannot claim a failed sheet write was confirmed by the executor"
   assert.match(result.response, /could not record/i);
   assert.equal(repository.rows.length, 0);
 });
+
+function autoPolicy(): ExecutionPolicyEngine {
+  return new ExecutionPolicyEngine(
+    new ExecutionStateService(
+      new InMemoryExecutionStateStore({ executionMode: "AUTO" }),
+      "FULL_ACCESS",
+    ),
+  );
+}

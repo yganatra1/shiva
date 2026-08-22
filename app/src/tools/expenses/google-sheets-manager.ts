@@ -122,6 +122,16 @@ export class ManagedGoogleSheetsExpenseRepository
     return repository.insertExpense(input);
   }
 
+  async listRequiresProvisioning(userId: string): Promise<boolean> {
+    assertUserId(userId);
+    const binding = await this.options.bindingStore.get(userId);
+    return (
+      binding === null ||
+      binding.status !== "ready" ||
+      binding.schemaVersion < EXPENSE_SHEET_SCHEMA_VERSION
+    );
+  }
+
   async listExpenses(
     input: ListExpensesInput,
   ): Promise<readonly ExpenseRecord[]> {

@@ -40,7 +40,7 @@ export class RecordExpenseSkill
   readonly inputDescription =
     '{ "amount": positive number, "currency"?: "INR", "description": string, "category"?: string, "occurredAt"?: RFC3339 }';
   readonly inputSchema: z.ZodType<RecordExpenseInput> = recordInputSchema;
-  readonly permissions = ["expenses.write"] as const;
+  readonly execution = { mutability: "write", impact: "normal" } as const;
   readonly configured: boolean;
 
   constructor(private readonly insertTool?: ExpenseInsertTool) {

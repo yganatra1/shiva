@@ -8,7 +8,10 @@ import {
   AgentTimeoutError,
 } from "../src/agent/agent-loop.js";
 import { ShivaOrchestrator } from "../src/agent/orchestrator.js";
-import { ShivaAgentPlanner } from "../src/agent/planner.js";
+import {
+  AgentPlannerError,
+  ShivaAgentPlanner,
+} from "../src/agent/planner.js";
 import type {
   AgentDecision,
   AgentPlanner,
@@ -16,7 +19,11 @@ import type {
   AgentRequest,
 } from "../src/agent/types.js";
 import type { ChatInput } from "../src/brain/ai-provider.js";
-import { PermissionPolicyEngine } from "../src/security/policy-engine.js";
+import {
+  ConfirmationService,
+  InMemoryConfirmationStore,
+} from "../src/security/confirmation.js";
+import { ExecutionPolicyEngine } from "../src/security/policy-engine.js";
 import { SkillExecutor } from "../src/skills/executor.js";
 import { SkillRegistry } from "../src/skills/registry.js";
 
@@ -37,7 +44,7 @@ test("agent loop executes a skill, observes confirmed output, then responds", as
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
-    permissions: ["expenses.write"],
+    execution: { mutability: "write", impact: "normal" },
     async execute(input) {
       executionCount += 1;
       return {
@@ -53,6 +60,7 @@ test("agent loop executes a skill, observes confirmed output, then responds", as
       skill: "record_expense",
       selectedSkills: ["record_expense"],
       arguments: { amount: 450 },
+      authorization: "user_authorized",
     },
     {
       type: "respond",
@@ -70,7 +78,7 @@ test("agent loop executes a skill, observes confirmed output, then responds", as
   };
   const loop = new AgentLoop(
     planner,
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
     8,
     () => new Date("2026-08-20T00:00:00Z"),
@@ -89,6 +97,220 @@ test("agent loop executes a skill, observes confirmed output, then responds", as
   });
 });
 
+test("agent loop resumes only the exact action approved by a pending confirmation", async () => {
+  const confirmationId = "40000000-0000-4000-8000-000000000004";
+  const confirmationStore = new InMemoryConfirmationStore();
+  const confirmations = new ConfirmationService(
+    confirmationStore,
+    300_000,
+    () => confirmationId,
+  );
+  const registry = new SkillRegistry();
+  let executionCount = 0;
+  registry.register({
+    name: "sensitive_fixture",
+    description: "Executes one sensitive fixture action.",
+    inputDescription: '{ "target": string, "force": boolean }',
+    inputSchema: z
+      .object({ target: z.string().min(1), force: z.boolean() })
+      .strict(),
+    execution: {
+      mutability: "write",
+      impact: "sensitive",
+      confirmationReason: "This fixture action is sensitive.",
+    },
+    async execute(input) {
+      executionCount += 1;
+      return { success: true, data: { completed: true, ...input } };
+    },
+  });
+  const executor = new SkillExecutor(
+    registry,
+    new ExecutionPolicyEngine(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    confirmations,
+  );
+  const now = () => new Date("2026-08-20T00:00:00Z");
+  const initialDecisions: AgentDecision[] = [
+    {
+      type: "skill_call",
+      skill: "sensitive_fixture",
+      selectedSkills: ["sensitive_fixture"],
+      arguments: { target: "shiva", force: true },
+      authorization: "user_authorized",
+    },
+    {
+      type: "respond",
+      outcome: "failure",
+      message: "This exact action needs confirmation.",
+    },
+  ];
+  const initialLoop = new AgentLoop(
+    {
+      async decide() {
+        const decision = initialDecisions.shift();
+        if (!decision) throw new Error("No fake decision available.");
+        return decision;
+      },
+    },
+    executor,
+    registry,
+    8,
+    now,
+  );
+
+  const pendingResult = await initialLoop.run({
+    ...request,
+    userMessage: "Execute the sensitive fixture action.",
+  });
+  const pendingObservation = pendingResult.observations[0];
+  assert.ok(pendingObservation && !pendingObservation.result.success);
+  if (!pendingObservation || pendingObservation.result.success) {
+    assert.fail("Expected a pending confirmation observation.");
+  }
+  assert.equal(
+    pendingObservation.result.error.confirmation?.id,
+    confirmationId,
+  );
+  assert.equal(executionCount, 0);
+
+  const approvalContexts: AgentPlanningContext[] = [];
+  const approvalDecisions: AgentDecision[] = [
+    {
+      type: "approve_confirmation",
+      confirmationId,
+      skill: "sensitive_fixture",
+      arguments: { force: true, target: "shiva" },
+    },
+    {
+      type: "respond",
+      outcome: "success",
+      message: "The exact sensitive action completed.",
+    },
+  ];
+  const approvalLoop = new AgentLoop(
+    {
+      async decide(context) {
+        approvalContexts.push(context);
+        const decision = approvalDecisions.shift();
+        if (!decision) throw new Error("No fake decision available.");
+        return decision;
+      },
+    },
+    executor,
+    registry,
+    8,
+    now,
+  );
+
+  const approvedResult = await approvalLoop.run({
+    ...request,
+    userMessage: "Yes, approve that exact action.",
+  });
+
+  assert.equal(approvalContexts[0]?.pendingConfirmation?.id, confirmationId);
+  assert.equal(executionCount, 1);
+  assert.equal(approvedResult.response, "The exact sensitive action completed.");
+  assert.deepEqual(approvedResult.observations[0]?.result, {
+    success: true,
+    data: { completed: true, target: "shiva", force: true },
+  });
+  assert.equal(
+    (await confirmationStore.findById(confirmationId))?.status,
+    "EXECUTED",
+  );
+});
+
+test("agent loop denies a pending confirmation without executing its action", async () => {
+  const confirmationId = "50000000-0000-4000-8000-000000000005";
+  const confirmationStore = new InMemoryConfirmationStore();
+  const confirmations = new ConfirmationService(
+    confirmationStore,
+    300_000,
+    () => confirmationId,
+  );
+  const registry = new SkillRegistry();
+  let executionCount = 0;
+  registry.register({
+    name: "sensitive_fixture",
+    description: "Executes one sensitive fixture action.",
+    inputDescription: '{ "target": string }',
+    inputSchema: z.object({ target: z.string().min(1) }).strict(),
+    execution: { mutability: "write", impact: "sensitive" },
+    async execute() {
+      executionCount += 1;
+      return { success: true, data: { completed: true } };
+    },
+  });
+  await confirmations.request({
+    agentRunId: "30000000-0000-4000-8000-000000000003",
+    userId: request.userId,
+    conversationId: request.conversationId,
+    skill: "sensitive_fixture",
+    arguments: { target: "shiva" },
+    reason: "This fixture action is sensitive.",
+    executionMode: "FULL_ACCESS",
+    mutability: "write",
+    impact: "sensitive",
+    settingsRevision: 0,
+    now: new Date("2026-08-20T00:00:00Z"),
+  });
+  const executor = new SkillExecutor(
+    registry,
+    new ExecutionPolicyEngine(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    confirmations,
+  );
+  const contexts: AgentPlanningContext[] = [];
+  const decisions: AgentDecision[] = [
+    { type: "deny_confirmation", confirmationId },
+    {
+      type: "respond",
+      outcome: "failure",
+      message: "Cancelled the pending action.",
+    },
+  ];
+  const loop = new AgentLoop(
+    {
+      async decide(context) {
+        contexts.push(context);
+        const decision = decisions.shift();
+        if (!decision) throw new Error("No fake decision available.");
+        return decision;
+      },
+    },
+    executor,
+    registry,
+    8,
+    () => new Date("2026-08-20T00:00:00Z"),
+  );
+
+  const result = await loop.run({
+    ...request,
+    userMessage: "No, cancel that action.",
+  });
+
+  assert.equal(contexts[0]?.pendingConfirmation?.id, confirmationId);
+  assert.equal(executionCount, 0);
+  assert.equal(result.response, "Cancelled the pending action.");
+  const denialObservation = result.observations[0];
+  assert.ok(denialObservation && !denialObservation.result.success);
+  if (!denialObservation || denialObservation.result.success) {
+    assert.fail("Expected a denied confirmation observation.");
+  }
+  assert.equal(denialObservation.result.error.code, "CONFIRMATION_DENIED");
+  assert.equal(
+    (await confirmationStore.findById(confirmationId))?.status,
+    "DENIED",
+  );
+});
+
 test("agent loop executes an identical skill call only once per run", async () => {
   const registry = new SkillRegistry();
   let executionCount = 0;
@@ -99,7 +321,7 @@ test("agent loop executes an identical skill call only once per run", async () =
     inputSchema: z
       .object({ amount: z.number().positive(), description: z.string() })
       .strict(),
-    permissions: ["expenses.write"],
+    execution: { mutability: "write", impact: "normal" },
     async execute(input) {
       executionCount += 1;
       return {
@@ -114,12 +336,14 @@ test("agent loop executes an identical skill call only once per run", async () =
       skill: "record_expense",
       selectedSkills: ["record_expense"],
       arguments: { amount: 450, description: "Pizza" },
+      authorization: "user_authorized",
     },
     {
       type: "skill_call",
       skill: "record_expense",
       selectedSkills: ["record_expense"],
       arguments: { description: "Pizza", amount: 450 },
+      authorization: "user_authorized",
     },
     {
       type: "respond",
@@ -135,7 +359,7 @@ test("agent loop executes an identical skill call only once per run", async () =
         return decision;
       },
     },
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
   );
 
@@ -156,7 +380,7 @@ test("agent loop does not re-execute an identical unavailable skill", async () =
     description: "Researches the web.",
     inputDescription: '{ "query": string }',
     inputSchema: z.object({ query: z.string() }).strict(),
-    permissions: ["web.read"],
+    execution: { mutability: "read", impact: "normal" },
     async execute() {
       executions += 1;
       return {
@@ -174,6 +398,7 @@ test("agent loop does not re-execute an identical unavailable skill", async () =
     skill: "web_research",
     selectedSkills: ["web_research"],
     arguments: { query: "Ahmedabad weather" },
+    authorization: "user_authorized",
   };
   const decisions: AgentDecision[] = [
     failedCall,
@@ -193,7 +418,7 @@ test("agent loop does not re-execute an identical unavailable skill", async () =
         return decision;
       },
     },
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
   );
 
@@ -212,7 +437,7 @@ test("agent loop preserves distinct record_expense calls in one run", async () =
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
-    permissions: ["expenses.write"],
+    execution: { mutability: "write", impact: "normal" },
     async execute(input) {
       executedAmounts.push(input.amount);
       return { success: true, data: { amount: input.amount } };
@@ -224,12 +449,14 @@ test("agent loop preserves distinct record_expense calls in one run", async () =
       skill: "record_expense",
       selectedSkills: ["record_expense"],
       arguments: { amount: 450 },
+      authorization: "user_authorized",
     },
     {
       type: "skill_call",
       skill: "record_expense",
       selectedSkills: ["record_expense"],
       arguments: { amount: 200 },
+      authorization: "user_authorized",
     },
     { type: "respond", outcome: "success", message: "Added both." },
   ];
@@ -241,7 +468,7 @@ test("agent loop preserves distinct record_expense calls in one run", async () =
         return decision;
       },
     },
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
   );
 
@@ -262,7 +489,7 @@ test("agent loop corrects a response that is missing required skill evidence", a
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
-    permissions: ["expenses.write"],
+    execution: { mutability: "write", impact: "normal" },
     async execute() {
       executions += 1;
       return { success: true, data: { expenseId: "expense-1" } };
@@ -280,6 +507,7 @@ test("agent loop corrects a response that is missing required skill evidence", a
       skill: "record_expense",
       selectedSkills: ["record_expense"],
       arguments: { amount: 450 },
+      authorization: "user_authorized",
     },
     {
       type: "respond",
@@ -296,7 +524,7 @@ test("agent loop corrects a response that is missing required skill evidence", a
         return decision;
       },
     },
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
   );
 
@@ -314,7 +542,7 @@ test("agent loop accepts an early failure from a selected prerequisite skill", a
     description: "Researches the web.",
     inputDescription: '{ "query": string }',
     inputSchema: z.object({ query: z.string() }).strict(),
-    permissions: ["web.read"],
+    execution: { mutability: "read", impact: "normal" },
     async execute() {
       return {
         success: false,
@@ -327,7 +555,7 @@ test("agent loop accepts an early failure from a selected prerequisite skill", a
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
-    permissions: ["expenses.write"],
+    execution: { mutability: "write", impact: "normal" },
     async execute() {
       expenseExecutions += 1;
       return { success: true, data: { expenseId: "unexpected" } };
@@ -339,6 +567,7 @@ test("agent loop accepts an early failure from a selected prerequisite skill", a
       skill: "web_research",
       selectedSkills: ["record_expense", "web_research"],
       arguments: { query: "current price" },
+      authorization: "user_authorized",
     },
     {
       type: "respond",
@@ -354,7 +583,7 @@ test("agent loop accepts an early failure from a selected prerequisite skill", a
         return decision;
       },
     },
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
   );
 
@@ -377,7 +606,7 @@ test("agent loop feeds an out-of-scope call back to the planner for correction",
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
-    permissions: ["expenses.write"],
+    execution: { mutability: "write", impact: "normal" },
     async execute() {
       expenseExecutions += 1;
       return { success: true, data: { expenseId: "unexpected" } };
@@ -388,7 +617,7 @@ test("agent loop feeds an out-of-scope call back to the planner for correction",
     description: "Researches the web.",
     inputDescription: '{ "query": string }',
     inputSchema: z.object({ query: z.string() }).strict(),
-    permissions: ["web.read"],
+    execution: { mutability: "read", impact: "normal" },
     async execute() {
       webExecutions += 1;
       return { success: true, data: { answer: "grounded" } };
@@ -400,12 +629,14 @@ test("agent loop feeds an out-of-scope call back to the planner for correction",
       skill: "record_expense",
       selectedSkills: ["record_expense"],
       arguments: { amount: 999 },
+      authorization: "user_authorized",
     },
     {
       type: "skill_call",
       skill: "web_research",
       selectedSkills: ["web_research"],
       arguments: { query: "latest TTS models" },
+      authorization: "user_authorized",
     },
     { type: "respond", outcome: "success", message: "Research complete." },
   ];
@@ -419,7 +650,7 @@ test("agent loop feeds an out-of-scope call back to the planner for correction",
         return decision;
       },
     },
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
   );
 
@@ -442,7 +673,7 @@ test("agent loop never executes a repeated adversarial cross-skill call", async 
     description: "Records an expense.",
     inputDescription: '{ "amount": number }',
     inputSchema: z.object({ amount: z.number().positive() }).strict(),
-    permissions: ["expenses.write"],
+    execution: { mutability: "write", impact: "normal" },
     async execute() {
       expenseExecutions += 1;
       return { success: true, data: { expenseId: "should-not-exist" } };
@@ -453,25 +684,26 @@ test("agent loop never executes a repeated adversarial cross-skill call", async 
     description: "Researches the web.",
     inputDescription: '{ "query": string }',
     inputSchema: z.object({ query: z.string() }).strict(),
-    permissions: ["web.read"],
+    execution: { mutability: "read", impact: "normal" },
     async execute(input) {
       webExecutions += 1;
       return { success: true, data: { answer: input.query } };
     },
   });
   const invalidDecision: AgentDecision = {
-      type: "skill_call",
-      skill: "record_expense",
-      selectedSkills: ["record_expense"],
-      arguments: { amount: 999 },
-    };
+    type: "skill_call",
+    skill: "record_expense",
+    selectedSkills: ["record_expense"],
+    arguments: { amount: 999 },
+    authorization: "user_authorized",
+  };
   const loop = new AgentLoop(
     {
       async decide() {
         return invalidDecision;
       },
     },
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
     2,
   );
@@ -494,7 +726,7 @@ test("agent loop corrects clarification attempted after tool execution", async (
     description: "Researches the web.",
     inputDescription: '{ "query": string }',
     inputSchema: z.object({ query: z.string() }).strict(),
-    permissions: ["web.read"],
+    execution: { mutability: "read", impact: "normal" },
     async execute() {
       return { success: true, data: { answer: "grounded" } };
     },
@@ -506,6 +738,7 @@ test("agent loop corrects clarification attempted after tool execution", async (
       skill: "web_research",
       selectedSkills: ["web_research"],
       arguments: { query: "Ahmedabad weather" },
+      authorization: "user_authorized",
     },
     { type: "clarify", message: "Which Ahmedabad?" },
     {
@@ -523,7 +756,7 @@ test("agent loop corrects clarification attempted after tool execution", async (
         return decision;
       },
     },
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
   );
 
@@ -544,12 +777,13 @@ test("agent loop retries an unknown skill scope then falls back to core chat", a
         skill: "missing",
         selectedSkills: ["missing"],
         arguments: {},
+        authorization: "user_authorized",
       };
     },
   };
   const loop = new AgentLoop(
     planner,
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
     2,
   );
@@ -574,7 +808,7 @@ test("agent loop sanitizes cancellation and finalizes without another decision",
         return { type: "respond", outcome: "failure", message: "no" };
       },
     },
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
   );
 
@@ -613,7 +847,7 @@ test("agent loop aborts planner work at the request deadline", async () => {
         return { type: "respond", outcome: "failure", message: "Too late." };
       },
     },
-    new SkillExecutor(registry, new PermissionPolicyEngine()),
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
     registry,
     8,
     undefined,
@@ -635,7 +869,7 @@ test("provider-neutral planner requests strict JSON and validates the decision",
       inputs.push(input);
       return {
         content:
-          '```json\n{"type":"skill_call","skill":"record_expense","selectedSkills":["record_expense"],"arguments":{"amount":450}}\n```',
+          '```json\n{"type":"skill_call","skill":"record_expense","selectedSkills":["record_expense"],"arguments":{"amount":450},"authorization":"user_authorized"}\n```',
       };
     },
     async *streamChat() {
@@ -651,7 +885,7 @@ test("provider-neutral planner requests strict JSON and validates the decision",
         description: "Records an expense.",
         inputDescription: '{ "amount": number }',
         configured: true,
-        permissions: ["expenses.write"],
+        execution: { mutability: "write", impact: "normal" },
       },
     ],
     observations: [],
@@ -665,9 +899,47 @@ test("provider-neutral planner requests strict JSON and validates the decision",
     skill: "record_expense",
     selectedSkills: ["record_expense"],
     arguments: { amount: 450 },
+    authorization: "user_authorized",
   });
   assert.equal(typeof inputs[0]?.responseFormat, "object");
   assert.match(inputs[0]?.messages[0]?.content ?? "", /Never claim an action succeeded/);
+});
+
+test("planner skill calls fail closed when authorization is omitted", async () => {
+  let attempts = 0;
+  const planner = new ShivaAgentPlanner({
+    async chat() {
+      attempts += 1;
+      return {
+        content:
+          '{"type":"skill_call","skill":"record_expense","selectedSkills":["record_expense"],"arguments":{"amount":450}}',
+      };
+    },
+    async *streamChat() {
+      throw new Error("Planner decisions must use structured chat().");
+    },
+  });
+
+  await assert.rejects(
+    planner.decide({
+      request,
+      skills: [
+        {
+          name: "record_expense",
+          description: "Records an expense.",
+          inputDescription: '{ "amount": number }',
+          configured: true,
+          execution: { mutability: "write", impact: "normal" },
+        },
+      ],
+      observations: [],
+      step: 1,
+      maxSteps: 8,
+      now: new Date("2026-08-20T00:00:00Z"),
+    }),
+    AgentPlannerError,
+  );
+  assert.equal(attempts, 2);
 });
 
 test("orchestrator sends every turn to semantic planner selection", async () => {

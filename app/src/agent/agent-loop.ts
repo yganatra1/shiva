@@ -103,6 +103,9 @@ export class AgentLoop {
       signal: scopedSignal,
     };
     let selectedSkills: readonly string[] | undefined;
+    let pendingConfirmation:
+      | Awaited<ReturnType<SkillExecutor["getPendingConfirmation"]>>
+      | undefined;
     let plannerFeedback: string | undefined;
     let plannerFallbackReason: "INVALID_OUTPUT" | "INVALID_SCOPE" =
       "INVALID_OUTPUT";
@@ -131,6 +134,11 @@ export class AgentLoop {
     let completedSteps = 0;
     try {
       selectedSkills = initialSkillScope(request, this.registry);
+      pendingConfirmation = await this.executor.getPendingConfirmation(
+        request.userId,
+        request.conversationId,
+        this.now(),
+      );
       for (let step = 1; step <= this.maxSteps; step += 1) {
         completedSteps = step;
         throwIfAborted(baseRequest.signal);
@@ -149,6 +157,7 @@ export class AgentLoop {
           step,
           maxSteps: this.maxSteps,
           now: this.now(),
+          ...(pendingConfirmation ? { pendingConfirmation } : {}),
           ...(correctionForAttempt
             ? { plannerFeedback: correctionForAttempt }
             : {}),
@@ -173,6 +182,56 @@ export class AgentLoop {
           throw error;
         }
         throwIfAborted(scopedRequest.signal);
+
+        if (
+          decision.type === "approve_confirmation" ||
+          decision.type === "deny_confirmation"
+        ) {
+          if (selectedSkills || observations.length > 0) {
+            plannerFeedback =
+              "Confirmation resolution was rejected because this run has already started another execution. Continue the active frozen plan and do not approve or deny a different pending action.";
+            continue;
+          }
+          const confirmationContext = {
+            agentRunId: runId,
+            conversationId: scopedRequest.conversationId,
+            userId: scopedRequest.userId,
+            userName: scopedRequest.userName,
+            timeZone: scopedRequest.timeZone,
+            signal: scopedSignal,
+            now: this.now,
+          };
+          const approval =
+            decision.type === "approve_confirmation" ? decision : undefined;
+          const resolved = approval
+            ? await this.executor.resolveConfirmation({
+                id: approval.confirmationId,
+                approved: true,
+                skill: approval.skill,
+                arguments: approval.arguments,
+                context: confirmationContext,
+              })
+            : await this.executor.resolveConfirmation({
+                id: decision.confirmationId,
+                approved: false,
+                context: confirmationContext,
+              });
+          if (!this.registry.has(resolved.skill)) {
+            plannerFeedback =
+              "The confirmation reference was invalid or unavailable. Do not invent an approval result; answer the current task without claiming execution.";
+            pendingConfirmation = undefined;
+            continue;
+          }
+          selectedSkills = [resolved.skill];
+          pendingConfirmation = undefined;
+          observations.push({
+            step,
+            skill: resolved.skill,
+            arguments: approval?.arguments ?? {},
+            result: resolved.result,
+          });
+          continue;
+        }
 
         let validatedScope: readonly string[] | undefined;
         if (decision.type === "skill_call") {
@@ -321,6 +380,9 @@ export class AgentLoop {
             allowedSkills: selectedSkills,
             signal: scopedSignal,
             now: this.now,
+          },
+          {
+            userAuthorized: decision.authorization === "user_authorized",
           },
         );
         if (callKey) completedSkillCalls.set(callKey, result);

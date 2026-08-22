@@ -36,6 +36,8 @@ export const testConfig: AppConfig = {
   timeZone: "Asia/Kolkata",
   agentMaxSteps: 8,
   agentRequestTimeoutMs: 300_000,
+  maxExecutionMode: "FULL_ACCESS",
+  confirmationTtlMs: 300_000,
   expenseSheetRequestTimeoutMs: 1_000,
   braveSearchUrl: "https://api.search.brave.com",
   webRequestTimeoutMs: 1_000,

@@ -15,7 +15,11 @@ const exampleSkill: ShivaSkill<{ value: string }, { echoed: string }> = {
   description: "Echoes a validated value.",
   inputDescription: '{ "value": "non-empty string" }',
   inputSchema: z.object({ value: z.string().min(1) }).strict(),
-  permissions: ["example.read"],
+  execution: {
+    mutability: "read",
+    impact: "normal",
+    confirmationReason: "Echoing this value is sensitive in this fixture.",
+  },
   async execute(input) {
     return { success: true, data: { echoed: input.value } };
   },
@@ -32,7 +36,11 @@ test("skill registry stores type-erased skills and exposes safe summaries", asyn
       description: "Echoes a validated value.",
       inputDescription: '{ "value": "non-empty string" }',
       configured: true,
-      permissions: ["example.read"],
+      execution: {
+        mutability: "read",
+        impact: "normal",
+        confirmationReason: "Echoing this value is sensitive in this fixture.",
+      },
     },
   ]);
 
@@ -67,8 +75,8 @@ test("skill registry rejects duplicate, malformed, and unknown skill names", () 
     () =>
       registry.register({
         ...exampleSkill,
-        name: "duplicate_permissions",
-        permissions: ["example.read", "example.read"],
+        name: "invalid_mutability",
+        execution: { mutability: "execute", impact: "normal" } as never,
       }),
     InvalidSkillDefinitionError,
   );
@@ -76,8 +84,34 @@ test("skill registry rejects duplicate, malformed, and unknown skill names", () 
     () =>
       registry.register({
         ...exampleSkill,
-        name: "missing_permission",
-        permissions: [],
+        name: "invalid_impact",
+        execution: { mutability: "read", impact: "catastrophic" } as never,
+      }),
+    InvalidSkillDefinitionError,
+  );
+  assert.throws(
+    () =>
+      registry.register({
+        ...exampleSkill,
+        name: "empty_confirmation_reason",
+        execution: {
+          mutability: "write",
+          impact: "sensitive",
+          confirmationReason: "   ",
+        },
+      }),
+    InvalidSkillDefinitionError,
+  );
+  assert.throws(
+    () =>
+      registry.register({
+        ...exampleSkill,
+        name: "invalid_control",
+        execution: {
+          mutability: "write",
+          impact: "normal",
+          control: "credentials",
+        } as never,
       }),
     InvalidSkillDefinitionError,
   );

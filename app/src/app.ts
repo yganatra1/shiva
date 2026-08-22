@@ -8,6 +8,7 @@ import {
   registerVoiceChatDiagnosticRoute,
 } from "./api/chat-route.js";
 import { registerErrorHandling } from "./api/error-handler.js";
+import { registerExecutionSettingsRoute } from "./api/execution-settings-route.js";
 import { registerHealthRoute } from "./api/health-route.js";
 import { registerVoiceRoutes } from "./api/voice-route.js";
 import { registerVoiceSocketRoute } from "./api/voice-socket-route.js";
@@ -27,6 +28,18 @@ import type {
   MemoryRepositoryPort,
 } from "./memory/types.js";
 import type { ChatPerformanceLogSink } from "./observability/chat-performance.js";
+import {
+  ConfirmationService,
+  InMemoryConfirmationStore,
+} from "./security/confirmation.js";
+import {
+  ExecutionStateService,
+  InMemoryExecutionStateStore,
+} from "./security/execution-state.js";
+import {
+  ExecutionStatusService,
+  type ExecutionStatusPort,
+} from "./security/execution-status.js";
 import { ShivaChatService } from "./services/chat-service.js";
 import { HttpASRProvider } from "./voice/http-asr-provider.js";
 import { HttpTTSProvider } from "./voice/http-tts-provider.js";
@@ -53,6 +66,7 @@ export interface AppOverrides {
   readonly voicePerformanceLogSink?: VoicePerformanceLogSink;
   readonly voicePlaybackCoordinator?: VoicePlaybackCoordinator;
   readonly agentOrchestrator?: AgentOrchestratorPort;
+  readonly executionStatus?: ExecutionStatusPort;
 }
 
 export function createApp(config: AppConfig, overrides: AppOverrides = {}): FastifyInstance {
@@ -128,13 +142,17 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     embeddingProvider,
     extractionEngine,
   );
-  const agentOrchestrator =
-    overrides.agentOrchestrator ??
-    (database
-      ? createAgentRuntime(database.db, provider, config, (error) => {
+  const agentRuntime = database
+    ? createAgentRuntime(database.db, provider, config, (error) => {
           app.log.error({ err: error }, "Agent audit finalization failed");
         })
-      : undefined);
+    : undefined;
+  const agentOrchestrator =
+    overrides.agentOrchestrator ?? agentRuntime?.orchestrator;
+  const executionStatus =
+    overrides.executionStatus ??
+    agentRuntime?.executionStatus ??
+    createInMemoryExecutionStatus(config);
   const chatService = new ShivaChatService({
     provider,
     repository,
@@ -167,6 +185,7 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
 
   registerErrorHandling(app);
   registerHealthRoute(app, config);
+  registerExecutionSettingsRoute(app, executionStatus);
   const chatRouteOptions = {
     performanceLogging: config.performanceLogging,
     ...(overrides.performanceLogSink
@@ -191,6 +210,18 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
   });
 
   return app;
+}
+
+function createInMemoryExecutionStatus(config: AppConfig): ExecutionStatusPort {
+  const state = new ExecutionStateService(
+    new InMemoryExecutionStateStore(),
+    config.maxExecutionMode,
+  );
+  const confirmations = new ConfirmationService(
+    new InMemoryConfirmationStore(),
+    config.confirmationTtlMs,
+  );
+  return new ExecutionStatusService(state, confirmations, config.userId);
 }
 
 function requiredDatabase(

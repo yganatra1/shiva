@@ -47,7 +47,7 @@ export class SkillRegistry {
       description: skill.description,
       inputDescription: skill.inputDescription,
       configured: skill.configured,
-      permissions: [...skill.permissions],
+      execution: { ...skill.execution },
     }));
   }
 }
@@ -68,14 +68,44 @@ function validateDefinition<TInput, TOutput>(
       "Skill input descriptions cannot be empty.",
     );
   }
-  if (skill.permissions.length === 0) {
+  validateExecutionMetadata(skill.name, skill.execution);
+}
+
+function validateExecutionMetadata(
+  skillName: string,
+  execution: RegisteredSkill["execution"],
+): void {
+  if (
+    !execution ||
+    (execution.mutability !== "read" && execution.mutability !== "write")
+  ) {
     throw new InvalidSkillDefinitionError(
-      `Skill '${skill.name}' must declare at least one permission.`,
+      `Skill '${skillName}' has an invalid execution mutability.`,
     );
   }
-  if (new Set(skill.permissions).size !== skill.permissions.length) {
+  if (
+    execution.impact !== "normal" &&
+    execution.impact !== "sensitive"
+  ) {
     throw new InvalidSkillDefinitionError(
-      `Skill '${skill.name}' declares duplicate permissions.`,
+      `Skill '${skillName}' has an invalid execution impact.`,
+    );
+  }
+  if (
+    execution.confirmationReason !== undefined &&
+    execution.confirmationReason.trim().length === 0
+  ) {
+    throw new InvalidSkillDefinitionError(
+      `Skill '${skillName}' has an empty confirmation reason.`,
+    );
+  }
+  if (
+    execution.control !== undefined &&
+    execution.control !== "execution_mode" &&
+    execution.control !== "lockdown"
+  ) {
+    throw new InvalidSkillDefinitionError(
+      `Skill '${skillName}' has an invalid execution control type.`,
     );
   }
 }
@@ -83,14 +113,33 @@ function validateDefinition<TInput, TOutput>(
 function eraseSkillTypes<TInput, TOutput>(
   skill: ShivaSkill<TInput, TOutput>,
 ): RegisteredSkill {
-  return {
+  const erased: RegisteredSkill = {
     name: skill.name,
     description: skill.description,
     inputDescription: skill.inputDescription,
     configured: skill.configured ?? true,
     inputSchema: skill.inputSchema as unknown as RegisteredSkill["inputSchema"],
-    permissions: [...skill.permissions],
+    execution: { ...skill.execution },
     execute: async (input, context) =>
       skill.execute(input as TInput, context),
   };
+  if (skill.classifyExecution) {
+    return {
+      ...erased,
+      classifyExecution: async (input, context) => {
+        const execution = await skill.classifyExecution?.(
+          input as TInput,
+          context,
+        );
+        if (!execution) {
+          throw new InvalidSkillDefinitionError(
+            `Skill '${skill.name}' did not return execution metadata.`,
+          );
+        }
+        validateExecutionMetadata(skill.name, execution);
+        return { ...execution };
+      },
+    };
+  }
+  return erased;
 }

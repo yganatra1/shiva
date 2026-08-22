@@ -8,6 +8,7 @@ import type {
   WorkspaceOverview,
   WorkspaceReaderPort,
 } from "./types.js";
+import { isBlockedWorkspacePath } from "./path-policy.js";
 
 const DEFAULT_WORKSPACE_ROOT = fileURLToPath(
   new URL("../../../../", import.meta.url),
@@ -27,22 +28,16 @@ const CORE_DOCUMENTS = [
   "docs/memory-architecture.md",
   "docs/voice-architecture.md",
 ] as const;
-const BLOCKED_DIRECTORIES = new Set([
-  ".agents",
+const DISCOVERY_SKIPPED_DIRECTORIES = new Set([
   ".cache",
-  ".codex",
   ".git",
   ".idea",
   ".venv",
   ".vscode",
-  "backups",
   "coverage",
-  "data",
   "dist",
-  "logs",
   "models",
   "node_modules",
-  "runtime",
 ]);
 const TEXT_EXTENSIONS = new Set([
   ".css",
@@ -161,7 +156,13 @@ export class FileSystemWorkspaceReader implements WorkspaceReaderPort {
         const nextRelative = relative
           ? `${relative}/${entry.name}`
           : entry.name;
-        if (isBlockedPath(nextRelative) || entry.isSymbolicLink()) continue;
+        if (
+          isBlockedWorkspacePath(nextRelative) ||
+          isSkippedDiscoveryPath(nextRelative) ||
+          entry.isSymbolicLink()
+        ) {
+          continue;
+        }
         const absolute = path.join(directory, entry.name);
         if (entry.isDirectory()) {
           await walk(absolute, nextRelative, depth + 1);
@@ -310,6 +311,12 @@ export class FileSystemWorkspaceReader implements WorkspaceReaderPort {
   }
 }
 
+function isSkippedDiscoveryPath(relative: string): boolean {
+  return relative
+    .split("/")
+    .some((segment) => DISCOVERY_SKIPPED_DIRECTORIES.has(segment));
+}
+
 function validateRelativePath(input: string): string {
   const trimmed = input.trim();
   if (
@@ -327,7 +334,7 @@ function validateRelativePath(input: string): string {
   if (
     normalized === ".." ||
     normalized.startsWith("../") ||
-    isBlockedPath(normalized) ||
+    isBlockedWorkspacePath(normalized) ||
     !isTextPath(normalized)
   ) {
     throw new WorkspaceReaderError(
@@ -336,21 +343,6 @@ function validateRelativePath(input: string): string {
     );
   }
   return normalized;
-}
-
-function isBlockedPath(relative: string): boolean {
-  const segments = relative.split("/");
-  if (segments.some((segment) => BLOCKED_DIRECTORIES.has(segment))) return true;
-  const name = segments.at(-1)?.toLocaleLowerCase("en-US") ?? "";
-  if (name === ".env.example") return false;
-  if (name.startsWith(".env")) return true;
-  return (
-    /(?:^|[-_.])(?:credential|credentials|secret|secrets|token|tokens)(?:[-_.]|$)/i.test(
-      name,
-    ) ||
-    /^(?:id_rsa|id_ed25519)(?:\.pub)?$/i.test(name) ||
-    /\.(?:key|pem|p12|pfx|crt|cer)$/i.test(name)
-  );
 }
 
 function isTextPath(relative: string): boolean {
