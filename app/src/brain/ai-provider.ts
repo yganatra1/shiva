@@ -8,6 +8,8 @@ export interface ChatMessage {
 export interface ChatInput {
   readonly messages: readonly ChatMessage[];
   readonly responseFormat?: "json" | Readonly<Record<string, unknown>>;
+  /** Provider-default sampling temperature is used when omitted. */
+  readonly temperature?: number;
   readonly signal?: AbortSignal;
 }
 

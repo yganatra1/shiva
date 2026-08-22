@@ -24,12 +24,13 @@ export function createPackRegistry(): PackRegistry {
       "Inspect the Shiva host/workspace through a read-only terminal.",
   });
   packs.register({
-    name: "finance",
-    description: "Record and report personal expenses.",
-  });
-  packs.register({
     name: "web",
     description: "Search the web and read current public pages.",
+  });
+  packs.register({
+    name: "google",
+    description:
+      "Create, read, and update Google Sheets with whatever structure the task needs.",
   });
   return packs;
 }

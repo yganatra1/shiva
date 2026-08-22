@@ -922,6 +922,43 @@ test("provider-neutral planner requests strict JSON and validates the decision",
   });
   assert.equal(typeof inputs[0]?.responseFormat, "object");
   assert.match(inputs[0]?.messages[0]?.content ?? "", /Never claim an action succeeded/);
+  assert.equal(inputs[0]?.temperature, 0);
+});
+
+test("the planner prompt gives a worked example for resolving a CONFIRMATION_REQUIRED observation", async () => {
+  const inputs: ChatInput[] = [];
+  const planner = new ShivaAgentPlanner({
+    async chat(input) {
+      inputs.push(input);
+      return { content: '{"type":"direct_chat"}' };
+    },
+    async *streamChat() {
+      throw new Error("Planner decisions must use structured chat().");
+    },
+  });
+
+  await planner.decide({
+    request,
+    packs: [],
+    openPacks: [],
+    skills: [],
+    observations: [],
+    step: 1,
+    maxSteps: 8,
+    now: new Date("2026-08-20T00:00:00Z"),
+  });
+
+  const prompt = inputs[0]?.messages[0]?.content ?? "";
+  // A concrete worked example, not just an abstract rule, since asking a
+  // question via a "failure" response is an unusual enough pattern that a
+  // smaller model needs a literal example to reliably converge on it instead
+  // of retrying the action or exhausting the step budget.
+  assert.match(prompt, /normal, expected stop, not a failed attempt to fix/);
+  assert.match(
+    prompt,
+    /"respond","outcome":"failure","message":"Switch execution mode from Auto to Full Access\?/,
+  );
+  assert.match(prompt, /never substitute a human-readable label, different casing/);
 });
 
 test("planner skill calls fail closed when authorization is omitted", async () => {

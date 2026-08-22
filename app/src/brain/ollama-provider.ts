@@ -83,6 +83,9 @@ export class OllamaProvider implements AIProvider {
           keep_alive: this.options.keepAlive,
           options: {
             num_ctx: this.options.contextLength,
+            ...(input.temperature !== undefined
+              ? { temperature: input.temperature }
+              : {}),
           },
           ...(input.responseFormat ? { format: input.responseFormat } : {}),
         }),
@@ -108,6 +111,9 @@ export class OllamaProvider implements AIProvider {
             keep_alive: this.options.keepAlive,
             options: {
               num_ctx: this.options.contextLength,
+              ...(input.temperature !== undefined
+                ? { temperature: input.temperature }
+                : {}),
             },
             format: "json",
           }),

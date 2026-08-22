@@ -84,6 +84,38 @@ test("the provider sends the infinite keep-alive sentinel as a number", async (c
   assert.equal(typeof requestBody.keep_alive, "number");
 });
 
+test("the provider forwards an explicit temperature and omits it by default", async (context) => {
+  const requestBodies: unknown[] = [];
+  const upstream = createServer((request, response) => {
+    const bodyParts: Buffer[] = [];
+    request.on("data", (part: Buffer) => bodyParts.push(part));
+    request.on("end", () => {
+      requestBodies.push(
+        JSON.parse(Buffer.concat(bodyParts).toString("utf8")) as unknown,
+      );
+      response.setHeader("content-type", "application/x-ndjson");
+      response.write(
+        `${JSON.stringify({ done: false, message: { content: "Ready" } })}\n`,
+      );
+      response.end(`${JSON.stringify({ done: true })}\n`);
+    });
+  });
+  context.after(() => closeServer(upstream));
+  const provider = createProvider(await listenOnRandomPort(upstream), 1_000);
+
+  await provider.chat({
+    messages: [{ role: "user", content: "Decide." }],
+    temperature: 0,
+  });
+  await provider.chat({ messages: [{ role: "user", content: "Chat." }] });
+
+  const [withTemperature, withoutTemperature] = requestBodies;
+  assert.ok(isRecord(withTemperature) && isRecord(withTemperature.options));
+  assert.equal(withTemperature.options.temperature, 0);
+  assert.ok(isRecord(withoutTemperature) && isRecord(withoutTemperature.options));
+  assert.equal("temperature" in withoutTemperature.options, false);
+});
+
 test("the provider distinguishes caller cancellation from its deadline", async (context) => {
   const upstream = createServer((request, response) => {
     request.resume();
