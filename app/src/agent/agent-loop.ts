@@ -122,8 +122,6 @@ export class AgentLoop {
       | Awaited<ReturnType<SkillExecutor["getPendingConfirmation"]>>
       | undefined;
     let plannerFeedback: string | undefined;
-    let lastFeedback: string | undefined;
-    let repeatedFeedbackCount = 0;
     let plannerFallbackReason: "INVALID_OUTPUT" | "INVALID_SCOPE" =
       "INVALID_OUTPUT";
 
@@ -174,50 +172,10 @@ export class AgentLoop {
         const correctionForAttempt = plannerFeedback;
         plannerFeedback = undefined;
         if (correctionForAttempt) {
-          if (correctionForAttempt === lastFeedback) {
-            repeatedFeedbackCount += 1;
-          } else {
-            lastFeedback = correctionForAttempt;
-            repeatedFeedbackCount = 1;
-          }
           this.onTrace?.(
-            { runId, step, correctionForAttempt, repeatedFeedbackCount },
+            { runId, step, correctionForAttempt },
             "agent loop feeding correction into next call",
           );
-          // The exact same correction already failed to change the planner's
-          // behavior once; sending it a third time is very unlikely to work
-          // and just burns the remaining step budget. Stop and finalize with
-          // whatever grounded evidence already exists instead.
-          if (repeatedFeedbackCount >= 2) {
-            this.onTrace?.(
-              { runId, step, correctionForAttempt },
-              "agent loop aborting after repeated identical correction",
-            );
-            await this.finishAuditSafely(
-              runId,
-              observations.length > 0 ? "succeeded" : "max_steps",
-              completedSteps,
-              "RepeatedPlannerCorrection",
-              monotonicStartedAt,
-            );
-            if (observations.length === 0) {
-              return {
-                kind: "direct_chat",
-                runId,
-                response: undefined,
-                steps: completedSteps,
-                observations: [],
-                plannerFallback: "INVALID_OUTPUT",
-              };
-            }
-            return {
-              kind: "response",
-              runId,
-              response: buildMaxStepsResponse(observations),
-              steps: completedSteps,
-              observations: [...observations],
-            };
-          }
         }
         const planningContext = {
           request: scopedRequest,
@@ -248,10 +206,20 @@ export class AgentLoop {
             return await fallBackToCore("INVALID_OUTPUT", step);
           }
           if (error instanceof AgentPlannerError) {
-            plannerFallbackReason = "INVALID_OUTPUT";
-            plannerFeedback =
-              "Your previous decision could not be parsed even after its format retry. The active execution is still intact. Return one valid decision using only the frozen skills and existing observations; do not restart, switch to direct chat, or invent tool results.";
-            continue;
+            await this.finishAuditSafely(
+              runId,
+              "failed",
+              completedSteps,
+              "PlannerInvalidOutput",
+              monotonicStartedAt,
+            );
+            return {
+              kind: "response",
+              runId,
+              response: buildPlannerFailureResponse(observations),
+              steps: completedSteps,
+              observations: [...observations],
+            };
           }
           throw error;
         }
@@ -334,50 +302,59 @@ export class AgentLoop {
 
         if (decision.type === "skill_call") {
           if (selectedSkills) {
+            const fixedSkills = selectedSkills;
             // Externally pre-scoped request: preserve the original hard,
             // exact-name cap unchanged — this path is for callers (tests,
             // future restricted integrations) that deliberately want a
             // narrower boundary than "the whole pack", not for a normal task.
             try {
-              declaredSkills = validateDeclaredSkills(
+              const proposedSkills = validateDeclaredSkills(
                 decision.selectedSkills,
                 decision.skill,
                 this.registry,
               );
-              if (!selectedSkills.includes(decision.skill)) {
+              if (
+                proposedSkills.some(
+                  (skill) => !fixedSkills.includes(skill),
+                )
+              ) {
                 throw new AgentEvidenceError(
                   "The planner selected a skill outside the request's fixed scope.",
                 );
               }
+              declaredSkills = proposedSkills;
             } catch (error: unknown) {
               if (!(error instanceof AgentEvidenceError)) throw error;
               plannerFallbackReason = "INVALID_SCOPE";
-              plannerFeedback = `Your previous skill_call was rejected because this request is fixed to exactly these skills: ${selectedSkills.join(", ")}. Call one of those, or return a grounded response.`;
+              plannerFeedback = `Your previous skill_call was rejected because this request is fixed to exactly these skills: ${fixedSkills.join(", ")}. Call one of those, or return a grounded response.`;
               continue;
             }
           } else {
             try {
-              if (!this.registry.has(decision.skill)) {
-                throw new AgentEvidenceError("The planner selected an unknown skill.");
-              }
-              if (!frozenPacks) {
-                // First real skill_call of the run: freeze the pack(s) now.
-                // Packs already opened via open_packs are kept; a model that
-                // skipped open_packs and named a known skill directly freezes
-                // to just that skill's own pack.
-                frozenPacks = openPacks ?? [this.registry.get(decision.skill).pack];
-              }
-              const allowedInFrozenPacks = skillsInPacks(this.registry, frozenPacks);
-              if (!allowedInFrozenPacks.includes(decision.skill)) {
-                throw new AgentEvidenceError(
-                  "The planner selected a skill outside this run's frozen packs.",
-                );
-              }
-              declaredSkills = validateDeclaredSkills(
+              const proposedSkills = validateDeclaredSkills(
                 decision.selectedSkills,
                 decision.skill,
                 this.registry,
               );
+              const proposedPacks =
+                frozenPacks ??
+                openPacks ??
+                packsForSkills(this.registry, proposedSkills);
+              const allowedInProposedPacks = skillsInPacks(
+                this.registry,
+                proposedPacks,
+              );
+              if (
+                proposedSkills.some(
+                  (skill) => !allowedInProposedPacks.includes(skill),
+                )
+              ) {
+                throw new AgentEvidenceError(
+                  "The planner selected a skill outside this run's frozen packs.",
+                );
+              }
+              frozenPacks ??= proposedPacks;
+              declaredSkills = proposedSkills;
             } catch (error: unknown) {
               if (!(error instanceof AgentEvidenceError)) throw error;
               plannerFallbackReason = "INVALID_SCOPE";
@@ -398,7 +375,7 @@ export class AgentLoop {
         if (decision.type === "direct_chat") {
           if (selectedSkills || frozenPacks || observations.length > 0) {
             plannerFeedback =
-              "direct_chat was rejected because skill execution has already started. Keep the existing frozen scope and observations. Call another allowed skill if more evidence is needed, or return a grounded respond decision whose outcome matches the observations.";
+              "direct_chat was rejected because skill execution has already started. Keep the existing frozen scope and observations. Call another allowed skill if more evidence is needed, or return a grounded respond decision.";
             continue;
           }
           const result = {
@@ -446,7 +423,7 @@ export class AgentLoop {
         if (decision.type === "clarify") {
           if (selectedSkills || frozenPacks || observations.length > 0) {
             plannerFeedback =
-              "clarify was rejected because execution has already begun. Do not pause or promise future work. Use the existing observations, call another skill inside the exact frozen scope if needed, or return a grounded success/failure response.";
+              "clarify was rejected because execution has already begun. Do not pause or promise future work. Use the existing observations, call another skill inside the frozen packs if needed, or return a grounded response.";
             continue;
           }
           const result = {
@@ -469,7 +446,7 @@ export class AgentLoop {
 
         if (decision.type === "respond") {
           try {
-            assertResponseEvidence(decision, declaredSkills, observations);
+            assertResponseEvidence(declaredSkills, observations);
           } catch (error: unknown) {
             if (!(error instanceof AgentEvidenceError)) throw error;
             plannerFeedback = buildResponseEvidenceFeedback(
@@ -706,6 +683,15 @@ function skillsInPacks(
     .map((skill) => skill.name);
 }
 
+function packsForSkills(
+  registry: SkillRegistry,
+  skills: readonly string[],
+): readonly string[] {
+  return [
+    ...new Set(skills.map((skill) => registry.get(skill).pack)),
+  ].sort();
+}
+
 function normalizePackScope(
   packs: readonly string[],
   registry: SkillRegistry,
@@ -787,36 +773,13 @@ function normalizeSkillScope(
   return normalized;
 }
 
-/**
- * Deliberately does not require `outcome` to match tool success/failure: a
- * skill can execute successfully and still find nothing (an empty search,
- * zero matches), which is a completely valid, evidenced "failure" from the
- * user's perspective despite success=true on the observation. Requiring the
- * two to correspond forced the planner into an unwinnable choice and caused
- * it to burn its whole step budget arguing with this exact check.
- *
- * Also deliberately does not require *every* declared skill to have been
- * attempted, only at least one: a prerequisite failing is itself grounds to
- * stop and report failure without needing to still attempt a now-pointless
- * dependent step (e.g. a failed price lookup means never attempting the
- * expense write that would have used that price — that is the *correct*
- * behavior, not missing evidence). Precisely grounding what the message
- * claims beyond "something relevant was actually tried" remains the
- * planner's own responsibility, same as it already is for e.g. never
- * claiming a specific success without a matching observation.
- */
 function assertResponseEvidence(
-  decision: Extract<import("./types.js").AgentDecision, { type: "respond" }>,
   declaredSkills: readonly string[] | undefined,
   observations: readonly AgentObservation[],
 ): void {
   if (!declaredSkills) {
-    // No skill was ever called this run. That can still be a grounded
-    // "this truly cannot be done" — but never a claimed success, since
-    // nothing was actually attempted to verify one.
-    if (decision.outcome === "failure" && observations.length === 0) return;
     throw new AgentEvidenceError(
-      "The planner attempted to respond without selected tool evidence.",
+      "The planner attempted to respond without a skill plan or tool evidence.",
     );
   }
   const attempted = declaredSkills.some((skill) =>
@@ -834,7 +797,7 @@ function buildResponseEvidenceFeedback(
   observations: readonly AgentObservation[],
 ): string {
   if (!declaredSkills) {
-    return "Your respond decision was rejected because no skill plan or tool evidence exists. Choose direct_chat for an ordinary tool-free answer, choose a skill_call when the task requires a registered capability, or return a response only after you have actually called something.";
+    return "Your respond decision was rejected because no skill plan or tool evidence exists. Choose direct_chat for an ordinary tool-free answer, or call the required skill before claiming live information or completed work.";
   }
   const status = declaredSkills.map((skill) => {
     const results = observations
@@ -844,7 +807,26 @@ function buildResponseEvidenceFeedback(
       );
     return `${skill}=${results.length > 0 ? results.join("|") : "not-called"}`;
   });
-  return `Your respond decision was rejected because none of the skills in selectedSkills were actually called this run. Evidence status: ${status.join(", ")}. Call at least one of them, or return a respond decision whose selectedSkills includes something you already attempted — its outcome does not need to match whether that call found something, and you do not need to have attempted every skill you named.`;
+  return `Your respond decision was rejected because none of the skills in selectedSkills were actually called this run. Evidence status: ${status.join(", ")}. Call at least one of them, or return a response grounded in a skill you already attempted.`;
+}
+
+function buildPlannerFailureResponse(
+  observations: readonly AgentObservation[],
+): string {
+  const confirmation = [...observations]
+    .reverse()
+    .find(
+      (observation) =>
+        !observation.result.success &&
+        observation.result.error.code === "CONFIRMATION_REQUIRED",
+    );
+  if (confirmation && !confirmation.result.success) {
+    return confirmation.result.error.message;
+  }
+  if (observations.length === 0) {
+    return "I couldn't produce a valid tool plan for this request.";
+  }
+  return "I completed the available tool step, but the planner returned invalid structured output twice, so I stopped instead of repeating the request.";
 }
 
 function buildMaxStepsResponse(

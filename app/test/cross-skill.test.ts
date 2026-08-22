@@ -113,7 +113,6 @@ test("agent chains web research into an authorized ordinary expense write before
       assert.equal(expense?.success, true);
       return {
         type: "respond",
-        outcome: "success",
         message:
           "I found INR 45/hour as the cheapest cited price and recorded it as Shiva's GPU cost.",
       };
@@ -169,7 +168,6 @@ test("a planner cannot claim a failed sheet write was confirmed by the executor"
     },
     {
       type: "respond",
-      outcome: "failure",
       message: "I could not record the expense because the sheet write failed.",
     },
   ];

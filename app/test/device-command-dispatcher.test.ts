@@ -170,6 +170,42 @@ test("deviceErrorToFailure maps every failure kind and rethrows anything else", 
   assert.throws(() => deviceErrorToFailure(new Error("not a device error")));
 });
 
+test("handleMessage accepts lowercase status from the Android wire format", async () => {
+  const dispatcher = new DeviceCommandDispatcher({ createCommandId: () => "cmd-1" });
+  dispatcher.connect(new RecordingTransport());
+
+  const pending = dispatcher.dispatch("device.contacts.search", { query: "Meow" });
+  dispatcher.handleMessage(
+    JSON.stringify({
+      type: "device_command_result",
+      result: {
+        commandId: "cmd-1",
+        status: "completed",
+        result: { name: "Meow", phone: "+918866730801" },
+      },
+    }),
+  );
+
+  const result = await pending;
+  assert.equal(result.status, "COMPLETED");
+  assert.deepEqual(result.result, { name: "Meow", phone: "+918866730801" });
+});
+
+test("the result message schema accepts large image payload fields", () => {
+  const largeBase64 = "A".repeat(500_000);
+  assert.equal(
+    deviceCommandResultMessageSchema.safeParse({
+      type: "device_command_result",
+      result: {
+        commandId: "x",
+        status: "COMPLETED",
+        result: { mime: "image/jpeg", data: largeBase64 },
+      },
+    }).success,
+    true,
+  );
+});
+
 test("the result message schema accepts every status and rejects unknown fields", () => {
   for (const status of ["COMPLETED", "FAILED", "UNSUPPORTED", "DENIED"] as const) {
     assert.equal(

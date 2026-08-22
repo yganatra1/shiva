@@ -65,7 +65,10 @@ export function createDeviceCameraCaptureSkill(
         const result = await dispatcher.dispatch(
           "device.camera.capture",
           {},
-          context.signal ? { signal: context.signal } : {},
+          {
+            timeoutMs: 90_000,
+            ...(context.signal ? { signal: context.signal } : {}),
+          },
         );
         if (result.status !== "COMPLETED") {
           return {

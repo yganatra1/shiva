@@ -67,7 +67,6 @@ test("agent loop executes a skill, observes confirmed output, then responds", as
     },
     {
       type: "respond",
-      outcome: "success",
       message: "Added INR 450 for pizza.",
     },
   ];
@@ -148,7 +147,6 @@ test("agent loop resumes only the exact action approved by a pending confirmatio
     },
     {
       type: "respond",
-      outcome: "failure",
       message: "This exact action needs confirmation.",
     },
   ];
@@ -191,7 +189,6 @@ test("agent loop resumes only the exact action approved by a pending confirmatio
     },
     {
       type: "respond",
-      outcome: "success",
       message: "The exact sensitive action completed.",
     },
   ];
@@ -277,7 +274,6 @@ test("agent loop denies a pending confirmation without executing its action", as
     { type: "deny_confirmation", confirmationId },
     {
       type: "respond",
-      outcome: "failure",
       message: "Cancelled the pending action.",
     },
   ];
@@ -353,7 +349,6 @@ test("agent loop executes an identical skill call only once per run", async () =
     },
     {
       type: "respond",
-      outcome: "success",
       message: "Added INR 450 for pizza.",
     },
   ];
@@ -412,7 +407,6 @@ test("agent loop does not re-execute an identical unavailable skill", async () =
     failedCall,
     {
       type: "respond",
-      outcome: "failure",
       message: "Web research is not configured.",
     },
   ];
@@ -466,7 +460,7 @@ test("agent loop preserves distinct record_expense calls in one run", async () =
       arguments: { amount: 200 },
       authorization: "user_authorized",
     },
-    { type: "respond", outcome: "success", message: "Added both." },
+    { type: "respond", message: "Added both." },
   ];
   const loop = new AgentLoop(
     {
@@ -508,7 +502,6 @@ test("agent loop corrects a response that is missing required skill evidence", a
   const decisions: AgentDecision[] = [
     {
       type: "respond",
-      outcome: "success",
       message: "The expense was added.",
     },
     {
@@ -520,7 +513,6 @@ test("agent loop corrects a response that is missing required skill evidence", a
     },
     {
       type: "respond",
-      outcome: "success",
       message: "The expense was added.",
     },
   ];
@@ -582,7 +574,6 @@ test("agent loop accepts an early failure from a selected prerequisite skill", a
     },
     {
       type: "respond",
-      outcome: "failure",
       message: "I could not research the current price, so I did not record it.",
     },
   ];
@@ -651,7 +642,7 @@ test("agent loop feeds an out-of-scope call back to the planner for correction",
       arguments: { query: "latest TTS models" },
       authorization: "user_authorized",
     },
-    { type: "respond", outcome: "success", message: "Research complete." },
+    { type: "respond", message: "Research complete." },
   ];
   const contexts: AgentPlanningContext[] = [];
   const loop = new AgentLoop(
@@ -759,7 +750,6 @@ test("agent loop corrects clarification attempted after tool execution", async (
     { type: "clarify", message: "Which Ahmedabad?" },
     {
       type: "respond",
-      outcome: "success",
       message: "Here is the grounded forecast.",
     },
   ];
@@ -821,7 +811,7 @@ test("agent loop sanitizes cancellation and finalizes without another decision",
     {
       async decide() {
         plannerCalls += 1;
-        return { type: "respond", outcome: "failure", message: "no" };
+        return { type: "respond", message: "no" };
       },
     },
     new SkillExecutor(registry, new ExecutionPolicyEngine()),
@@ -860,7 +850,7 @@ test("agent loop aborts planner work at the request deadline", async () => {
             { once: true },
           );
         });
-        return { type: "respond", outcome: "failure", message: "Too late." };
+        return { type: "respond", message: "Too late." };
       },
     },
     new SkillExecutor(registry, new ExecutionPolicyEngine()),
@@ -921,6 +911,10 @@ test("provider-neutral planner requests strict JSON and validates the decision",
     authorization: "user_authorized",
   });
   assert.equal(typeof inputs[0]?.responseFormat, "object");
+  assert.doesNotMatch(
+    JSON.stringify(inputs[0]?.responseFormat),
+    /\"outcome\"/,
+  );
   assert.match(inputs[0]?.messages[0]?.content ?? "", /Never claim an action succeeded/);
   assert.equal(inputs[0]?.temperature, 0);
 });
@@ -949,14 +943,12 @@ test("the planner prompt gives a worked example for resolving a CONFIRMATION_REQ
   });
 
   const prompt = inputs[0]?.messages[0]?.content ?? "";
-  // A concrete worked example, not just an abstract rule, since asking a
-  // question via a "failure" response is an unusual enough pattern that a
-  // smaller model needs a literal example to reliably converge on it instead
-  // of retrying the action or exhausting the step budget.
+  // A concrete worked example helps the smaller model stop at the normal
+  // confirmation boundary instead of retrying the action.
   assert.match(prompt, /normal, expected stop, not a failed attempt to fix/);
   assert.match(
     prompt,
-    /"respond","outcome":"failure","message":"Switch execution mode from Auto to Full Access\?/,
+    /"respond","message":"Switch execution mode from Auto to Full Access\?/,
   );
   assert.match(prompt, /never substitute a human-readable label, different casing/);
 });
@@ -1147,7 +1139,7 @@ test("open_packs is additive and reveals only the opened packs' skills before a 
       arguments: {},
       authorization: "user_authorized",
     },
-    { type: "respond", outcome: "success", message: "Done." },
+    { type: "respond", message: "Done." },
   ];
   const planner: AgentPlanner = {
     async decide(context) {
@@ -1212,7 +1204,7 @@ test("open_packs is rejected once the skill scope is frozen", async () => {
       authorization: "user_authorized",
     },
     { type: "open_packs", packs: ["alpha"] },
-    { type: "respond", outcome: "success", message: "Done." },
+    { type: "respond", message: "Done." },
   ];
   const planner: AgentPlanner = {
     async decide(context) {
@@ -1254,7 +1246,7 @@ test("an invalid open_packs request is corrected without crashing the run", asyn
       arguments: {},
       authorization: "user_authorized",
     },
-    { type: "respond", outcome: "success", message: "Done." },
+    { type: "respond", message: "Done." },
   ];
   const planner: AgentPlanner = {
     async decide(context) {
@@ -1335,4 +1327,302 @@ test("the unscoped planner prompt scales with pack count, not with each pack's s
     perExtraPackCost < 600,
     `Expected roughly constant per-pack prompt cost, got ${perExtraPackCost.toFixed(1)} characters/pack (small=${smallPrompt.length}, large=${largePrompt.length}).`,
   );
+});
+
+test("an opened pack remains callable across a discovered find-then-read chain", async () => {
+  const packs = new PackRegistry();
+  packs.register({ name: "google", description: "Google workspace tools." });
+  const registry = new SkillRegistry(packs);
+  const calls: string[] = [];
+  registry.register({
+    ...fixtureSkill("sheets_find", "google"),
+    async execute() {
+      calls.push("sheets_find");
+      return { success: true, data: { matches: [{ id: "sheet-1" }] } };
+    },
+  });
+  registry.register({
+    ...fixtureSkill("sheets_read", "google"),
+    async execute() {
+      calls.push("sheets_read");
+      return { success: true, data: { values: [["total", "1250"]] } };
+    },
+  });
+
+  const contexts: AgentPlanningContext[] = [];
+  const decisions: AgentDecision[] = [
+    { type: "open_packs", packs: ["google"] },
+    {
+      type: "skill_call",
+      skill: "sheets_find",
+      selectedSkills: ["sheets_find"],
+      arguments: {},
+      authorization: "user_authorized",
+    },
+    {
+      type: "skill_call",
+      skill: "sheets_read",
+      selectedSkills: ["sheets_find", "sheets_read"],
+      arguments: {},
+      authorization: "user_authorized",
+    },
+    { type: "respond", message: "The total is INR 1,250." },
+  ];
+  const loop = new AgentLoop(
+    {
+      async decide(context) {
+        contexts.push(context);
+        const decision = decisions.shift();
+        if (!decision) throw new Error("No fake decision available.");
+        return decision;
+      },
+    },
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+    12,
+  );
+
+  const result = await loop.run(request);
+
+  assert.deepEqual(calls, ["sheets_find", "sheets_read"]);
+  assert.equal(result.response, "The total is INR 1,250.");
+  assert.deepEqual(
+    contexts[2]?.skills.map((skill) => skill.name).sort(),
+    ["sheets_find", "sheets_read"],
+  );
+});
+
+test("a direct multi-pack plan freezes every validated selected skill pack", async () => {
+  const packs = new PackRegistry();
+  packs.register({ name: "alpha", description: "Alpha tools." });
+  packs.register({ name: "beta", description: "Beta tools." });
+  const registry = new SkillRegistry(packs);
+  const calls: string[] = [];
+  registry.register({
+    ...fixtureSkill("alpha_skill", "alpha"),
+    async execute() {
+      calls.push("alpha_skill");
+      return { success: true, data: {} };
+    },
+  });
+  registry.register({
+    ...fixtureSkill("beta_skill", "beta"),
+    async execute() {
+      calls.push("beta_skill");
+      return { success: true, data: {} };
+    },
+  });
+
+  const contexts: AgentPlanningContext[] = [];
+  const decisions: AgentDecision[] = [
+    {
+      type: "skill_call",
+      skill: "alpha_skill",
+      selectedSkills: ["alpha_skill", "beta_skill"],
+      arguments: {},
+      authorization: "user_authorized",
+    },
+    {
+      type: "skill_call",
+      skill: "beta_skill",
+      selectedSkills: ["alpha_skill", "beta_skill"],
+      arguments: {},
+      authorization: "user_authorized",
+    },
+    { type: "respond", message: "Both packs completed." },
+  ];
+  const loop = new AgentLoop(
+    {
+      async decide(context) {
+        contexts.push(context);
+        const decision = decisions.shift();
+        if (!decision) throw new Error("No fake decision available.");
+        return decision;
+      },
+    },
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+    12,
+  );
+
+  const result = await loop.run(request);
+
+  assert.deepEqual(calls, ["alpha_skill", "beta_skill"]);
+  assert.equal(result.response, "Both packs completed.");
+  assert.deepEqual(
+    contexts[1]?.skills.map((skill) => skill.name).sort(),
+    ["alpha_skill", "beta_skill"],
+  );
+});
+
+test("planner repairs a visible skill name used as the skill_call discriminator", async () => {
+  let providerCalls = 0;
+  const planner = new ShivaAgentPlanner({
+    async chat() {
+      providerCalls += 1;
+      return {
+        content:
+          '{"type":"sheets_find","skill":"sheets_find","selectedSkills":["sheets_find"],"arguments":{"query":"Expense 2026"},"authorization":"user_authorized"}',
+      };
+    },
+    async *streamChat() {
+      throw new Error("Planner decisions must use structured chat().");
+    },
+  });
+
+  const decision = await planner.decide({
+    request: { ...request, userMessage: "Find Expense 2026." },
+    packs: [],
+    openPacks: ["google"],
+    skills: [
+      {
+        name: "sheets_find",
+        description: "Finds a spreadsheet.",
+        inputDescription: '{ "query": string }',
+        configured: true,
+        pack: "google",
+        execution: { mutability: "read", impact: "normal" },
+      },
+    ],
+    observations: [],
+    step: 1,
+    maxSteps: 12,
+    now: new Date("2026-08-20T00:00:00Z"),
+  });
+
+  assert.deepEqual(decision, {
+    type: "skill_call",
+    skill: "sheets_find",
+    selectedSkills: ["sheets_find"],
+    arguments: { query: "Expense 2026" },
+    authorization: "user_authorized",
+  });
+  assert.equal(providerCalls, 1);
+});
+
+test("two invalid planner outputs after execution stop without consuming twelve steps", async () => {
+  const packs = new PackRegistry();
+  packs.register({ name: "alpha", description: "Alpha tools." });
+  const registry = new SkillRegistry(packs);
+  let executions = 0;
+  registry.register({
+    ...fixtureSkill("alpha_skill", "alpha"),
+    async execute() {
+      executions += 1;
+      return { success: true, data: { done: true } };
+    },
+  });
+  const replies = [
+    '{"type":"open_packs","packs":["alpha"]}',
+    '{"type":"skill_call","skill":"alpha_skill","selectedSkills":["alpha_skill"],"arguments":{},"authorization":"user_authorized"}',
+    '{"type":"not_a_decision"}',
+    '{"type":"not_a_decision"}',
+  ];
+  let providerCalls = 0;
+  const planner = new ShivaAgentPlanner({
+    async chat() {
+      providerCalls += 1;
+      const content = replies.shift();
+      if (!content) throw new Error("No fake provider reply available.");
+      return { content };
+    },
+    async *streamChat() {
+      throw new Error("Planner decisions must use structured chat().");
+    },
+  });
+  const loop = new AgentLoop(
+    planner,
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+    12,
+  );
+
+  const result = await loop.run(request);
+
+  assert.equal(executions, 1);
+  assert.equal(providerCalls, 4);
+  assert.equal(result.steps, 3);
+  assert.match(result.response ?? "", /invalid structured output twice/i);
+});
+
+test("a successful empty search can produce an honest no-match response", async () => {
+  const registry = new SkillRegistry();
+  registry.register({
+    ...fixtureSkill("sheets_find", "google"),
+    async execute() {
+      return { success: true, data: { matches: [] } };
+    },
+  });
+  const decisions: AgentDecision[] = [
+    {
+      type: "skill_call",
+      skill: "sheets_find",
+      selectedSkills: ["sheets_find"],
+      arguments: {},
+      authorization: "user_authorized",
+    },
+    {
+      type: "respond",
+      message: "I couldn't find a spreadsheet matching that name.",
+    },
+  ];
+  const loop = new AgentLoop(
+    {
+      async decide() {
+        const decision = decisions.shift();
+        if (!decision) throw new Error("No fake decision available.");
+        return decision;
+      },
+    },
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+    12,
+  );
+
+  const result = await loop.run(request);
+
+  assert.equal(
+    result.response,
+    "I couldn't find a spreadsheet matching that name.",
+  );
+  assert.deepEqual(result.observations[0]?.result, {
+    success: true,
+    data: { matches: [] },
+  });
+});
+
+test("the current corrective task follows reference history in planner input", async () => {
+  const inputs: ChatInput[] = [];
+  const planner = new ShivaAgentPlanner({
+    async chat(input) {
+      inputs.push(input);
+      return { content: '{"type":"direct_chat"}' };
+    },
+    async *streamChat() {
+      throw new Error("Planner decisions must use structured chat().");
+    },
+  });
+  await planner.decide({
+    request: {
+      ...request,
+      userMessage: "Expense 2026 sorry",
+      contextMessages: [
+        { role: "user", content: "Find Expenses 2026" },
+        { role: "assistant", content: "I couldn't find it." },
+      ],
+    },
+    packs: [],
+    openPacks: [],
+    skills: [],
+    observations: [],
+    step: 1,
+    maxSteps: 12,
+    now: new Date("2026-08-20T00:00:00Z"),
+  });
+
+  const iteration = inputs[0]?.messages[1]?.content ?? "";
+  const parsed = JSON.parse(iteration) as Record<string, unknown>;
+  assert.equal(parsed.task, "Expense 2026 sorry");
+  assert.match(String(parsed.taskRule), /supersedes conflicting names/i);
+  assert.ok(iteration.indexOf("Expense 2026 sorry") > iteration.indexOf("Expenses 2026"));
 });

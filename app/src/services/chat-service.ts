@@ -156,7 +156,7 @@ export class ShivaChatService {
             // The agent planner owns its system contract. Preserve voice,
             // memory, and conversation context without injecting the direct
             // chat system prompt as a competing planner instruction.
-            contextMessages: messages.slice(1),
+            contextMessages: priorPlannerContext(messages, message),
             ...(signal ? { signal } : {}),
           })
         : undefined;
@@ -339,6 +339,17 @@ function buildMessages(
       content: message.content,
     })),
   ];
+}
+
+function priorPlannerContext(
+  messages: readonly ChatMessage[],
+  currentUserMessage: string,
+): readonly ChatMessage[] {
+  const withoutCoreSystemPrompt = messages.slice(1);
+  const latest = withoutCoreSystemPrompt.at(-1);
+  return latest?.role === "user" && latest.content === currentUserMessage
+    ? withoutCoreSystemPrompt.slice(0, -1)
+    : withoutCoreSystemPrompt;
 }
 
 function explicitMemoryInstruction(result: ExplicitMemoryResult): ChatMessage {

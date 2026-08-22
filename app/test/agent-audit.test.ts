@@ -82,7 +82,6 @@ test("agent and skill success are auditable around actual execution", async () =
           }
         : {
             type: "respond" as const,
-            outcome: "success" as const,
             message: "Recorded.",
           };
     },
@@ -181,7 +180,6 @@ test("expense agent and skill audit payloads are redacted without changing obser
     },
     {
       type: "respond" as const,
-      outcome: "success" as const,
       message: "Recorded SECRET_DINNER_DESCRIPTION; total is 987654.",
     },
   ];
@@ -348,7 +346,6 @@ test("agent requests are redacted while non-expense skill payloads remain intact
     },
     {
       type: "respond" as const,
-      outcome: "success" as const,
       message: "PRIVATE_WEB_ANSWER",
     },
   ];

@@ -50,12 +50,24 @@ export interface DeviceCommandResult {
   readonly error?: string;
 }
 
+/** Small metadata fields (name, phone, mime, etc.). */
+const DEVICE_RESULT_FIELD_MAX = 2_000;
+/** Base64 JPEG from the phone can be up to ~512 KiB raw (~700 KiB encoded). */
+const DEVICE_RESULT_IMAGE_FIELD_MAX = 1_500_000;
+
+const deviceCommandStatusSchema = z.preprocess((value) => {
+  if (typeof value === "string") return value.trim().toUpperCase();
+  return value;
+}, z.enum(DEVICE_COMMAND_STATUSES));
+
+const deviceCommandResultValueSchema = z.string().max(DEVICE_RESULT_IMAGE_FIELD_MAX);
+
 const deviceCommandResultSchema = z
   .object({
     commandId: z.string().trim().min(1).max(200),
-    status: z.enum(DEVICE_COMMAND_STATUSES),
-    result: z.record(z.string(), z.string().max(2_000)).optional(),
-    error: z.string().max(2_000).optional(),
+    status: deviceCommandStatusSchema,
+    result: z.record(z.string(), deviceCommandResultValueSchema).optional(),
+    error: z.string().max(DEVICE_RESULT_FIELD_MAX).optional(),
   })
   .strict();
 

@@ -24,13 +24,12 @@ export type AgentDecision =
     }
   | {
       readonly type: "respond";
-      readonly outcome: "success" | "failure";
       readonly message: string;
     }
   | {
       readonly type: "skill_call";
       readonly skill: string;
-      /** Immutable request scope selected from the original user task. */
+      /** Skills the current plan relies on; pack scope remains authoritative. */
       readonly selectedSkills: readonly string[];
       readonly arguments: Readonly<Record<string, unknown>>;
       /** Planner interpretation only; runtime metadata remains authoritative. */

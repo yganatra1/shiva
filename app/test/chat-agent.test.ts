@@ -149,3 +149,70 @@ test("agent cancellation uses the existing public cancellation contract", async 
     error: { code: "REQUEST_CANCELLED", message: "The request was cancelled." },
   });
 });
+
+test("a corrective follow-up is the sole current task and is not duplicated into reference context", async (context) => {
+  const repository = new InMemoryRepository();
+  const requests: Parameters<AgentOrchestratorPort["run"]>[0][] = [];
+  const provider: AIProvider = {
+    async chat() {
+      return { content: '{"memories":[]}' };
+    },
+    async *streamChat() {
+      throw new Error("Agent responses should bypass direct chat streaming.");
+    },
+  };
+  const app = createApp(testConfig, {
+    ...createTestOverrides(provider, repository),
+    agentOrchestrator: {
+      async run(request) {
+        requests.push(request);
+        return {
+          kind: "response",
+          runId: "90000000-0000-4000-8000-000000000011",
+          response: requests.length === 1 ? "No match." : "Found it.",
+          steps: 2,
+          observations: [],
+        };
+      },
+    },
+  });
+  context.after(() => app.close());
+
+  const first = await app.inject({
+    method: "POST",
+    url: "/chat",
+    headers: { "content-type": "application/json" },
+    payload: { message: "Find Expenses 2026" },
+  });
+  const conversationId = first.headers["x-shiva-conversation-id"];
+  assert.equal(typeof conversationId, "string");
+
+  const second = await app.inject({
+    method: "POST",
+    url: "/chat",
+    headers: { "content-type": "application/json" },
+    payload: {
+      message: "Expense 2026 sorry",
+      conversationId,
+    },
+  });
+
+  assert.equal(second.statusCode, 200);
+  assert.equal(requests[1]?.userMessage, "Expense 2026 sorry");
+  assert.ok(
+    requests[1]?.contextMessages.some(
+      (message) => message.role === "user" && message.content === "Find Expenses 2026",
+    ),
+  );
+  assert.ok(
+    requests[1]?.contextMessages.some(
+      (message) => message.role === "assistant" && message.content === "No match.",
+    ),
+  );
+  assert.equal(
+    requests[1]?.contextMessages.some(
+      (message) => message.role === "user" && message.content === "Expense 2026 sorry",
+    ),
+    false,
+  );
+});
