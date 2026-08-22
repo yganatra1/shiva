@@ -674,7 +674,7 @@ test("agent loop feeds an out-of-scope call back to the planner for correction",
   assert.equal(expenseExecutions, 0);
   assert.equal(webExecutions, 1);
   assert.equal(result.response, "Research complete.");
-  assert.match(contexts[1]?.plannerFeedback ?? "", /scope is frozen/i);
+  assert.match(contexts[1]?.plannerFeedback ?? "", /fixed to exactly these skills/i);
 });
 
 test("agent loop never executes a repeated adversarial cross-skill call", async () => {
@@ -1187,9 +1187,12 @@ test("open_packs is additive and reveals only the opened packs' skills before a 
     ["alpha_skill", "beta_skill"],
   );
 
+  // Freezing preserves every pack that was opened, not just the called
+  // skill's own pack — alpha_skill stays reachable even though the frozen
+  // skill_call named only beta_skill.
   assert.deepEqual(
-    contexts[3]?.skills.map((skill) => skill.name),
-    ["beta_skill"],
+    contexts[3]?.skills.map((skill) => skill.name).sort(),
+    ["alpha_skill", "beta_skill"],
   );
 });
 

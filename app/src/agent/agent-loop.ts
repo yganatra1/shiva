@@ -103,14 +103,37 @@ export class AgentLoop {
       ...request,
       signal: scopedSignal,
     };
+    // selectedSkills is set only when the *incoming request itself* was
+    // pre-scoped to exact skill names (an external caller's hard cap, e.g.
+    // tests) — that exact-match behavior is preserved unchanged below. The
+    // normal path a real task takes is openPacks -> frozenPacks: once the
+    // first skill_call happens, the pack(s) involved become frozen for the
+    // rest of the run, and any skill within those packs may be called from
+    // then on without having been named in advance. declaredSkills is just
+    // the most recent skill_call's own bookkeeping, used only to check at
+    // respond time that whatever the planner says it relied on was actually
+    // attempted — it does not gate execution and never has to be repeated
+    // verbatim across calls.
     let selectedSkills: readonly string[] | undefined;
     let openPacks: readonly string[] | undefined;
+    let frozenPacks: readonly string[] | undefined;
+    let declaredSkills: readonly string[] | undefined;
     let pendingConfirmation:
       | Awaited<ReturnType<SkillExecutor["getPendingConfirmation"]>>
       | undefined;
     let plannerFeedback: string | undefined;
+    let lastFeedback: string | undefined;
+    let repeatedFeedbackCount = 0;
     let plannerFallbackReason: "INVALID_OUTPUT" | "INVALID_SCOPE" =
       "INVALID_OUTPUT";
+
+    const currentAllowedSkills = (): readonly string[] | undefined =>
+      selectedSkills ??
+      (frozenPacks
+        ? skillsInPacks(this.registry, frozenPacks)
+        : openPacks
+          ? skillsInPacks(this.registry, openPacks)
+          : undefined);
 
     const fallBackToCore = async (
       reason: "INVALID_OUTPUT" | "INVALID_SCOPE",
@@ -144,27 +167,65 @@ export class AgentLoop {
       for (let step = 1; step <= this.maxSteps; step += 1) {
         completedSteps = step;
         throwIfAborted(baseRequest.signal);
-        const scopedRequest: AgentRequest = selectedSkills
-          ? { ...baseRequest, allowedSkills: selectedSkills }
+        const allowedNow = currentAllowedSkills();
+        const scopedRequest: AgentRequest = allowedNow
+          ? { ...baseRequest, allowedSkills: allowedNow }
           : withoutSkillScope(baseRequest);
         const correctionForAttempt = plannerFeedback;
         plannerFeedback = undefined;
         if (correctionForAttempt) {
+          if (correctionForAttempt === lastFeedback) {
+            repeatedFeedbackCount += 1;
+          } else {
+            lastFeedback = correctionForAttempt;
+            repeatedFeedbackCount = 1;
+          }
           this.onTrace?.(
-            { runId, step, correctionForAttempt },
+            { runId, step, correctionForAttempt, repeatedFeedbackCount },
             "agent loop feeding correction into next call",
           );
+          // The exact same correction already failed to change the planner's
+          // behavior once; sending it a third time is very unlikely to work
+          // and just burns the remaining step budget. Stop and finalize with
+          // whatever grounded evidence already exists instead.
+          if (repeatedFeedbackCount >= 2) {
+            this.onTrace?.(
+              { runId, step, correctionForAttempt },
+              "agent loop aborting after repeated identical correction",
+            );
+            await this.finishAuditSafely(
+              runId,
+              observations.length > 0 ? "succeeded" : "max_steps",
+              completedSteps,
+              "RepeatedPlannerCorrection",
+              monotonicStartedAt,
+            );
+            if (observations.length === 0) {
+              return {
+                kind: "direct_chat",
+                runId,
+                response: undefined,
+                steps: completedSteps,
+                observations: [],
+                plannerFallback: "INVALID_OUTPUT",
+              };
+            }
+            return {
+              kind: "response",
+              runId,
+              response: buildMaxStepsResponse(observations),
+              steps: completedSteps,
+              observations: [...observations],
+            };
+          }
         }
         const planningContext = {
           request: scopedRequest,
           packs: this.registry.listPacks(),
           openPacks: openPacks ?? [],
-          skills: selectedSkills
-            ? allowedSkillSummaries(this.registry, selectedSkills)
-            : allowedSkillSummaries(
-                this.registry,
-                openPacks ? skillsInPacks(this.registry, openPacks) : [],
-              ),
+          skills: allowedNow
+            ? allowedSkillSummaries(this.registry, allowedNow)
+            : [],
           observations: [...observations],
           step,
           maxSteps: this.maxSteps,
@@ -181,6 +242,7 @@ export class AgentLoop {
           if (
             error instanceof AgentPlannerError &&
             !selectedSkills &&
+            !frozenPacks &&
             observations.length === 0
           ) {
             return await fallBackToCore("INVALID_OUTPUT", step);
@@ -200,7 +262,7 @@ export class AgentLoop {
           decision.type === "approve_confirmation" ||
           decision.type === "deny_confirmation"
         ) {
-          if (selectedSkills || observations.length > 0) {
+          if (selectedSkills || frozenPacks || observations.length > 0) {
             plannerFeedback =
               "Confirmation resolution was rejected because this run has already started another execution. Continue the active frozen plan and do not approve or deny a different pending action.";
             continue;
@@ -236,6 +298,7 @@ export class AgentLoop {
             continue;
           }
           selectedSkills = [resolved.skill];
+          declaredSkills = [resolved.skill];
           pendingConfirmation = undefined;
           observations.push({
             step,
@@ -247,7 +310,7 @@ export class AgentLoop {
         }
 
         if (decision.type === "open_packs") {
-          if (selectedSkills) {
+          if (selectedSkills || frozenPacks) {
             plannerFeedback =
               "open_packs was rejected because this run's skill scope is already frozen. Continue with an allowed skill_call within the frozen scope, or return a grounded response.";
             continue;
@@ -269,31 +332,71 @@ export class AgentLoop {
           continue;
         }
 
-        let validatedScope: readonly string[] | undefined;
         if (decision.type === "skill_call") {
-          try {
-            validatedScope = freezeSkillScope(
-              selectedSkills,
-              decision.selectedSkills,
-              decision.skill,
-              this.registry,
-            );
-          } catch (error: unknown) {
-            if (!(error instanceof AgentEvidenceError)) throw error;
-            plannerFallbackReason = "INVALID_SCOPE";
-            const validNames = this.registry
-              .list()
-              .map((skill) => skill.name)
-              .join(", ");
-            plannerFeedback = selectedSkills
-              ? `Your previous skill_call was rejected because this run's skill scope is frozen. Repeat exactly selectedSkills=${JSON.stringify(selectedSkills)} and call only one of those skills. Preserve the current task and existing observations.`
-              : `Your previous skill_call used an invalid called skill or scope. Choose a called skill only from this exact registered list: ${validNames}. selectedSkills must contain unique registered names, include the called skill, and be the complete minimal set for the current task.`;
-            continue;
+          if (selectedSkills) {
+            // Externally pre-scoped request: preserve the original hard,
+            // exact-name cap unchanged — this path is for callers (tests,
+            // future restricted integrations) that deliberately want a
+            // narrower boundary than "the whole pack", not for a normal task.
+            try {
+              declaredSkills = validateDeclaredSkills(
+                decision.selectedSkills,
+                decision.skill,
+                this.registry,
+              );
+              if (!selectedSkills.includes(decision.skill)) {
+                throw new AgentEvidenceError(
+                  "The planner selected a skill outside the request's fixed scope.",
+                );
+              }
+            } catch (error: unknown) {
+              if (!(error instanceof AgentEvidenceError)) throw error;
+              plannerFallbackReason = "INVALID_SCOPE";
+              plannerFeedback = `Your previous skill_call was rejected because this request is fixed to exactly these skills: ${selectedSkills.join(", ")}. Call one of those, or return a grounded response.`;
+              continue;
+            }
+          } else {
+            try {
+              if (!this.registry.has(decision.skill)) {
+                throw new AgentEvidenceError("The planner selected an unknown skill.");
+              }
+              if (!frozenPacks) {
+                // First real skill_call of the run: freeze the pack(s) now.
+                // Packs already opened via open_packs are kept; a model that
+                // skipped open_packs and named a known skill directly freezes
+                // to just that skill's own pack.
+                frozenPacks = openPacks ?? [this.registry.get(decision.skill).pack];
+              }
+              const allowedInFrozenPacks = skillsInPacks(this.registry, frozenPacks);
+              if (!allowedInFrozenPacks.includes(decision.skill)) {
+                throw new AgentEvidenceError(
+                  "The planner selected a skill outside this run's frozen packs.",
+                );
+              }
+              declaredSkills = validateDeclaredSkills(
+                decision.selectedSkills,
+                decision.skill,
+                this.registry,
+              );
+            } catch (error: unknown) {
+              if (!(error instanceof AgentEvidenceError)) throw error;
+              plannerFallbackReason = "INVALID_SCOPE";
+              if (frozenPacks) {
+                plannerFeedback = `Your previous skill_call was rejected: '${decision.skill}' is not in this run's frozen pack(s) (${frozenPacks.join(", ")}). Call a skill from an already-frozen pack, or return a grounded response — packs cannot be opened or changed once execution has started.`;
+              } else {
+                const validNames = this.registry
+                  .list()
+                  .map((skill) => skill.name)
+                  .join(", ");
+                plannerFeedback = `Your previous skill_call used an invalid or unregistered skill/selectedSkills value. Choose a called skill only from this exact registered list: ${validNames}. selectedSkills must contain unique registered names and include the called skill.`;
+              }
+              continue;
+            }
           }
         }
 
         if (decision.type === "direct_chat") {
-          if (selectedSkills || observations.length > 0) {
+          if (selectedSkills || frozenPacks || observations.length > 0) {
             plannerFeedback =
               "direct_chat was rejected because skill execution has already started. Keep the existing frozen scope and observations. Call another allowed skill if more evidence is needed, or return a grounded respond decision whose outcome matches the observations.";
             continue;
@@ -317,7 +420,7 @@ export class AgentLoop {
         }
 
         if (decision.type === "describe_capabilities") {
-          if (selectedSkills || observations.length > 0) {
+          if (selectedSkills || frozenPacks || observations.length > 0) {
             plannerFeedback =
               "describe_capabilities was rejected because this turn is already executing a task. Continue the existing frozen plan using its observations, then return a grounded respond decision.";
             continue;
@@ -341,7 +444,7 @@ export class AgentLoop {
         }
 
         if (decision.type === "clarify") {
-          if (selectedSkills || observations.length > 0) {
+          if (selectedSkills || frozenPacks || observations.length > 0) {
             plannerFeedback =
               "clarify was rejected because execution has already begun. Do not pause or promise future work. Use the existing observations, call another skill inside the exact frozen scope if needed, or return a grounded success/failure response.";
             continue;
@@ -366,11 +469,11 @@ export class AgentLoop {
 
         if (decision.type === "respond") {
           try {
-            assertResponseEvidence(decision, selectedSkills, observations);
+            assertResponseEvidence(decision, declaredSkills, observations);
           } catch (error: unknown) {
             if (!(error instanceof AgentEvidenceError)) throw error;
             plannerFeedback = buildResponseEvidenceFeedback(
-              selectedSkills,
+              declaredSkills,
               observations,
             );
             continue;
@@ -393,12 +496,11 @@ export class AgentLoop {
           return result;
         }
 
-        if (!validatedScope) {
+        if (decision.type !== "skill_call" || !declaredSkills) {
           throw new AgentEvidenceError(
             "The planner did not establish a valid skill scope.",
           );
         }
-        selectedSkills = validatedScope;
 
         const callKey = skillCallKey(decision);
         if (callKey && completedSkillCalls.has(callKey)) {
@@ -408,6 +510,7 @@ export class AgentLoop {
             : `The identical ${decision.skill} call with the same arguments already failed in this run${previous && !previous.success ? ` with code ${previous.error.code}` : ""}. It was not executed again. Use the existing failure observation to return a grounded failure, or choose a materially different allowed action.`;
           continue;
         }
+        const executionAllowedSkills = currentAllowedSkills();
         const result = await this.executor.execute(
           decision.skill,
           decision.arguments,
@@ -417,7 +520,7 @@ export class AgentLoop {
             userId: scopedRequest.userId,
             userName: scopedRequest.userName,
             timeZone: scopedRequest.timeZone,
-            allowedSkills: selectedSkills,
+            ...(executionAllowedSkills ? { allowedSkills: executionAllowedSkills } : {}),
             signal: scopedSignal,
             now: this.now,
           },
@@ -636,28 +739,16 @@ function initialSkillScope(
   return declared ? normalizeSkillScope(declared, registry) : undefined;
 }
 
-function freezeSkillScope(
-  current: readonly string[] | undefined,
-  proposed: readonly string[],
-  calledSkill: string,
-  registry: SkillRegistry,
-): readonly string[] {
-  const normalized = current
-    ? normalizeSkillScope(proposed, registry)
-    : normalizeInitialSkillScope(proposed, calledSkill, registry);
-  if (
-    current &&
-    (current.length !== normalized.length ||
-      current.some((skill, index) => skill !== normalized[index]))
-  ) {
-    throw new AgentEvidenceError(
-      "The planner attempted to change the request's skill scope.",
-    );
-  }
-  return current ?? normalized;
-}
-
-function normalizeInitialSkillScope(
+/**
+ * Format-only validation of a skill_call's declared selectedSkills: real
+ * registered names, unique, bounded, and including the called skill. Unlike
+ * the old freezeSkillScope, this never compares against a previous value —
+ * a task's declared plan is allowed to grow or change across steps as the
+ * planner discovers what it actually needs, as long as every skill it names
+ * stays inside whatever the true authorization boundary is (checked
+ * separately: the request's fixed scope, or this run's frozen packs).
+ */
+function validateDeclaredSkills(
   skills: readonly string[],
   calledSkill: string,
   registry: SkillRegistry,
@@ -665,9 +756,15 @@ function normalizeInitialSkillScope(
   if (!registry.has(calledSkill)) {
     throw new AgentEvidenceError("The planner selected an unknown skill.");
   }
-  const registered = skills.filter((skill) => registry.has(skill));
-  const normalized = [...new Set([...registered, calledSkill])].sort();
-  if (normalized.length > 16) {
+  if (skills.length === 0 || skills.length > 16) {
+    throw new AgentEvidenceError("The planner selected an invalid skill scope.");
+  }
+  const normalized = [...new Set(skills)].sort();
+  if (
+    normalized.length !== skills.length ||
+    normalized.some((skill) => !registry.has(skill)) ||
+    !normalized.includes(calledSkill)
+  ) {
     throw new AgentEvidenceError("The planner selected an invalid skill scope.");
   }
   return normalized;
@@ -690,30 +787,42 @@ function normalizeSkillScope(
   return normalized;
 }
 
+/**
+ * Deliberately does not require `outcome` to match tool success/failure: a
+ * skill can execute successfully and still find nothing (an empty search,
+ * zero matches), which is a completely valid, evidenced "failure" from the
+ * user's perspective despite success=true on the observation. Requiring the
+ * two to correspond forced the planner into an unwinnable choice and caused
+ * it to burn its whole step budget arguing with this exact check.
+ *
+ * Also deliberately does not require *every* declared skill to have been
+ * attempted, only at least one: a prerequisite failing is itself grounds to
+ * stop and report failure without needing to still attempt a now-pointless
+ * dependent step (e.g. a failed price lookup means never attempting the
+ * expense write that would have used that price — that is the *correct*
+ * behavior, not missing evidence). Precisely grounding what the message
+ * claims beyond "something relevant was actually tried" remains the
+ * planner's own responsibility, same as it already is for e.g. never
+ * claiming a specific success without a matching observation.
+ */
 function assertResponseEvidence(
   decision: Extract<import("./types.js").AgentDecision, { type: "respond" }>,
-  selectedSkills: readonly string[] | undefined,
+  declaredSkills: readonly string[] | undefined,
   observations: readonly AgentObservation[],
 ): void {
-  if (!selectedSkills) {
+  if (!declaredSkills) {
+    // No skill was ever called this run. That can still be a grounded
+    // "this truly cannot be done" — but never a claimed success, since
+    // nothing was actually attempted to verify one.
     if (decision.outcome === "failure" && observations.length === 0) return;
     throw new AgentEvidenceError(
       "The planner attempted to respond without selected tool evidence.",
     );
   }
-
-  const relevant = selectedSkills.map((skill) =>
-    observations.filter((observation) => observation.skill === skill),
+  const attempted = declaredSkills.some((skill) =>
+    observations.some((observation) => observation.skill === skill),
   );
-  const valid =
-    decision.outcome === "success"
-      ? relevant.every((entries) =>
-          entries.some((observation) => observation.result.success),
-        )
-      : relevant.some((entries) =>
-          entries.some((observation) => !observation.result.success),
-        );
-  if (!valid) {
+  if (!attempted) {
     throw new AgentEvidenceError(
       "The planner attempted to respond without required tool evidence.",
     );
@@ -721,13 +830,13 @@ function assertResponseEvidence(
 }
 
 function buildResponseEvidenceFeedback(
-  selectedSkills: readonly string[] | undefined,
+  declaredSkills: readonly string[] | undefined,
   observations: readonly AgentObservation[],
 ): string {
-  if (!selectedSkills) {
-    return "Your respond decision was rejected because no skill plan or tool evidence exists. Choose direct_chat for an ordinary tool-free answer, choose a skill_call when the task requires a registered capability, or return a failure response only when the task truly cannot proceed.";
+  if (!declaredSkills) {
+    return "Your respond decision was rejected because no skill plan or tool evidence exists. Choose direct_chat for an ordinary tool-free answer, choose a skill_call when the task requires a registered capability, or return a response only after you have actually called something.";
   }
-  const status = selectedSkills.map((skill) => {
+  const status = declaredSkills.map((skill) => {
     const results = observations
       .filter((observation) => observation.skill === skill)
       .map((observation) =>
@@ -735,7 +844,7 @@ function buildResponseEvidenceFeedback(
       );
     return `${skill}=${results.length > 0 ? results.join("|") : "not-called"}`;
   });
-  return `Your respond decision was rejected because its outcome was not supported by the required tool evidence. Evidence status: ${status.join(", ")}. A success response requires at least one success for every frozen skill. A failure response requires at least one failed frozen-skill observation. Call missing skills or return the supported outcome without inventing results.`;
+  return `Your respond decision was rejected because none of the skills in selectedSkills were actually called this run. Evidence status: ${status.join(", ")}. Call at least one of them, or return a respond decision whose selectedSkills includes something you already attempted — its outcome does not need to match whether that call found something, and you do not need to have attempted every skill you named.`;
 }
 
 function buildMaxStepsResponse(
