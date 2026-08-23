@@ -349,7 +349,17 @@ class InsightFaceEngine:
     ) -> AnalysisResult:
         image, width, height = self._decode_image(encoded_image)
         try:
-            raw_faces = model.analyzer.get(image, max_num=max_faces)
+            with warnings.catch_warnings():
+                # InsightFace currently calls the deprecated instance form of
+                # skimage's SimilarityTransform. It is harmless today but can
+                # emit once per aligned face and flood supervised-service logs.
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"`estimate` is deprecated.*",
+                    category=FutureWarning,
+                    module=r"insightface\.utils\.face_align",
+                )
+                raw_faces = model.analyzer.get(image, max_num=max_faces)
         except Exception as error:
             raise FaceEngineError(
                 "InsightFace detection or recognition failed.",

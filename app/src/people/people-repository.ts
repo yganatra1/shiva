@@ -402,8 +402,11 @@ export class DrizzlePeopleRepository implements PeopleRepositoryPort {
     // incorrectly suppress the ambiguity safeguard.
     const ranked = this.database
       .select({
-        sampleId: personFaceEmbeddings.id,
-        personId: people.id,
+        // Drizzle preserves physical column names inside subqueries. Both
+        // joined tables expose `id`, so give them distinct SQL aliases before
+        // the outer query references them.
+        sampleId: sql<string>`${personFaceEmbeddings.id}`.as("sample_id"),
+        personId: sql<string>`${people.id}`.as("person_id"),
         displayName: people.displayName,
         similarity,
         qualityScore: personFaceEmbeddings.qualityScore,
