@@ -1,4 +1,4 @@
-import type { AudibleWindow, AudioPlaybackPlan } from "../audio-scheduling.js";
+import type { AudibleWindow, AudioPlaybackPlan } from "../audio-scheduling";
 
 export interface AudioBufferLike {
   readonly numberOfChannels: number;

@@ -1,12 +1,13 @@
 import { z } from "zod";
 
-import type { AIProvider } from "../../brain/ai-provider.js";
+import type { AIProvider } from "../../brain/ai-provider";
 import {
   deviceErrorToFailure,
   type DeviceCommandDispatcher,
-} from "../../device/device-command-dispatcher.js";
-import { defineSkill } from "../define-skill.js";
-import type { SkillContext, SkillResult } from "../types.js";
+} from "../../device/device-command-dispatcher";
+import type { FaceRecognitionService } from "../../face/face-recognition-service";
+import { defineSkill } from "../define-skill";
+import type { SkillContext, SkillResult } from "../types";
 
 const inputSchema = z.object({});
 
@@ -17,10 +18,20 @@ export interface DeviceCameraCaptureOutput {
   readonly description?: string;
   /** Present instead of description when capture succeeded but describing it didn't. */
   readonly note?: string;
+  readonly recognizedPeople?: readonly {
+    readonly personId: string;
+    readonly name: string;
+    readonly isOwner: boolean;
+    readonly relationship: string | null;
+    readonly aliases: readonly string[];
+    readonly details: Readonly<Record<string, string>>;
+    readonly similarity: number;
+  }[];
+  readonly unknownFaceCount?: number;
 }
 
 const DESCRIBE_PROMPT =
-  "Describe what is in this photo in 2-3 concise, factual sentences. Mention specific visible objects, people, text, or setting if relevant.";
+  "Describe what is in this photo in 2-3 concise, factual sentences. Mention visible objects, people, text, or setting if relevant, but do not guess anyone's identity from appearance.";
 
 // The exact field the device puts base64 image bytes under isn't pinned down
 // yet in the wire contract, so this checks the plausible candidates in order
@@ -38,11 +49,12 @@ const IMAGE_FIELD_CANDIDATES = [
 export function createDeviceCameraCaptureSkill(
   dispatcher?: DeviceCommandDispatcher,
   provider?: AIProvider,
+  recognition?: Pick<FaceRecognitionService, "identify">,
 ) {
   return defineSkill<DeviceCameraCaptureInput, DeviceCameraCaptureOutput>({
     name: "device_camera_capture",
     description:
-      "Takes a photo through the connected phone's camera and describes what's in it in plain text. Requires the phone to be connected right now.",
+      "Takes a photo through the connected phone's camera, describes it, and locally recognizes any enrolled people. Requires the phone to be connected right now.",
     inputDescription: "{}",
     pack: "device",
     inputSchema,
@@ -91,17 +103,17 @@ export function createDeviceCameraCaptureSkill(
             },
           };
         }
-        if (!provider) {
-          return {
-            success: true,
-            data: {
-              status: result.status,
-              note: "Photo captured, but no model is configured to describe it.",
-            },
-          };
-        }
-
-        const description = await describePhoto(provider, imageBase64, context.signal);
+        const description = provider
+          ? await describePhoto(provider, imageBase64, context.signal)
+          : undefined;
+        const identities = recognition
+          ? await recognizePhoto(
+              recognition,
+              context.userId,
+              imageBase64,
+              context.signal,
+            )
+          : undefined;
         return {
           success: true,
           data: {
@@ -109,8 +121,16 @@ export function createDeviceCameraCaptureSkill(
             ...(description
               ? { description }
               : {
-                  note: "Photo captured, but it could not be described (the configured model may not support vision).",
+                  note: provider
+                    ? "Photo captured, but it could not be described (the configured model may not support vision)."
+                    : "Photo captured, but no model is configured to describe it.",
                 }),
+            ...(identities?.recognizedPeople.length
+              ? { recognizedPeople: identities.recognizedPeople }
+              : {}),
+            ...(identities && identities.unknownFaceCount > 0
+              ? { unknownFaceCount: identities.unknownFaceCount }
+              : {}),
           },
         };
       } catch (error: unknown) {
@@ -119,6 +139,43 @@ export function createDeviceCameraCaptureSkill(
       }
     },
   });
+}
+
+async function recognizePhoto(
+  recognition: Pick<FaceRecognitionService, "identify">,
+  userId: string,
+  imageBase64: string,
+  signal: AbortSignal | undefined,
+) {
+  try {
+    const result = await recognition.identify({
+      userId,
+      image: Buffer.from(imageBase64, "base64"),
+      contentType: "image/jpeg",
+      ...(signal ? { signal } : {}),
+    });
+    return {
+      recognizedPeople: result.faces.flatMap((face) =>
+        face.match
+          ? [
+              {
+                personId: face.match.person.id,
+                name: face.match.person.displayName,
+                isOwner: face.match.person.isOwner,
+                relationship: face.match.person.relationship,
+                aliases: face.match.person.aliases,
+                details: face.match.person.details,
+                similarity: face.match.similarity,
+              },
+            ]
+          : [],
+      ),
+      unknownFaceCount: result.faces.filter((face) => !face.match).length,
+    };
+  } catch (error: unknown) {
+    if (signal?.aborted) throw error;
+    return undefined;
+  }
 }
 
 function findImageBase64(

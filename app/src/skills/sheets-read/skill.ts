@@ -1,14 +1,14 @@
 import { z } from "zod";
 
-import { defineSkill } from "../define-skill.js";
-import type { SkillContext, SkillResult } from "../types.js";
+import { defineSkill } from "../define-skill";
+import type { SkillContext, SkillResult } from "../types";
 import {
   GoogleSheetsClient,
   SheetsClientError,
   sheetsErrorToFailure,
   type CellValue,
   type CreatedTab,
-} from "../../tools/sheets/client.js";
+} from "../../tools/sheets/client";
 
 const inputSchema = z.object({
   spreadsheetId: z.string().trim().min(5).max(256),

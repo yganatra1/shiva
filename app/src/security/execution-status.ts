@@ -1,6 +1,6 @@
-import type { ConfirmationService } from "./confirmation.js";
-import type { ExecutionMode } from "./execution-mode.js";
-import type { ExecutionStateService } from "./execution-state.js";
+import type { ConfirmationService } from "./confirmation";
+import type { ExecutionMode } from "./execution-mode";
+import type { ExecutionStateService } from "./execution-state";
 
 export interface ExecutionStatus {
   readonly executionMode: ExecutionMode;

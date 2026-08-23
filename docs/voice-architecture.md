@@ -84,6 +84,6 @@ With `SHIVA_PERF_LOG=true`, each turn emits `[SHIVA VOICE PERF]` (`audio-upload`
 
 ## Deliberate V0.3 limits
 
-No wake word, always-listening mode, streaming ASR, VAD, barge-in, speaker recognition, face recognition, voice cloning, Gujarati/Hindi TTS, tools/internet access, or replacement of Gemma.
+The voice layer itself adds no wake word, always-listening mode, streaming ASR, VAD, barge-in, speaker recognition, face enrollment, voice cloning, Gujarati/Hindi TTS, tools/internet access, or replacement of Gemma. Face recognition is a separate local identity subsystem used for uploaded photos and explicit device-camera captures.
 
 Qwen TTS remains batch-per-request: one completed WAV (then PCM strip) per speech chunk. Truly streaming TTS inference is out of scope for this architecture pass.

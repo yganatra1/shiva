@@ -4,8 +4,8 @@ import type {
   WebSearchInput,
   WebSearchResult,
   WebSearchToolPort,
-} from "./types.js";
-import { WebToolError } from "./types.js";
+} from "./types";
+import { WebToolError } from "./types";
 
 interface BraveWebSearchToolOptions {
   readonly apiKey: string;

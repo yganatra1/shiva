@@ -5,16 +5,16 @@ import {
   REDACTED_AGENT_REQUEST,
   type AgentAuditPort,
   type AgentRunStatus,
-} from "./audit.js";
-import type { SkillExecutor } from "../skills/executor.js";
-import type { SkillRegistry } from "../skills/registry.js";
+} from "./audit";
+import type { SkillExecutor } from "../skills/executor";
+import type { SkillRegistry } from "../skills/registry";
 import type {
   AgentObservation,
   AgentPlanner,
   AgentRequest,
   AgentRunResult,
-} from "./types.js";
-import { AgentPlannerError, type AgentTraceLogger } from "./planner.js";
+} from "./types";
+import { AgentPlannerError, type AgentTraceLogger } from "./planner";
 
 export const DEFAULT_MAX_AGENT_STEPS = 12;
 export const DEFAULT_AGENT_REQUEST_TIMEOUT_MS = 300_000;
@@ -630,7 +630,7 @@ export class AgentLoop {
 }
 
 function skillCallKey(
-  decision: Extract<import("./types.js").AgentDecision, { type: "skill_call" }>,
+  decision: Extract<import("./types").AgentDecision, { type: "skill_call" }>,
 ): string | undefined {
   try {
     return JSON.stringify({

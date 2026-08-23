@@ -1,4 +1,4 @@
-import { PackRegistry } from "./pack-registry.js";
+import { PackRegistry } from "./pack-registry";
 
 /**
  * The pack catalog is seeded statically and only contains packs that have at
@@ -36,6 +36,11 @@ export function createPackRegistry(): PackRegistry {
     name: "device",
     description:
       "Act through the connected Android phone: search contacts, place calls, read notifications, capture and describe photos.",
+  });
+  packs.register({
+    name: "people",
+    description:
+      "Look up people Shiva has been taught, their aliases, relationships, profile details, and face-enrollment status.",
   });
   return packs;
 }

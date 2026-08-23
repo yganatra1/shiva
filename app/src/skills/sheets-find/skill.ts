@@ -1,12 +1,12 @@
 import { z } from "zod";
 
-import { defineSkill } from "../define-skill.js";
-import type { SkillContext, SkillResult } from "../types.js";
+import { defineSkill } from "../define-skill";
+import type { SkillContext, SkillResult } from "../types";
 import {
   GoogleDriveClient,
   driveErrorToFailure,
   type DriveFile,
-} from "../../tools/drive/client.js";
+} from "../../tools/drive/client";
 
 const inputSchema = z.object({
   query: z.string().trim().min(1).max(200),

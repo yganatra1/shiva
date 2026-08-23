@@ -1,4 +1,4 @@
-import type { ChatMessage } from "../brain/ai-provider.js";
+import type { ChatMessage } from "../brain/ai-provider";
 
 export type MemoryType = "episodic" | "semantic";
 export type SemanticMemoryType =

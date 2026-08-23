@@ -1,11 +1,11 @@
 import { z } from "zod";
 
-import type { ShivaSkill } from "../types.js";
-import type { ExpenseInsertTool } from "../../tools/expenses/insert.js";
+import type { ShivaSkill } from "../types";
+import type { ExpenseInsertTool } from "../../tools/expenses/insert";
 import type {
   RecordExpenseInput,
   RecordExpenseOutput,
-} from "./types.js";
+} from "./types";
 
 const amountSchema = z
   .number()

@@ -1,9 +1,9 @@
 import { z } from "zod";
 
-import type { ShivaSkill } from "../types.js";
-import type { ExpenseListTool } from "../../tools/expenses/list.js";
-import type { ExpenseRecord } from "../../tools/expenses/types.js";
-import type { ExpenseReportInput, ExpenseReportOutput } from "./types.js";
+import type { ShivaSkill } from "../types";
+import type { ExpenseListTool } from "../../tools/expenses/list";
+import type { ExpenseRecord } from "../../tools/expenses/types";
+import type { ExpenseReportInput, ExpenseReportOutput } from "./types";
 
 const timestampSchema = z.string().trim().datetime({ offset: true });
 const MAX_DETAIL_ROWS = 25;

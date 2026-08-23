@@ -1,4 +1,4 @@
-# Shiva V0.2 memory architecture
+# Shiva memory and identity architecture
 
 Shiva V0.2 separates context by purpose instead of treating every prior message as one unlimited prompt.
 
@@ -33,6 +33,20 @@ Tools    = capabilities
 Security = authority
 ```
 
+Identity memory is a separate, explicit fourth data shape:
+
+```text
+people + aliases + structured details + notes
+                       |
+                       +-- person_face_embeddings vector(512)
+
+semantic / episodic memories -------- vector(768), embeddinggemma
+```
+
+The two vector spaces are never mixed. Face templates come from InsightFace and are used only for owner-scoped identity matching. Semantic and episodic memory continues to use `embeddinggemma` for language retrieval. The `people`, `person_aliases`, and `person_face_embeddings` tables give each explicitly taught person a durable entity. Public repository and API results omit the face vector and source-image hash.
+
+Person details become usable in two grounded paths. The read-only `people_search` skill lets the planner look up names, aliases, relationships, details, notes, and enrollment status. When an attached chat photo or device-camera result matches a gallery confidently and unambiguously, Shiva resolves the `person_id` to the same durable profile and supplies a bounded copy as untrusted context. Visual resemblance alone never creates a person or a guessed identity.
+
 Drizzle defines the PostgreSQL schema, builds typed repository queries, and applies versioned SQL. pgvector setup is committed in the initial migration. The repository interface keeps memory policy independent from Drizzle and PostgreSQL so unit tests remain self-contained.
 
-V0.2 deliberately does not add procedural memory, a knowledge graph, people tables, tools, browser access, voice, authentication, or a frontend.
+This identity extension remains intentionally narrower than a knowledge graph. It does not infer relationships, enroll faces implicitly, provide liveness detection, or use a face match as authentication or authorization.

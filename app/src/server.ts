@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 
-import { createApp } from "./app.js";
-import { ConfigurationError, loadConfig } from "./config/environment.js";
+import { createApp } from "./app";
+import { ConfigurationError, loadConfig } from "./config/environment";
 
 async function start(): Promise<void> {
   let app: FastifyInstance | undefined;

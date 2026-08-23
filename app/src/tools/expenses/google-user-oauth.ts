@@ -3,7 +3,7 @@ import { OAuth2Client } from "google-auth-library";
 import {
   GoogleSheetsExpenseError,
   type GoogleAccessTokenProvider,
-} from "./google-sheets.js";
+} from "./google-sheets";
 
 export interface GoogleUserOAuthCredentials {
   readonly clientId: string;

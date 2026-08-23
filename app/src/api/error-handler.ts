@@ -4,10 +4,12 @@ import {
   AgentCancelledError,
   AgentEvidenceError,
   AgentTimeoutError,
-} from "../agent/agent-loop.js";
-import { AIProviderError } from "../brain/ai-provider.js";
-import { VoiceProviderError } from "../voice/provider.js";
-import { ApiError } from "./api-error.js";
+} from "../agent/agent-loop";
+import { AIProviderError } from "../brain/ai-provider";
+import { FaceProviderError } from "../face/provider";
+import { FaceRecognitionError } from "../face/face-recognition-service";
+import { VoiceProviderError } from "../voice/provider";
+import { ApiError } from "./api-error";
 
 interface PublicError {
   readonly statusCode: number;
@@ -95,6 +97,14 @@ function toPublicError(error: unknown): PublicError {
     return voiceProviderErrorToPublicError(error);
   }
 
+  if (error instanceof FaceProviderError) {
+    return faceProviderErrorToPublicError(error);
+  }
+
+  if (error instanceof FaceRecognitionError) {
+    return faceRecognitionErrorToPublicError(error);
+  }
+
   const metadata = getErrorMetadata(error);
 
   if (
@@ -132,6 +142,82 @@ function toPublicError(error: unknown): PublicError {
     code: "INTERNAL_ERROR",
     message: "Shiva could not complete the request.",
   };
+}
+
+function faceProviderErrorToPublicError(error: FaceProviderError): PublicError {
+  switch (error.failure) {
+    case "CANCELLED":
+      return {
+        statusCode: 499,
+        code: "REQUEST_CANCELLED",
+        message: "The request was cancelled.",
+      };
+    case "TIMEOUT":
+      return {
+        statusCode: 504,
+        code: "FACE_TIMEOUT",
+        message: "Shiva's face service did not respond in time.",
+      };
+    case "INVALID_IMAGE":
+      return {
+        statusCode: 400,
+        code: "INVALID_IMAGE",
+        message: "The uploaded image could not be analyzed.",
+      };
+    case "PAYLOAD_TOO_LARGE":
+      return {
+        statusCode: 413,
+        code: "PAYLOAD_TOO_LARGE",
+        message: "The uploaded image is too large to analyze.",
+      };
+    case "UNSUPPORTED_MEDIA_TYPE":
+      return {
+        statusCode: 415,
+        code: "UNSUPPORTED_MEDIA_TYPE",
+        message: "Upload a supported JPEG, PNG, or WebP image.",
+      };
+    case "NO_FACE":
+      return {
+        statusCode: 422,
+        code: "NO_FACE",
+        message: "No face was found in the uploaded image.",
+      };
+    case "MULTIPLE_FACES":
+      return {
+        statusCode: 422,
+        code: "MULTIPLE_FACES",
+        message: "Use an enrollment photo containing exactly one person.",
+      };
+    case "INVALID_RESPONSE":
+      return {
+        statusCode: 502,
+        code: "FACE_INVALID_RESPONSE",
+        message: "Shiva's face service returned an invalid response.",
+      };
+    case "UNAVAILABLE":
+      return {
+        statusCode: 503,
+        code: "FACE_UNAVAILABLE",
+        message: "Shiva's face service is currently unavailable.",
+      };
+  }
+}
+
+function faceRecognitionErrorToPublicError(
+  error: FaceRecognitionError,
+): PublicError {
+  switch (error.code) {
+    case "PERSON_NOT_FOUND":
+      return { statusCode: 404, code: error.code, message: error.publicMessage };
+    case "NO_FACE":
+    case "MULTIPLE_FACES":
+    case "LOW_QUALITY":
+      return { statusCode: 422, code: error.code, message: error.publicMessage };
+    case "PERSON_NOT_ENROLLED":
+    case "FACE_MISMATCH":
+    case "DUPLICATE_FACE":
+      return { statusCode: 409, code: error.code, message: error.publicMessage };
+  }
 }
 
 function voiceProviderErrorToPublicError(

@@ -1,4 +1,4 @@
-import type { EmbeddingProvider } from "../brain/embedding-provider.js";
+import type { EmbeddingProvider } from "../brain/embedding-provider";
 import type {
   ExtractedMemory,
   MemoryExtractionEngine,
@@ -6,7 +6,7 @@ import type {
   MemoryRelationshipResult,
   MemoryRepositoryPort,
   RememberInteractionInput,
-} from "./types.js";
+} from "./types";
 
 const SEMANTIC_SIMILARITY_THRESHOLD = 0.72;
 const SEMANTIC_RECONCILIATION_LIMIT = 10;
@@ -70,17 +70,6 @@ export class MemoryService {
     input: RememberInteractionInput,
     explicitRequest: boolean,
   ): Promise<ExplicitMemoryResult> {
-    if (
-      isFillerMessage(input.userMessage.content) ||
-      containsSecret(input.userMessage.content)
-    ) {
-      return {
-        stored: [],
-        duplicateCount: 0,
-        rejectedCount: 1,
-        extractedCount: 0,
-      };
-    }
 
     const extracted = await this.extractor.extract({
       userMessage: input.userMessage.content,
@@ -94,14 +83,6 @@ export class MemoryService {
     let rejectedCount = 0;
 
     for (const extractedMemory of extracted) {
-      if (
-        isFillerMessage(extractedMemory.content) ||
-        containsSecret(extractedMemory.content)
-      ) {
-        rejectedCount += 1;
-        continue;
-      }
-
       const candidate = explicitRequest
         ? {
             ...extractedMemory,

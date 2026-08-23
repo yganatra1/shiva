@@ -16,7 +16,12 @@ import {
   vector,
 } from "drizzle-orm/pg-core";
 
-import { EMBEDDING_DIMENSIONS } from "../types/embedding.js";
+import {
+  PERSON_FACE_EMBEDDING_DIMENSIONS,
+  type FaceBoundingBox,
+  type PersonDetails,
+} from "../people/types.js";
+import { EMBEDDING_DIMENSIONS } from "../types/embedding";
 
 export const messageRole = pgEnum("message_role", ["user", "assistant"]);
 export const memoryType = pgEnum("memory_type", ["episodic", "semantic"]);
@@ -78,6 +83,149 @@ export const users = pgTable("users", {
     .$onUpdate(() => new Date())
     .notNull(),
 });
+
+/** Structured identities known by one Shiva owner. */
+export const people = pgTable(
+  "people",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    displayName: text("display_name").notNull(),
+    isOwner: boolean("is_owner").default(false).notNull(),
+    relationship: text("relationship"),
+    notes: text("notes"),
+    details: jsonb("details")
+      .$type<PersonDetails>()
+      .default({})
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    check(
+      "people_display_name_not_empty",
+      sql`length(btrim(${table.displayName})) > 0`,
+    ),
+    check(
+      "people_relationship_not_empty",
+      sql`${table.relationship} IS NULL OR length(btrim(${table.relationship})) > 0`,
+    ),
+    check(
+      "people_notes_not_empty",
+      sql`${table.notes} IS NULL OR length(btrim(${table.notes})) > 0`,
+    ),
+    check("people_details_object", sql`jsonb_typeof(${table.details}) = 'object'`),
+    uniqueIndex("people_one_owner_per_user")
+      .on(table.userId)
+      .where(sql`${table.isOwner} = true`),
+    index("people_user_display_name_idx").on(table.userId, table.displayName),
+  ],
+);
+
+/** Searchable, normalized alternate names for a known person. */
+export const personAliases = pgTable(
+  "person_aliases",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    personId: uuid("person_id")
+      .notNull()
+      .references(() => people.id, { onDelete: "cascade" }),
+    alias: text("alias").notNull(),
+    normalizedAlias: text("normalized_alias").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    check(
+      "person_aliases_alias_not_empty",
+      sql`length(btrim(${table.alias})) > 0`,
+    ),
+    check(
+      "person_aliases_normalized_not_empty",
+      sql`length(${table.normalizedAlias}) > 0`,
+    ),
+    uniqueIndex("person_aliases_person_normalized_unique").on(
+      table.personId,
+      table.normalizedAlias,
+    ),
+    index("person_aliases_person_idx").on(table.personId),
+    index("person_aliases_normalized_idx").on(table.normalizedAlias),
+  ],
+);
+
+/**
+ * Biometric gallery templates are deliberately separate from semantic-memory
+ * embeddings. Source image bytes are never persisted here.
+ */
+export const personFaceEmbeddings = pgTable(
+  "person_face_embeddings",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    personId: uuid("person_id")
+      .notNull()
+      .references(() => people.id, { onDelete: "cascade" }),
+    embedding: vector("embedding", {
+      dimensions: PERSON_FACE_EMBEDDING_DIMENSIONS,
+    }).notNull(),
+    qualityScore: real("quality_score").notNull(),
+    detectionScore: real("detection_score").notNull(),
+    boundingBox: jsonb("bounding_box").$type<FaceBoundingBox>().notNull(),
+    model: text("model").notNull(),
+    source: text("source"),
+    imageSha256: text("image_sha256").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    check(
+      "person_face_embeddings_quality_range",
+      sql`${table.qualityScore} >= 0 AND ${table.qualityScore} <= 1`,
+    ),
+    check(
+      "person_face_embeddings_detection_range",
+      sql`${table.detectionScore} >= 0 AND ${table.detectionScore} <= 1`,
+    ),
+    check(
+      "person_face_embeddings_bbox_object",
+      sql`jsonb_typeof(${table.boundingBox}) = 'object'`,
+    ),
+    check(
+      "person_face_embeddings_model_not_empty",
+      sql`length(btrim(${table.model})) > 0`,
+    ),
+    check(
+      "person_face_embeddings_source_not_empty",
+      sql`${table.source} IS NULL OR length(btrim(${table.source})) > 0`,
+    ),
+    check(
+      "person_face_embeddings_sha256_shape",
+      sql`${table.imageSha256} ~ '^[a-f0-9]{64}$'`,
+    ),
+    uniqueIndex("person_face_embeddings_sha256_unique").on(table.imageSha256),
+    index("person_face_embeddings_person_idx").on(table.personId),
+    index("person_face_embeddings_embedding_hnsw").using(
+      "hnsw",
+      table.embedding.op("vector_cosine_ops"),
+    ),
+  ],
+);
 
 /** The single durable, host-wide execution-control record. */
 export const systemSettings = pgTable(

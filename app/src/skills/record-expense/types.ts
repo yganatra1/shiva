@@ -1,4 +1,4 @@
-import type { ExpenseRecord } from "../../tools/expenses/types.js";
+import type { ExpenseRecord } from "../../tools/expenses/types";
 
 export interface RecordExpenseInput {
   readonly amount: number;

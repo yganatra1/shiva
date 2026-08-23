@@ -1,0 +1,8 @@
+fastapi>=0.116,<1
+insightface>=1.0,<2
+numpy>=2,<3
+onnxruntime>=1.21,<1.27
+opencv-python-headless>=4.11,<5
+Pillow>=11,<13
+python-dotenv>=1.1,<2
+uvicorn[standard]>=0.35,<1

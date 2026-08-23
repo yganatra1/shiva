@@ -7,8 +7,8 @@ import type {
   WorkspaceMatch,
   WorkspaceOverview,
   WorkspaceReaderPort,
-} from "./types.js";
-import { isBlockedWorkspacePath } from "./path-policy.js";
+} from "./types";
+import { isBlockedWorkspacePath } from "./path-policy";
 
 const DEFAULT_WORKSPACE_ROOT = fileURLToPath(
   new URL("../../../../", import.meta.url),

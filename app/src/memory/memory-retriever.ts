@@ -1,14 +1,14 @@
-import type { EmbeddingProvider } from "../brain/embedding-provider.js";
-import { MemoryRanker } from "./memory-ranker.js";
+import type { EmbeddingProvider } from "../brain/embedding-provider";
+import { MemoryRanker } from "./memory-ranker";
 import type {
   MemoryRepositoryPort,
   RelevantMemoryContext,
-} from "./types.js";
+} from "./types";
 import {
   measureChatPerformance,
   measureChatPerformanceSync,
   type ChatPerformanceTrace,
-} from "../observability/chat-performance.js";
+} from "../observability/chat-performance";
 
 export class MemoryRetriever {
   constructor(

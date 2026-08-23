@@ -5,15 +5,15 @@ import { z } from "zod";
 import type {
   ChatInteractionMode,
   ShivaChatService,
-} from "../services/chat-service.js";
-import { ConversationNotFoundError } from "../memory/memory-repository.js";
+} from "../services/chat-service";
+import { ConversationNotFoundError } from "../memory/memory-repository";
 import {
   ChatPerformanceTrace,
   formatChatPerformanceLog,
   type ChatPerformanceLogSink,
   type ChatPerformanceOutcome,
-} from "../observability/chat-performance.js";
-import { ApiError } from "./api-error.js";
+} from "../observability/chat-performance";
+import { ApiError } from "./api-error";
 
 const MAX_MESSAGE_CHARACTERS = 20_000;
 /** Base64 JPEG from the phone — keep under Ollama / Fastify body comfort. */

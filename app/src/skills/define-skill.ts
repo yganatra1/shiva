@@ -1,4 +1,4 @@
-import type { ShivaSkill } from "./types.js";
+import type { ShivaSkill } from "./types";
 
 /**
  * Typed identity helper so a new skill can be written as one object literal

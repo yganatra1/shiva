@@ -1,15 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import type { RawData, WebSocket } from "ws";
 
-import type { ShivaChatService } from "../services/chat-service.js";
-import type { VoicePlaybackCoordinator } from "../voice/playback-coordinator.js";
-import type { ASRProvider, TTSProvider } from "../voice/provider.js";
-import type { StreamingSpeechChunkerOptions } from "../voice/speech-chunker.js";
-import type { VoicePerformanceTracker } from "../voice/voice-performance.js";
+import type { ShivaChatService } from "../services/chat-service";
+import type { VoicePlaybackCoordinator } from "../voice/playback-coordinator";
+import type { ASRProvider, TTSProvider } from "../voice/provider";
+import type { StreamingSpeechChunkerOptions } from "../voice/speech-chunker";
+import type { VoicePerformanceTracker } from "../voice/voice-performance";
 import {
   VoiceSession,
   type VoiceSessionTransport,
-} from "../voice/voice-session.js";
+} from "../voice/voice-session";
 
 const HEARTBEAT_INTERVAL_MS = 25_000;
 

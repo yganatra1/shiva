@@ -1,5 +1,5 @@
-import type { SkillContext } from "../../skills/types.js";
-import type { ExpenseRepositoryPort, ExpenseRecord } from "./types.js";
+import type { SkillContext } from "../../skills/types";
+import type { ExpenseRepositoryPort, ExpenseRecord } from "./types";
 
 export interface ExpenseInsertToolInput {
   readonly amount: string;

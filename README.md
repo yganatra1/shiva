@@ -1,6 +1,6 @@
 # Shiva V0.3
 
-Shiva is Yash's private personal AI. V0.3 preserves the Fastify/Ollama streaming brain, V0.2 persistent memory, and browser voice layer, then adds a bounded agent loop, durable `SAFE`/`AUTO`/`FULL_ACCESS` execution modes, and expense, public-web, and read-only Shiva-workspace skills.
+Shiva is Yash's private personal AI. This V0.x tree preserves the Fastify/Ollama streaming brain, persistent memory, browser voice layer, bounded agent loop, durable execution controls, and skills, then adds a private people directory and local face recognition. A person can be taught with structured details, aliases, notes, and 10–15 or more photos; Shiva can then resolve that identity and its details in attached photos and phone-camera results.
 
 ## Architecture
 
@@ -18,28 +18,35 @@ Voice UI     -> WS   /voice/chat ----------┴-> shared ShivaChatService
                                               -> persistence + memory extraction
                  VoiceSession also owns:
                    ASR -> chunker -> serial Qwen TTS -> binary audio frames
+
+People UI    -> /api/people + per-photo enrollments
+                                             -> Fastify identity policy
+                                             -> InsightFace service :8103
+                                             -> people + 512-d face gallery in PostgreSQL
+Attached photo / device camera --------------> identify -> grounded person context
 ```
 
 The API does not put model, embedding, persistence, or external-service details in route handlers. Provider and repository interfaces keep those boundaries explicit. `/chat` and the voice WebSocket share the same conversation, memory, persistence, cancellation, and model path; voice mode only adds speech-friendly response guidance. Every non-explicit-memory turn reaches the semantic planner after the same context is built. The planner decides from the registered catalog whether to use skills, ask a clarification, describe the real catalog, or delegate tool-free conversation to the existing streaming provider. There is no keyword/regex intent router.
 
-Google Sheets is the sole expense source of truth. Shiva does not maintain a PostgreSQL expense ledger, row cache, or synchronization mirror. PostgreSQL stores the existing conversation/memory data, the per-user Google resource binding and provisioning lease, durable execution settings and action-bound confirmations, plus `agent_runs` and `skill_runs` audit records. Expense-routed audit payloads are redacted so those audit tables do not duplicate ledger details; the normal chat transcript and memory pipeline remain unchanged and can still contain what the user said. See [docs/memory-architecture.md](docs/memory-architecture.md), [docs/voice-architecture.md](docs/voice-architecture.md), and [docs/agent-architecture.md](docs/agent-architecture.md).
+Google Sheets is the sole expense source of truth. Shiva does not maintain a PostgreSQL expense ledger, row cache, or synchronization mirror. PostgreSQL stores conversation/memory data, the people directory and separate 512-dimensional face gallery, per-user Google resource bindings, durable execution settings and confirmations, plus agent/skill audit records. Face templates are never mixed with the 768-dimensional semantic-memory vectors. See [docs/memory-architecture.md](docs/memory-architecture.md), [docs/face-architecture.md](docs/face-architecture.md), [docs/voice-architecture.md](docs/voice-architecture.md), and [docs/agent-architecture.md](docs/agent-architecture.md).
 
-V0.3 does not add wake words, always-listening mode, streaming ASR, VAD, barge-in, speaker recognition, face recognition, voice cloning, authentication, cloud fallback, procedural memory, a knowledge graph, arbitrary browser automation, or a general-purpose shell/tool runtime.
+This version still does not add wake words, always-listening mode, streaming ASR, VAD, barge-in, speaker recognition, face liveness/anti-spoofing, voice cloning, authentication, cloud fallback, procedural memory, a knowledge graph, arbitrary browser automation, or a general-purpose shell/tool runtime. A face match is personal context, not authentication or authority.
 
 The official Android companion lives in [`android/`](android/README.md). It is a native Kotlin client over Tailscale, not a second brain.
 
 ## Requirements
 
 - Node.js 24 and npm
-- Python 3.12 for the real ASR/TTS services
+- Python 3.12 for the real ASR/TTS and face services
 - ffmpeg for browser-audio normalization
 - PostgreSQL with the pgvector extension available
 - Ollama reachable at `OLLAMA_URL`
 - the configured Gemma model and `embeddinggemma` installed for real `/chat` requests
+- for real face recognition: InsightFace `buffalo_l` and CPU ONNX Runtime; a GPU is not required for Shiva's personal enrollment and occasional identification workload
 - for expense skills: Google user OAuth credentials with the least-privilege `drive.file` scope (recommended), or a legacy pre-existing Sheet shared with a service account
 - for web research: a Brave Search API key
 
-Health, typechecking, building, and mocked Node/Python tests do not require Ollama, PostgreSQL, Google Sheets, Brave Search, a GPU, or Qwen model weights. Mocked tests are not proof of a live Google, Brave, Ollama, or RunPod integration.
+Health, typechecking, building, and mocked Node/Python tests do not require Ollama, PostgreSQL, Google Sheets, Brave Search, a GPU, Qwen weights, or InsightFace weights. Mocked tests are not proof of a live Google, Brave, Ollama, InsightFace/CUDA, or RunPod integration.
 
 ## Environment
 
@@ -85,6 +92,7 @@ WORKING_MEMORY_MESSAGE_LIMIT=20
 MEMORY_RETRIEVAL_LIMIT=8
 ASR_SERVICE_URL=http://127.0.0.1:8101
 TTS_SERVICE_URL=http://127.0.0.1:8102
+FACE_SERVICE_URL=http://127.0.0.1:8103
 ASR_MODEL=Qwen/Qwen3-ASR-0.6B
 ASR_DEVICE=cuda:0
 ASR_DTYPE=auto
@@ -96,11 +104,25 @@ TTS_DTYPE=auto
 HF_XET_HIGH_PERFORMANCE=0
 ASR_REQUEST_TIMEOUT_MS=120000
 TTS_REQUEST_TIMEOUT_MS=120000
+FACE_REQUEST_TIMEOUT_MS=120000
+FACE_MATCH_THRESHOLD=0.50
+FACE_ENROLLMENT_THRESHOLD=0.35
+FACE_AMBIGUITY_MARGIN=0.03
+FACE_HOST=127.0.0.1
+FACE_PORT=8103
+FACE_MODEL=buffalo_l
+FACE_MODEL_ROOT=/workspace/shiva/models/insightface
+FACE_PROVIDER=cpu
+FACE_REQUIRE_CUDA=false
+FACE_CUDA_DEVICE_ID=0
+FACE_DETECTION_SIZE=640
 SHIVA_PERF_LOG=false
 NODE_ENV=development
 ```
 
-`SHIVA_USER_ID` identifies the single Shiva owner and must remain stable across restarts. Use a strong database password in real environments. Node and both Python services deliberately resolve the root `.env`.
+`SHIVA_USER_ID` identifies the single Shiva owner and must remain stable across restarts. People, face galleries, memories, and agent state are owner-scoped to that UUID. Use a strong database password in real environments. Node and all three Python services deliberately resolve the root `.env`.
+
+The Node gateway uses `FACE_SERVICE_URL` and owns identity matching policy. The Python adapter uses the `FACE_*` runtime values beginning with `FACE_HOST`; it has no database access. The default recognition thresholds are starting values, not universal biometric guarantees. Calibrate them against representative known and unknown photos before relying on automatic identity context.
 
 `SHIVA_KEEP_ALIVE` accepts Ollama duration strings such as `30m` or numeric seconds. Use `SHIVA_KEEP_ALIVE=-1` to keep the chat model loaded indefinitely; Shiva serializes numeric environment values as JSON numbers as required by Ollama.
 
@@ -136,6 +158,16 @@ python -m unittest voice.test_huggingface_runtime voice.asr.test_server voice.as
 deactivate
 ```
 
+Run the stateless face-adapter tests without InsightFace, ONNX Runtime, OpenCV, weights, or a GPU:
+
+```bash
+python3 -m venv /tmp/shiva-face-tests
+source /tmp/shiva-face-tests/bin/activate
+python -m pip install 'fastapi>=0.116,<1' 'httpx>=0.28,<1' 'python-dotenv>=1.1,<2'
+python -m unittest face.test_engine face.test_server
+deactivate
+```
+
 If a local PostgreSQL/pgvector database is available and `DATABASE_URL` is configured:
 
 ```bash
@@ -161,7 +193,7 @@ npm run typecheck
 
 Review every generated SQL migration before committing it. `db:migrate` applies committed files from `app/drizzle/`; it does not generate schema changes at deployment time.
 
-The execution-mode migration creates the revisioned singleton `system_settings` row, persistent action confirmations with one-shot execution lifecycle state, and the execution-mode/action-classification fields on `skill_runs`. Apply committed migrations before starting the updated API:
+Committed migrations include the execution-control/audit state and the `people`, `person_aliases`, and `person_face_embeddings` identity tables with a separate `vector(512)` cosine index. Apply them before starting the updated API:
 
 ```bash
 cd app
@@ -320,6 +352,37 @@ Skill discovery freezes capability packs rather than the first individual tool l
 
 Agent and skill execution metadata is written to `agent_runs` and `skill_runs`; execution audits include effective mode, action classification, confirmation linkage, outcome, sanitized error code, and timing. Inputs and results are bounded and recursively redact credential-shaped fields, labeled secrets, credential-bearing URLs, private keys, JWTs, and common provider-token formats, while expense payloads remain fully redacted. Confirmation reasons and stored arguments are sanitized too. `action_confirmations` stores sanitized arguments plus the exact-action hash, settings revision, and approval lifecycle. These tables are an audit/control plane, not an expense ledger; live credentials belong only in runtime providers and the workspace boundary denies conventional secret-bearing files before model inspection.
 
+### People and face recognition
+
+Open `http://127.0.0.1:3000/people` (or follow **People** from `/voice`). Create yourself or another person, add aliases, relationship, structured `key: value` details and notes, then select 10–15 or more varied JPEG/PNG/WebP photos. The browser previews and resizes them to at most 1600 px and uploads each independently with concurrency two. Accepted photos remain enrolled when another photo has no face, multiple faces, low quality, is an exact duplicate, conflicts with another known person's gallery, or is inconsistent with the selected person's existing gallery. The page preserves per-photo results, supports explicit retry of transient failures, and lets the owner delete accepted templates. Profiles can be reopened to edit details or add more photos later. Shiva marks a gallery ready after five accepted samples while continuing to benefit from additional varied samples.
+
+Public gateway routes are:
+
+- `GET /people`, `GET|POST /api/people`, and `GET|PATCH|DELETE /api/people/:personId`
+- `POST /api/people/:personId/faces` and `DELETE /api/people/:personId/faces/:faceId`
+- `POST /face/enroll?personId=…`, `POST /face/identify`, `POST /face/verify?personId=…`, and `GET /face/health`
+
+Face uploads are raw JPEG, PNG, or WebP bodies, not base64 JSON or multipart data. The 10 MiB per-photo ceiling is independent of `/chat`'s smaller image limits. Fastify is the only browser-facing service; it calls the localhost-only Python service and never returns source filenames, embeddings, or duplicate hashes. Identification returns unknown for low-quality, below-threshold, or ambiguous faces instead of guessing. Attached `/chat` images are recognized automatically and matched person details are supplied to Gemma as bounded, explicitly untrusted context. The `people_search` skill gives the planner durable access to taught details even when no photo is attached, and phone camera capture combines its visual description with local enrolled identities.
+
+The internal Python adapter uses `buffalo_l` (SCRFD-10GF detection plus a ResNet50 recognition model) and returns normalized 512-dimensional embeddings. Start and warm it in a third shell:
+
+```bash
+python3.12 -m venv /workspace/shiva/venvs/face
+source /workspace/shiva/venvs/face/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r face/requirements.txt
+python -m pip uninstall -y opencv-python
+python -m pip install --force-reinstall --no-deps 'opencv-python-headless>=4.11,<5'
+python -m face.server
+```
+
+```bash
+curl -fsS http://127.0.0.1:8103/health
+curl -fsS -X POST http://127.0.0.1:8103/warmup
+```
+
+The model cache persists under `FACE_MODEL_ROOT`; use `/workspace/shiva/models/insightface` on RunPod. `FACE_PROVIDER=cpu` is the locked default and ignores an available CUDA provider. Leave `FACE_REQUIRE_CUDA=false`; `auto` or `cuda` are deliberate opt-ins that also require a GPU-enabled ONNX Runtime installation. Full service contracts, quality codes, calibration guidance, privacy boundaries, and licensing are in [docs/face-architecture.md](docs/face-architecture.md) and [face/README.md](face/README.md).
+
 ### Voice
 
 Open the lightweight browser UI after starting Shiva:
@@ -403,7 +466,7 @@ For voice turns, deferred automatic memory extraction waits until the browser re
 
 ## Current RunPod direct runtime
 
-The current RunPod Pod does not run Docker Compose. Provision PostgreSQL with pgvector, Ollama, Gemma/embedding models, the two Python environments, Qwen voice models, ffmpeg, and `/workspace/shiva/repo/.env` separately. If expense skills are enabled, prefer the three user OAuth values described above so Shiva can create and manage the sheet itself; use a protected service-account JSON and manually shared `EXPENSE_SHEET_ID` only for the legacy path. Configure the Brave key separately for web research. Do not overwrite the production `.env` or credentials during pulls.
+The current RunPod Pod does not run Docker Compose. Provision PostgreSQL with pgvector, Ollama, Gemma/embedding models, three Python environments, Qwen voice models, InsightFace weights, ffmpeg, and `/workspace/shiva/repo/.env` separately. If expense skills are enabled, prefer the three user OAuth values described above so Shiva can create and manage the sheet itself; use a protected service-account JSON and manually shared `EXPENSE_SHEET_ID` only for the legacy path. Configure the Brave key separately for web research. Do not overwrite the production `.env` or credentials during pulls.
 
 ```bash
 cd /workspace/shiva/repo
@@ -418,7 +481,7 @@ npm run db:migrate
 npm start
 ```
 
-Then start ASR and TTS from two additional RunPod shells using the Python service commands above with repository path `/workspace/shiva/repo`. Keep both ports bound to localhost. From your browser, access only the Fastify port through the platform's private tunnel/proxy.
+Then start ASR, TTS, and face analysis from three additional RunPod shells using the Python service commands above with repository path `/workspace/shiva/repo`. Keep ports 8101–8103 bound to localhost. Warm each model and confirm the face response reports `CPUExecutionProvider`. From your browser, access only the Fastify port through the platform's private tunnel/proxy.
 
 Before `/chat` verification, ensure the two configured models exist:
 
@@ -429,7 +492,7 @@ ollama list
 
 Then, from another shell, run the health and chat curls above. `npm start` is foreground execution; process supervision remains an operational choice. Keep runtime data outside Git, for example under `/workspace/shiva/{data,models,ollama,logs,backups,config}`.
 
-Do not treat local mocked tests as RunPod integration proof. Real chat requires PostgreSQL/pgvector, the migration, Ollama, Gemma, and embeddinggemma. Real voice additionally requires ffmpeg, both Python services, their Qwen weights, and suitable GPU capacity. Real expense and web runs additionally require working Google credentials/sheet sharing and Brave credentials respectively.
+Do not treat local mocked tests as RunPod integration proof. Real chat requires PostgreSQL/pgvector, migrations, Ollama, Gemma, and embeddinggemma. Real voice additionally requires ffmpeg, both voice services, their Qwen weights, and suitable GPU capacity. Real face recognition additionally requires the face service, downloaded `buffalo_l` weights, a working ONNX provider, and calibration photos. Real expense and web runs additionally require working Google credentials/sheet sharing and Brave credentials respectively.
 
 ## Future Docker runtime
 
@@ -439,14 +502,14 @@ The future Ubuntu/NVIDIA-server path is:
 Git -> Ubuntu NVIDIA server -> Docker Compose
 ```
 
-The Compose definition runs the API, pgvector-enabled PostgreSQL, and internal ASR/TTS containers while leaving Ollama externally configurable. It publishes only the Shiva API; voice ports use the private Compose network. See [infra/README.md](infra/README.md).
+The Compose definition runs the API, pgvector-enabled PostgreSQL, and internal ASR/TTS/face containers while leaving Ollama externally configurable. It publishes only the Shiva API; model-service ports use the private Compose network. See [infra/README.md](infra/README.md).
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Hot-reload the API from TypeScript |
-| `npm test` | Run mocked chat, memory, voice, agent, execution-policy, confirmation, expense-sheet, and web-tool tests |
+| `npm test` | Run mocked chat, memory, people/face, voice, agent, execution-policy, confirmation, expense-sheet, and web-tool tests |
 | `npm run typecheck` | Strict-check app and tests without emitting |
 | `npm run build` | Compile ESM output into `app/dist` |
 | `npm run db:generate` | Generate a migration from the Drizzle schema |

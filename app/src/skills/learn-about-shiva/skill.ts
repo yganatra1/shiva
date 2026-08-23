@@ -1,11 +1,11 @@
 import { z } from "zod";
 
-import { sanitizeAuditText } from "../../security/audit-sanitizer.js";
-import type { ShivaSkill, SkillResult } from "../types.js";
+import { sanitizeAuditText } from "../../security/audit-sanitizer";
+import type { ShivaSkill, SkillResult } from "../types";
 import type {
   WorkspaceOverview,
   WorkspaceReaderPort,
-} from "../../tools/workspace/types.js";
+} from "../../tools/workspace/types";
 
 const inputSchema = z
   .object({

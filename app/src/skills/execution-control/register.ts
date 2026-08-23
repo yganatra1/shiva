@@ -1,11 +1,11 @@
-import type { ConfirmationService } from "../../security/confirmation.js";
-import type { ExecutionStateService } from "../../security/execution-state.js";
-import type { SkillRegistry } from "../registry.js";
+import type { ConfirmationService } from "../../security/confirmation";
+import type { ExecutionStateService } from "../../security/execution-state";
+import type { SkillRegistry } from "../registry";
 import {
   GetExecutionModeSkill,
   SetExecutionModeSkill,
   SetLockdownSkill,
-} from "./skills.js";
+} from "./skills";
 
 export function registerExecutionControlSkills(
   registry: SkillRegistry,

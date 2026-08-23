@@ -1,12 +1,12 @@
 import { and, eq } from "drizzle-orm";
 
-import type { ShivaDatabase } from "../database/pool.js";
-import { agentRuns, skillRuns } from "../database/schema.js";
+import type { ShivaDatabase } from "../database/pool";
+import { agentRuns, skillRuns } from "../database/schema";
 import type {
   ActionImpact,
   ActionMutability,
   ExecutionMode,
-} from "../security/execution-mode.js";
+} from "../security/execution-mode";
 
 export const REDACTED_AGENT_REQUEST = "[agent request redacted]";
 

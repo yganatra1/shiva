@@ -4,24 +4,24 @@ import {
   NOOP_AGENT_AUDIT,
   type AgentAuditPort,
   type SkillRunStatus,
-} from "../agent/audit.js";
+} from "../agent/audit";
 import {
   sanitizeAuditPayload,
   sanitizeAuditText,
   sanitizeSkillAuditInput,
   sanitizeSkillAuditResult,
-} from "../security/audit-sanitizer.js";
+} from "../security/audit-sanitizer";
 import {
   ConfirmationService,
   InMemoryConfirmationStore,
   type ActionConfirmation,
-} from "../security/confirmation.js";
-import { ExecutionPolicyEngine } from "../security/policy-engine.js";
+} from "../security/confirmation";
+import { ExecutionPolicyEngine } from "../security/policy-engine";
 import {
   LockdownActiveError,
   StaleExecutionStateError,
-} from "../security/execution-state.js";
-import { UnknownSkillError, type SkillRegistry } from "./registry.js";
+} from "../security/execution-state";
+import { UnknownSkillError, type SkillRegistry } from "./registry";
 import type {
   RegisteredSkill,
   SkillAuditDiagnostic,
@@ -29,7 +29,7 @@ import type {
   SkillExecutionMetadata,
   SkillFailure,
   SkillResult,
-} from "./types.js";
+} from "./types";
 
 interface ExecuteOptions {
   readonly userAuthorized?: boolean;

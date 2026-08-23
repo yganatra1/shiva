@@ -2,17 +2,17 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
 
-import type { ShivaDatabase } from "../database/pool.js";
-import { actionConfirmations } from "../database/schema.js";
+import type { ShivaDatabase } from "../database/pool";
+import { actionConfirmations } from "../database/schema";
 import {
   sanitizeAuditPayload,
   sanitizeAuditText,
-} from "./audit-sanitizer.js";
+} from "./audit-sanitizer";
 import type {
   ActionImpact,
   ActionMutability,
   ExecutionMode,
-} from "./execution-mode.js";
+} from "./execution-mode";
 
 export const CONFIRMATION_STATUSES = [
   "PENDING",

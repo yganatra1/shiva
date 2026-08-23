@@ -1,34 +1,34 @@
 import { randomUUID } from "node:crypto";
 
-import { AIProviderError } from "../brain/ai-provider.js";
-import { ConversationNotFoundError } from "../memory/memory-repository.js";
-import type { ShivaChatService } from "../services/chat-service.js";
+import { AIProviderError } from "../brain/ai-provider";
+import { ConversationNotFoundError } from "../memory/memory-repository";
+import type { ShivaChatService } from "../services/chat-service";
 import {
   encodeVoiceAudioFrame,
   VOICE_AUDIO_FRAME_HEADER_BYTES,
   type VoiceAudioFormat,
-} from "./audio-frame.js";
+} from "./audio-frame";
 import {
   captureFilename,
   DEFAULT_CAPTURE_MIME_TYPE,
   normalizeCaptureMimeType,
-} from "./audio-upload.js";
-import type { VoicePlaybackCoordinator } from "./playback-coordinator.js";
+} from "./audio-upload";
+import type { VoicePlaybackCoordinator } from "./playback-coordinator";
 import {
   VoiceProviderError,
   type ASRProvider,
   type TTSProvider,
-} from "./provider.js";
+} from "./provider";
 import {
   StreamingSpeechChunker,
   type StreamingSpeechChunkerOptions,
-} from "./speech-chunker.js";
+} from "./speech-chunker";
 import {
   SpeechSynthesisQueue,
   type SpeechSynthesisQueueItem,
   type SpeechSynthesisQueuePhase,
   type SpeechSynthesisQueuePort,
-} from "./speech-synthesis-queue.js";
+} from "./speech-synthesis-queue";
 import {
   parseClientVoiceMessage,
   VOICE_PROTOCOL_VERSION,
@@ -36,9 +36,9 @@ import {
   type ServerVoiceMessage,
   type VoiceErrorCode,
   type VoiceTurnEndReason,
-} from "./voice-protocol.js";
-import type { VoicePerformanceTracker } from "./voice-performance.js";
-import { parseWavPcm16, wavDurationMs } from "./wav-audio.js";
+} from "./voice-protocol";
+import type { VoicePerformanceTracker } from "./voice-performance";
+import { parseWavPcm16, wavDurationMs } from "./wav-audio";
 
 const DEFAULT_MAX_CAPTURED_AUDIO_BYTES = 25 * 1024 * 1024;
 const MAX_TRACKED_TURN_IDS = 64;

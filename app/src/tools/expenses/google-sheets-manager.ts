@@ -6,18 +6,18 @@ import {
   GoogleSheetsExpenseRepository,
   readBoundedGoogleSheetsJson,
   type GoogleAccessTokenProvider,
-} from "./google-sheets.js";
+} from "./google-sheets";
 import {
   EXPENSE_SHEET_SCHEMA_VERSION,
   type ExpenseSheetBinding,
   type ExpenseSheetBindingStore,
-} from "./sheet-binding.js";
+} from "./sheet-binding";
 import type {
   ExpenseRecord,
   ExpenseRepositoryPort,
   InsertExpenseInput,
   ListExpensesInput,
-} from "./types.js";
+} from "./types";
 
 export const EXPENSE_SPREADSHEET_TITLE = "Shiva Expenses";
 export const EXPENSE_SHEET_TITLE = "Expenses";

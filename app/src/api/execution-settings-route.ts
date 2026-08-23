@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
-import type { ExecutionStatusPort } from "../security/execution-status.js";
-import { ApiError } from "./api-error.js";
+import type { ExecutionStatusPort } from "../security/execution-status";
+import { ApiError } from "./api-error";
 
 const querySchema = z
   .object({ conversationId: z.string().uuid().optional() })

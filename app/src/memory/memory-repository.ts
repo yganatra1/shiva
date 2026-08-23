@@ -12,14 +12,14 @@ import {
   sql,
 } from "drizzle-orm";
 
-import type { ShivaDatabase } from "../database/pool.js";
+import type { ShivaDatabase } from "../database/pool";
 import {
   conversations,
   memories,
   messages,
   users,
-} from "../database/schema.js";
-import { EMBEDDING_DIMENSIONS } from "../types/embedding.js";
+} from "../database/schema";
+import { EMBEDDING_DIMENSIONS } from "../types/embedding";
 import type {
   Conversation,
   MemoryRecord,
@@ -30,7 +30,7 @@ import type {
   SemanticMemoryType,
   StoredMessage,
   StoredMessageRole,
-} from "./types.js";
+} from "./types";
 
 type MemoryRow = typeof memories.$inferSelect;
 

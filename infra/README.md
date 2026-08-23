@@ -1,6 +1,6 @@
 # Shiva infrastructure
 
-V0.3 provides a reproducible future deployment made of the Shiva API, PostgreSQL with pgvector, and internal ASR/TTS services. Ollama remains external and is selected through `OLLAMA_URL`, because the GPU runtime may be on the host or another machine.
+V0.x provides a reproducible future deployment made of the Shiva API, PostgreSQL with pgvector, and internal ASR/TTS/face services. Ollama remains external and is selected through `OLLAMA_URL`, because the GPU runtime may be on the host or another machine.
 
 ## Docker Compose (future Ubuntu/NVIDIA host)
 
@@ -13,8 +13,12 @@ docker compose -f infra/docker/docker-compose.yml config
 docker compose -f infra/docker/docker-compose.yml up --build
 ```
 
-PostgreSQL data is held in the Docker-managed `shiva-postgres-data` volume, and model caches use `shiva-voice-models`; neither lives in the Git checkout. The API image applies committed Drizzle migrations before starting. `OLLAMA_URL` defaults to the host bridge; set it explicitly when inference lives elsewhere.
+PostgreSQL data is held in the Docker-managed `shiva-postgres-data` volume. Voice caches use `shiva-voice-models` and InsightFace uses `shiva-face-models`; none lives in the Git checkout. The API image applies committed Drizzle migrations before starting. `OLLAMA_URL` defaults to the host bridge; set it explicitly when inference lives elsewhere.
 
-Compose overrides the voice services to bind `0.0.0.0` only inside the private Compose network. Ports 8101 and 8102 use `expose`, not host `ports`, so browsers can reach voice only through the Fastify gateway. The host defaults remain `127.0.0.1` for direct deployments.
+Compose overrides the model services to bind `0.0.0.0` only inside the private Compose network. Ports 8101, 8102, and 8103 use `expose`, not host `ports`, so browsers can reach them only through the Fastify gateway. The host defaults remain `127.0.0.1` for direct deployments. The face process is stateless and has no PostgreSQL credentials; Node owns people records, templates, thresholds, enrollment consistency, and all public identity routes.
 
-This Compose setup is not the execution mechanism for the current RunPod Pod. RunPod continues to run Node, PostgreSQL/pgvector, Ollama, ASR, and TTS directly; see the root README.
+The face image and Compose service are CPU-only by default and do not reserve a
+GPU. `FACE_PROVIDER=cpu` remains authoritative even if the host exposes CUDA,
+so the GPU stays available to Ollama, ASR, and TTS.
+
+This Compose setup is not the execution mechanism for the current RunPod Pod. RunPod continues to run Node, PostgreSQL/pgvector, Ollama, ASR, TTS, and face analysis directly; see the root README.

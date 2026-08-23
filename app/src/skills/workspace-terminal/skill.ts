@@ -1,14 +1,14 @@
 import { z } from "zod";
 
-import { sanitizeAuditText } from "../../security/audit-sanitizer.js";
-import type { ShivaSkill, SkillResult } from "../types.js";
+import { sanitizeAuditText } from "../../security/audit-sanitizer";
+import type { ShivaSkill, SkillResult } from "../types";
 import {
   ALLOWED_COMMANDS,
   WorkspaceTerminalError,
   type ReadOnlyWorkspaceTerminal,
   type WorkspaceTerminalCommand,
   type WorkspaceTerminalResult,
-} from "../../tools/workspace/terminal.js";
+} from "../../tools/workspace/terminal";
 
 const inputSchema = z
   .object({

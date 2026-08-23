@@ -1,14 +1,14 @@
-import type { AppConfig } from "../../config/environment.js";
-import type { ShivaDatabase } from "../../database/pool.js";
-import { ExpenseInsertTool } from "../../tools/expenses/insert.js";
-import { ExpenseListTool } from "../../tools/expenses/list.js";
-import { GoogleAuthAccessTokenProvider } from "../../tools/expenses/google-sheets.js";
-import { ManagedGoogleSheetsExpenseRepository } from "../../tools/expenses/google-sheets-manager.js";
-import { GoogleUserOAuthAccessTokenProvider } from "../../tools/expenses/google-user-oauth.js";
-import { DrizzleExpenseSheetBindingStore } from "../../tools/expenses/sheet-binding-repository.js";
-import { ExpenseReportSkill } from "../expense-report/skill.js";
-import { RecordExpenseSkill } from "../record-expense/skill.js";
-import type { SkillRegistry } from "../registry.js";
+import type { AppConfig } from "../../config/environment";
+import type { ShivaDatabase } from "../../database/pool";
+import { ExpenseInsertTool } from "../../tools/expenses/insert";
+import { ExpenseListTool } from "../../tools/expenses/list";
+import { GoogleAuthAccessTokenProvider } from "../../tools/expenses/google-sheets";
+import { ManagedGoogleSheetsExpenseRepository } from "../../tools/expenses/google-sheets-manager";
+import { GoogleUserOAuthAccessTokenProvider } from "../../tools/expenses/google-user-oauth";
+import { DrizzleExpenseSheetBindingStore } from "../../tools/expenses/sheet-binding-repository";
+import { ExpenseReportSkill } from "../expense-report/skill";
+import { RecordExpenseSkill } from "../record-expense/skill";
+import type { SkillRegistry } from "../registry";
 
 export function registerFinanceSkills(
   registry: SkillRegistry,

@@ -1,11 +1,11 @@
 import { z } from "zod";
 
-import { defineSkill } from "../define-skill.js";
-import type { SkillContext, SkillResult } from "../types.js";
+import { defineSkill } from "../define-skill";
+import type { SkillContext, SkillResult } from "../types";
 import {
   deviceErrorToFailure,
   type DeviceCommandDispatcher,
-} from "../../device/device-command-dispatcher.js";
+} from "../../device/device-command-dispatcher";
 
 const inputSchema = z.object({});
 

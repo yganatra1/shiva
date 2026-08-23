@@ -4,10 +4,10 @@ import { z } from "zod";
 import {
   captureFilename,
   SUPPORTED_CAPTURE_MIME_TYPES,
-} from "../voice/audio-upload.js";
-import type { ASRProvider, TTSProvider } from "../voice/provider.js";
-import { createVoicePage } from "../voice/voice-ui.js";
-import { ApiError } from "./api-error.js";
+} from "../voice/audio-upload";
+import type { ASRProvider, TTSProvider } from "../voice/provider";
+import { createVoicePage } from "../voice/voice-ui";
+import { ApiError } from "./api-error";
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const MAX_TTS_CHARACTERS = 4_000;

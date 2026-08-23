@@ -1,11 +1,11 @@
 import { z } from "zod";
 
-import { EMBEDDING_DIMENSIONS } from "../types/embedding.js";
+import { EMBEDDING_DIMENSIONS } from "../types/embedding";
 import {
   EmbeddingProviderError,
   type EmbeddingInput,
   type EmbeddingProvider,
-} from "./embedding-provider.js";
+} from "./embedding-provider";
 
 interface OllamaEmbeddingProviderOptions {
   readonly baseUrl: string;

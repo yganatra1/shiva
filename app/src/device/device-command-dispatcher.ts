@@ -5,7 +5,7 @@ import {
   deviceCommandResultMessageSchema,
   type DeviceCommand,
   type DeviceCommandResult,
-} from "./device-protocol.js";
+} from "./device-protocol";
 
 export type DeviceDispatchFailure =
   | "DEVICE_NOT_CONNECTED"

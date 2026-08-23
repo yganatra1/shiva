@@ -1,14 +1,14 @@
 import { and, eq, sql } from "drizzle-orm";
 
-import type { ShivaDatabase } from "../database/pool.js";
-import { systemSettings } from "../database/schema.js";
+import type { ShivaDatabase } from "../database/pool";
+import { systemSettings } from "../database/schema";
 import {
   compareExecutionModes,
   effectiveExecutionMode,
   type ExecutionMode,
   type ExecutionState,
   type StoredExecutionState,
-} from "./execution-mode.js";
+} from "./execution-mode";
 
 const SETTINGS_KEY = "global";
 const DEFAULT_STATE: StoredExecutionState = {

@@ -1,4 +1,4 @@
-import type { MemorySearchResult, RankedMemory } from "./types.js";
+import type { MemorySearchResult, RankedMemory } from "./types";
 
 const MILLISECONDS_PER_DAY = 86_400_000;
 

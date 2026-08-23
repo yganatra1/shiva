@@ -1,4 +1,4 @@
-import type { ExpenseRecord } from "../../tools/expenses/types.js";
+import type { ExpenseRecord } from "../../tools/expenses/types";
 
 export interface ExpenseReportInput {
   readonly from?: string | undefined;

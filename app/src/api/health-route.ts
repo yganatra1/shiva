@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 
-import type { AppConfig } from "../config/environment.js";
+import type { AppConfig } from "../config/environment";
 
 export function registerHealthRoute(
   app: FastifyInstance,

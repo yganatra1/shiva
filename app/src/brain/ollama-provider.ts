@@ -6,7 +6,7 @@ import {
   type ChatChunk,
   type ChatInput,
   type ChatResult,
-} from "./ai-provider.js";
+} from "./ai-provider";
 
 interface OllamaProviderOptions {
   readonly baseUrl: string;

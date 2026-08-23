@@ -1,8 +1,8 @@
 import { and, eq, isNull, lt, lte, or } from "drizzle-orm";
 
-import type { ShivaDatabase } from "../../database/pool.js";
-import { expenseSheetBindings } from "../../database/schema.js";
-import { EXPENSE_SHEET_SCHEMA_VERSION } from "./sheet-binding.js";
+import type { ShivaDatabase } from "../../database/pool";
+import { expenseSheetBindings } from "../../database/schema";
+import { EXPENSE_SHEET_SCHEMA_VERSION } from "./sheet-binding";
 import type {
   AttachExpenseSpreadsheetInput,
   ClaimExpenseSheetBindingInput,
@@ -11,7 +11,7 @@ import type {
   ExpenseSheetBindingStore,
   MarkExpenseSheetReadyInput,
   ReleaseExpenseSheetClaimInput,
-} from "./sheet-binding.js";
+} from "./sheet-binding";
 
 const GOOGLE_RESOURCE_ID = /^[A-Za-z0-9_-]{5,256}$/;
 const UUID =

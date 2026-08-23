@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { VoiceAudioFormat } from "./audio-frame.js";
+import type { VoiceAudioFormat } from "./audio-frame";
 
 export const VOICE_PROTOCOL_VERSION = 1;
 export const MAX_VOICE_TEXT_CHARACTERS = 20_000;

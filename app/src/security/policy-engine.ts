@@ -1,13 +1,13 @@
-import type { SkillExecutionMetadata } from "../skills/types.js";
+import type { SkillExecutionMetadata } from "../skills/types";
 import {
   compareExecutionModes,
   executionModeSchema,
   isExecutionModeIncrease,
   type ExecutionMode,
   type ExecutionState,
-} from "./execution-mode.js";
-import { ExecutionStateService } from "./execution-state.js";
-import { InMemoryExecutionStateStore } from "./execution-state.js";
+} from "./execution-mode";
+import { ExecutionStateService } from "./execution-state";
+import { InMemoryExecutionStateStore } from "./execution-state";
 
 export interface ExecutionPolicyRequest {
   readonly skill: string;

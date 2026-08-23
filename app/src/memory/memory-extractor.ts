@@ -1,13 +1,13 @@
 import { z } from "zod";
 
-import type { AIProvider, ChatInput } from "../brain/ai-provider.js";
+import type { AIProvider, ChatInput } from "../brain/ai-provider";
 import type {
   ExtractedMemory,
   MemoryExtractionEngine,
   MemoryExtractionInput,
   MemoryRecord,
   MemoryRelationshipResult,
-} from "./types.js";
+} from "./types";
 
 const temporalOutputGuidance = `Only include occurredAt, validFrom, or validUntil when the user supplied a fully resolved instant. Use an RFC 3339 timestamp with Z or an explicit UTC offset (for example, 2026-08-19T08:30:00Z). If only a calendar date or relative time is known, preserve that wording in content and omit the temporal field. Never use date-only, timezone-less, relative, empty, or placeholder timestamp values.`;
 

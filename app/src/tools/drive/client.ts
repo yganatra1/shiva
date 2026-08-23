@@ -1,9 +1,9 @@
 import {
   readBoundedGoogleSheetsJson,
   type GoogleAccessTokenProvider,
-} from "../expenses/google-sheets.js";
+} from "../expenses/google-sheets";
 
-export type { GoogleAccessTokenProvider } from "../expenses/google-sheets.js";
+export type { GoogleAccessTokenProvider } from "../expenses/google-sheets";
 
 export type DriveClientFailure =
   | "INVALID_INPUT"

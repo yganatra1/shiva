@@ -1,10 +1,10 @@
-import { PackRegistry } from "./pack-registry.js";
+import { PackRegistry } from "./pack-registry";
 import type {
   PackSummary,
   RegisteredSkill,
   ShivaSkill,
   SkillSummary,
-} from "./types.js";
+} from "./types";
 
 const SKILL_NAME_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 const PACK_NAME_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;

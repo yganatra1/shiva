@@ -5,7 +5,7 @@ import { z } from "zod";
 import {
   executionModeSchema,
   type ExecutionMode,
-} from "../security/execution-mode.js";
+} from "../security/execution-mode";
 
 const rootEnvironmentPath = fileURLToPath(
   new URL("../../../.env", import.meta.url),
@@ -204,6 +204,7 @@ const environmentSchema = z
     .default(8),
   ASR_SERVICE_URL: httpBaseUrlSchema.default("http://127.0.0.1:8101"),
   TTS_SERVICE_URL: httpBaseUrlSchema.default("http://127.0.0.1:8102"),
+  FACE_SERVICE_URL: httpBaseUrlSchema.default("http://127.0.0.1:8103"),
   ASR_MODEL: z
     .string()
     .trim()
@@ -229,6 +230,19 @@ const environmentSchema = z
     .min(1_000)
     .max(600_000)
     .default(120_000),
+  FACE_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(600_000)
+    .default(120_000),
+  FACE_MATCH_THRESHOLD: z.coerce.number().min(0.1).max(0.95).default(0.5),
+  FACE_ENROLLMENT_THRESHOLD: z.coerce
+    .number()
+    .min(0.1)
+    .max(0.95)
+    .default(0.35),
+  FACE_AMBIGUITY_MARGIN: z.coerce.number().min(0).max(0.25).default(0.03),
   SHIVA_PERF_LOG: booleanEnvironmentSchema.default(false),
   SHIVA_AGENT_TRACE_LOG: booleanEnvironmentSchema.default(true),
   NODE_ENV: z
@@ -295,11 +309,16 @@ export interface AppConfig {
   readonly memoryRetrievalLimit: number;
   readonly asrServiceUrl: string;
   readonly ttsServiceUrl: string;
+  readonly faceServiceUrl: string;
   readonly asrModel: string;
   readonly ttsModel: string;
   readonly ttsSpeaker: string;
   readonly asrRequestTimeoutMs: number;
   readonly ttsRequestTimeoutMs: number;
+  readonly faceRequestTimeoutMs: number;
+  readonly faceMatchThreshold: number;
+  readonly faceEnrollmentThreshold: number;
+  readonly faceAmbiguityMargin: number;
   readonly performanceLogging: boolean;
   /** Full per-step planner prompt/response/decision tracing — verbose, opt-in. */
   readonly agentTraceLog: boolean;
@@ -371,11 +390,16 @@ export function loadConfig(): AppConfig {
     memoryRetrievalLimit: result.data.MEMORY_RETRIEVAL_LIMIT,
     asrServiceUrl: result.data.ASR_SERVICE_URL,
     ttsServiceUrl: result.data.TTS_SERVICE_URL,
+    faceServiceUrl: result.data.FACE_SERVICE_URL,
     asrModel: result.data.ASR_MODEL,
     ttsModel: result.data.TTS_MODEL,
     ttsSpeaker: result.data.TTS_SPEAKER,
     asrRequestTimeoutMs: result.data.ASR_REQUEST_TIMEOUT_MS,
     ttsRequestTimeoutMs: result.data.TTS_REQUEST_TIMEOUT_MS,
+    faceRequestTimeoutMs: result.data.FACE_REQUEST_TIMEOUT_MS,
+    faceMatchThreshold: result.data.FACE_MATCH_THRESHOLD,
+    faceEnrollmentThreshold: result.data.FACE_ENROLLMENT_THRESHOLD,
+    faceAmbiguityMargin: result.data.FACE_AMBIGUITY_MARGIN,
     performanceLogging: result.data.SHIVA_PERF_LOG,
     agentTraceLog: result.data.SHIVA_AGENT_TRACE_LOG,
     nodeEnv: result.data.NODE_ENV,

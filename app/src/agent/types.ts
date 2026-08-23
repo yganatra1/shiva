@@ -1,5 +1,5 @@
-import type { ChatMessage } from "../brain/ai-provider.js";
-import type { PackSummary, SkillResult, SkillSummary } from "../skills/types.js";
+import type { ChatMessage } from "../brain/ai-provider";
+import type { PackSummary, SkillResult, SkillSummary } from "../skills/types";
 
 export type AgentDecision =
   | {

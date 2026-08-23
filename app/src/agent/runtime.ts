@@ -1,31 +1,34 @@
-import type { AIProvider } from "../brain/ai-provider.js";
-import type { AppConfig } from "../config/environment.js";
-import type { ShivaDatabase } from "../database/pool.js";
-import { DeviceCommandDispatcher } from "../device/device-command-dispatcher.js";
+import type { AIProvider } from "../brain/ai-provider";
+import type { AppConfig } from "../config/environment";
+import type { ShivaDatabase } from "../database/pool";
+import { DeviceCommandDispatcher } from "../device/device-command-dispatcher";
+import type { FaceRecognitionService } from "../face/face-recognition-service";
+import { DrizzlePeopleRepository } from "../people/people-repository";
 import {
   ConfirmationService,
   DrizzleConfirmationStore,
-} from "../security/confirmation.js";
+} from "../security/confirmation";
 import {
   DrizzleExecutionStateStore,
   ExecutionStateService,
-} from "../security/execution-state.js";
-import { ExecutionStatusService } from "../security/execution-status.js";
-import { ExecutionPolicyEngine } from "../security/policy-engine.js";
-import { SkillExecutor } from "../skills/executor.js";
-import { registerExecutionControlSkills } from "../skills/execution-control/register.js";
-import { registerCoreSkills } from "../skills/core/register.js";
-import { registerSystemSkills } from "../skills/system/register.js";
-import { registerGoogleSkills } from "../skills/google/register.js";
-import { registerDeviceSkills } from "../skills/device/register.js";
-import { registerWebSkills } from "../skills/web/register.js";
-import { createPackRegistry } from "../skills/packs.js";
-import { SkillRegistry } from "../skills/registry.js";
-import { AgentLoop } from "./agent-loop.js";
-import { AgentAuditRepository } from "./audit.js";
-import { ShivaOrchestrator } from "./orchestrator.js";
-import { ShivaAgentPlanner, type AgentTraceLogger } from "./planner.js";
-import type { AgentOrchestratorPort } from "./types.js";
+} from "../security/execution-state";
+import { ExecutionStatusService } from "../security/execution-status";
+import { ExecutionPolicyEngine } from "../security/policy-engine";
+import { SkillExecutor } from "../skills/executor";
+import { registerExecutionControlSkills } from "../skills/execution-control/register";
+import { registerCoreSkills } from "../skills/core/register";
+import { registerSystemSkills } from "../skills/system/register";
+import { registerGoogleSkills } from "../skills/google/register";
+import { registerPeopleSkills } from "../skills/people/register";
+import { registerDeviceSkills } from "../skills/device/register";
+import { registerWebSkills } from "../skills/web/register";
+import { createPackRegistry } from "../skills/packs";
+import { SkillRegistry } from "../skills/registry";
+import { AgentLoop } from "./agent-loop";
+import { AgentAuditRepository } from "./audit";
+import { ShivaOrchestrator } from "./orchestrator";
+import { ShivaAgentPlanner, type AgentTraceLogger } from "./planner";
+import type { AgentOrchestratorPort } from "./types";
 
 export interface AgentRuntime {
   readonly orchestrator: AgentOrchestratorPort;
@@ -39,6 +42,7 @@ export function createAgentRuntime(
   config: AppConfig,
   onAuditError: (error: unknown) => void = () => {},
   onTrace?: AgentTraceLogger,
+  faceRecognition?: FaceRecognitionService,
 ): AgentRuntime {
   const registry = new SkillRegistry(createPackRegistry());
   const executionState = new ExecutionStateService(
@@ -61,7 +65,8 @@ export function createAgentRuntime(
   const deviceDispatcher = new DeviceCommandDispatcher({
     ...(onTrace ? { onTrace } : {}),
   });
-  registerDeviceSkills(registry, deviceDispatcher, provider);
+  registerDeviceSkills(registry, deviceDispatcher, provider, faceRecognition);
+  registerPeopleSkills(registry, new DrizzlePeopleRepository(database));
   registerWebSkills(registry, config);
 
   const audit = new AgentAuditRepository(database);

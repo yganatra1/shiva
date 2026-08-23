@@ -110,6 +110,47 @@ test("invalid execution configuration fails at startup", () => {
   );
 });
 
+test("face service and recognition thresholds are normalized and bounded", () => {
+  withEnvironment(
+    {
+      FACE_SERVICE_URL: "http://127.0.0.1:8103",
+      FACE_REQUEST_TIMEOUT_MS: "45000",
+      FACE_MATCH_THRESHOLD: "0.61",
+      FACE_ENROLLMENT_THRESHOLD: "0.42",
+      FACE_AMBIGUITY_MARGIN: "0.06",
+    },
+    () => {
+      const config = loadConfig();
+      assert.equal(config.faceServiceUrl, "http://127.0.0.1:8103");
+      assert.equal(config.faceRequestTimeoutMs, 45_000);
+      assert.equal(config.faceMatchThreshold, 0.61);
+      assert.equal(config.faceEnrollmentThreshold, 0.42);
+      assert.equal(config.faceAmbiguityMargin, 0.06);
+    },
+  );
+
+  withEnvironment(
+    {
+      FACE_SERVICE_URL: "file:///tmp/model",
+      FACE_MATCH_THRESHOLD: "1",
+      FACE_ENROLLMENT_THRESHOLD: "0",
+      FACE_AMBIGUITY_MARGIN: "0.5",
+    },
+    () => {
+      assert.throws(
+        () => loadConfig(),
+        (error: unknown) =>
+          error instanceof ConfigurationError &&
+          /FACE_SERVICE_URL/.test(error.message) &&
+          /FACE_MATCH_THRESHOLD/.test(error.message) &&
+          /FACE_ENROLLMENT_THRESHOLD/.test(error.message) &&
+          /FACE_AMBIGUITY_MARGIN/.test(error.message) &&
+          !/\/tmp\/model/.test(error.message),
+      );
+    },
+  );
+});
+
 function withEnvironment(
   values: Readonly<Record<string, string>>,
   run: () => void,

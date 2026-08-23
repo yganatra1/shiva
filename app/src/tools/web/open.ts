@@ -12,8 +12,8 @@ import type {
   OpenedWebPage,
   WebOpenInput,
   WebOpenToolPort,
-} from "./types.js";
-import { WebToolError } from "./types.js";
+} from "./types";
+import { WebToolError } from "./types";
 
 interface AddressRecord {
   readonly address: string;

@@ -1,8 +1,8 @@
-import type { VoiceAudioFrame } from "../audio-frame.js";
+import type { VoiceAudioFrame } from "../audio-frame";
 import type {
   ClientVoiceMessage,
   ServerVoiceMessage,
-} from "../voice-protocol.js";
+} from "../voice-protocol";
 
 export interface SocketLike {
   binaryType: string;

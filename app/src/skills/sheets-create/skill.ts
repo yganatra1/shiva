@@ -1,12 +1,12 @@
 import { z } from "zod";
 
-import { defineSkill } from "../define-skill.js";
-import type { SkillContext, SkillResult } from "../types.js";
+import { defineSkill } from "../define-skill";
+import type { SkillContext, SkillResult } from "../types";
 import {
   GoogleSheetsClient,
   sheetsErrorToFailure,
   type TabDefinition,
-} from "../../tools/sheets/client.js";
+} from "../../tools/sheets/client";
 
 const cellSchema = z.union([
   z.string().max(5_000),

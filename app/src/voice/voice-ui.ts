@@ -1,11 +1,11 @@
 import {
   findAudibleWindow,
   planAudioPlayback,
-} from "./audio-scheduling.js";
-import { decodeVoiceAudioFrame } from "./audio-frame.js";
-import { VoiceAudioPlayer } from "./client/voice-audio-player.js";
-import { VoiceSocketClient } from "./client/voice-socket-client.js";
-import { VoiceConversationState } from "./conversation-state.js";
+} from "./audio-scheduling";
+import { decodeVoiceAudioFrame } from "./audio-frame";
+import { VoiceAudioPlayer } from "./client/voice-audio-player";
+import { VoiceSocketClient } from "./client/voice-socket-client";
+import { VoiceConversationState } from "./conversation-state";
 
 export function createVoicePage(): string {
   return `<!doctype html>
@@ -21,10 +21,11 @@ export function createVoicePage(): string {
     body { margin: 0; min-height: 100vh; color: #f5f1ff; background: radial-gradient(circle at 20% 15%, #352263 0, transparent 34%), radial-gradient(circle at 85% 85%, #113d4a 0, transparent 30%), #090b13; display: grid; place-items: center; padding: 24px; }
     main { width: min(760px, 100%); background: rgba(16, 18, 31, .84); border: 1px solid rgba(255,255,255,.1); border-radius: 28px; padding: clamp(22px, 5vw, 42px); box-shadow: 0 28px 80px rgba(0,0,0,.4); backdrop-filter: blur(20px); }
     header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    .header-actions { display: flex; gap: 8px; align-items: center; }
     h1 { margin: 0; font-size: clamp(1.6rem, 4.4vw, 2.4rem); letter-spacing: -.04em; }
     .eyebrow { margin: 0 0 5px; color: #ac9ae9; font-size: .72rem; font-weight: 750; letter-spacing: .18em; text-transform: uppercase; }
     button { border: 0; color: inherit; font: inherit; cursor: pointer; }
-    .secondary { border: 1px solid rgba(255,255,255,.14); border-radius: 12px; padding: 10px 14px; background: rgba(255,255,255,.06); }
+    .secondary { border: 1px solid rgba(255,255,255,.14); border-radius: 12px; padding: 10px 14px; color: inherit; background: rgba(255,255,255,.06); text-decoration: none; }
     .secondary:hover { background: rgba(255,255,255,.11); }
     .statusbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; font-size: .82rem; }
     #phase { display: inline-flex; align-items: center; gap: 8px; color: #d6cffb; font-weight: 700; }
@@ -56,7 +57,7 @@ export function createVoicePage(): string {
   <main>
     <header>
       <div><p class="eyebrow">Private personal AI</p><h1>Talk with Shiva</h1></div>
-      <button id="newConversation" class="secondary" type="button">New conversation</button>
+      <div class="header-actions"><a class="secondary" href="/people">People</a><button id="newConversation" class="secondary" type="button">New conversation</button></div>
     </header>
     <div class="statusbar">
       <span id="phase" data-phase="connecting">Connecting…</span>

@@ -1,8 +1,8 @@
 import type {
   SkillContext,
   SkillExecutionMetadata,
-} from "../../skills/types.js";
-import type { ExpenseRepositoryPort, ExpenseRecord } from "./types.js";
+} from "../../skills/types";
+import type { ExpenseRepositoryPort, ExpenseRecord } from "./types";
 
 export interface ExpenseListToolInput {
   readonly from?: Date;

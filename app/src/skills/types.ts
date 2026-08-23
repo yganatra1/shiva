@@ -3,7 +3,7 @@ import type { z } from "zod";
 import type {
   ActionImpact,
   ActionMutability,
-} from "../security/execution-mode.js";
+} from "../security/execution-mode";
 
 export interface SkillAuditDiagnostic {
   readonly category: string;

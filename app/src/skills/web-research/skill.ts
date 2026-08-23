@@ -1,17 +1,17 @@
 import { z } from "zod";
 
-import type { ShivaSkill, SkillResult } from "../types.js";
+import type { ShivaSkill, SkillResult } from "../types";
 import type {
   WebOpenToolPort,
   WebSearchResult,
   WebSearchToolPort,
-} from "../../tools/web/types.js";
-import { WebToolError } from "../../tools/web/types.js";
+} from "../../tools/web/types";
+import { WebToolError } from "../../tools/web/types";
 import type {
   ResearchSource,
   WebResearchInput,
   WebResearchOutput,
-} from "./types.js";
+} from "./types";
 
 const searchQuerySchema = z
   .string()

@@ -7,7 +7,7 @@ import {
   isBlockedWorkspacePath,
   WORKSPACE_GIT_EXCLUDES,
   WORKSPACE_RG_EXCLUDES,
-} from "./path-policy.js";
+} from "./path-policy";
 
 const DEFAULT_WORKSPACE_ROOT = fileURLToPath(
   new URL("../../../../", import.meta.url),

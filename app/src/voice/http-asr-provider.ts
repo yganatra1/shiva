@@ -5,7 +5,7 @@ import {
   type ASRInput,
   type ASRProvider,
   type TranscriptionResult,
-} from "./provider.js";
+} from "./provider";
 
 interface HttpASRProviderOptions {
   readonly baseUrl: string;

@@ -1,8 +1,8 @@
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 
-import type { AppConfig } from "../config/environment.js";
-import * as schema from "./schema.js";
+import type { AppConfig } from "../config/environment";
+import * as schema from "./schema";
 
 export type ShivaDatabase = ReturnType<typeof createDatabase>["db"];
 

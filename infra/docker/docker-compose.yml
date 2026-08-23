@@ -26,6 +26,8 @@ services:
         condition: service_started
       tts:
         condition: service_started
+      face:
+        condition: service_started
     env_file:
       - path: ../../.env
         required: false
@@ -36,6 +38,7 @@ services:
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       ASR_SERVICE_URL: http://asr:8101
       TTS_SERVICE_URL: http://tts:8102
+      FACE_SERVICE_URL: http://face:8103
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:
@@ -89,6 +92,27 @@ services:
               count: 1
               capabilities: [gpu]
 
+  face:
+    build:
+      context: ../..
+      dockerfile: infra/docker/face.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: ../../.env
+        required: false
+    environment:
+      FACE_HOST: 0.0.0.0
+      FACE_PORT: 8103
+      FACE_MODEL: buffalo_l
+      FACE_MODEL_ROOT: /models/insightface
+      FACE_PROVIDER: ${FACE_PROVIDER:-cpu}
+      FACE_REQUIRE_CUDA: ${FACE_REQUIRE_CUDA:-false}
+    expose:
+      - "8103"
+    volumes:
+      - shiva-face-models:/models
+
 volumes:
   shiva-postgres-data:
   shiva-voice-models:
+  shiva-face-models:

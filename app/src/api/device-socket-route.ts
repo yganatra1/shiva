@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import type { RawData } from "ws";
 import { z } from "zod";
 
-import type { DeviceCommandDispatcher } from "../device/device-command-dispatcher.js";
+import type { DeviceCommandDispatcher } from "../device/device-command-dispatcher";
 
 const HEARTBEAT_INTERVAL_MS = 25_000;
 const querySchema = z.object({ token: z.string().optional() }).strict();

@@ -10,7 +10,7 @@ import type {
   ExpenseRepositoryPort,
   InsertExpenseInput,
   ListExpensesInput,
-} from "./types.js";
+} from "./types";
 
 export const EXPENSE_SHEET_COLUMNS = [
   "expense_id",

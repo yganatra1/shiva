@@ -3,7 +3,7 @@ import {
   type SynthesisInput,
   type SynthesisResult,
   type TTSProvider,
-} from "./provider.js";
+} from "./provider";
 
 interface HttpTTSProviderOptions {
   readonly baseUrl: string;

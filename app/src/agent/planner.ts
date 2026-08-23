@@ -1,11 +1,11 @@
 import { z } from "zod";
 
-import type { AIProvider, ChatMessage } from "../brain/ai-provider.js";
+import type { AIProvider, ChatMessage } from "../brain/ai-provider";
 import type {
   AgentDecision,
   AgentPlanner,
   AgentPlanningContext,
-} from "./types.js";
+} from "./types";
 
 const decisionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("direct_chat") }).strict(),

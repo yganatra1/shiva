@@ -1,13 +1,13 @@
-import type { AppConfig } from "../../config/environment.js";
-import { GoogleDriveClient } from "../../tools/drive/client.js";
-import { GoogleUserOAuthAccessTokenProvider } from "../../tools/expenses/google-user-oauth.js";
-import { GoogleSheetsClient } from "../../tools/sheets/client.js";
-import type { SkillRegistry } from "../registry.js";
-import { createSheetsAddTabSkill } from "../sheets-add-tab/skill.js";
-import { createSheetsCreateSkill } from "../sheets-create/skill.js";
-import { createSheetsFindSkill } from "../sheets-find/skill.js";
-import { createSheetsReadSkill } from "../sheets-read/skill.js";
-import { createSheetsUpdateSkill } from "../sheets-update/skill.js";
+import type { AppConfig } from "../../config/environment";
+import { GoogleDriveClient } from "../../tools/drive/client";
+import { GoogleUserOAuthAccessTokenProvider } from "../../tools/expenses/google-user-oauth";
+import { GoogleSheetsClient } from "../../tools/sheets/client";
+import type { SkillRegistry } from "../registry";
+import { createSheetsAddTabSkill } from "../sheets-add-tab/skill";
+import { createSheetsCreateSkill } from "../sheets-create/skill";
+import { createSheetsFindSkill } from "../sheets-find/skill";
+import { createSheetsReadSkill } from "../sheets-read/skill";
+import { createSheetsUpdateSkill } from "../sheets-update/skill";
 
 export function registerGoogleSkills(
   registry: SkillRegistry,

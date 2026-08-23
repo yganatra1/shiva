@@ -1,9 +1,9 @@
-import type { AgentLoop } from "./agent-loop.js";
+import type { AgentLoop } from "./agent-loop";
 import type {
   AgentOrchestratorPort,
   AgentRequest,
   AgentRunResult,
-} from "./types.js";
+} from "./types";
 
 export class ShivaOrchestrator implements AgentOrchestratorPort {
   constructor(private readonly loop: Pick<AgentLoop, "run">) {}

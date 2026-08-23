@@ -1,9 +1,9 @@
 import { z } from "zod";
 
-import { executionModeSchema, type ExecutionState } from "../../security/execution-mode.js";
-import type { ExecutionStateService } from "../../security/execution-state.js";
-import type { ConfirmationService } from "../../security/confirmation.js";
-import type { ShivaSkill, SkillResult } from "../types.js";
+import { executionModeSchema, type ExecutionState } from "../../security/execution-mode";
+import type { ExecutionStateService } from "../../security/execution-state";
+import type { ConfirmationService } from "../../security/confirmation";
+import type { ShivaSkill, SkillResult } from "../types";
 
 const emptyInputSchema = z.object({}).strict();
 const setModeInputSchema = z
