@@ -4,7 +4,7 @@ import type {
   ChatMessage,
 } from "../brain/ai-provider";
 import type { AgentOrchestratorPort } from "../agent/types";
-import { SHIVA_SYSTEM_PROMPT } from "../brain/system-prompt";
+import { SHIVA_SYSTEM_PROMPT, TEXT_MARKDOWN_RESPONSE_GUIDANCE } from "../brain/system-prompt";
 import type {
   FaceIdentificationResult,
   FaceRecognitionService,
@@ -69,6 +69,11 @@ const VOICE_RESPONSE_GUIDANCE: ChatMessage = {
   role: "system",
   content:
     "This interaction is being spoken aloud. Respond conversationally and concisely in smooth, connected natural speech. Avoid markdown, tables, headings, long lists, choppy fragments, and unnecessary formatting. Use moderately sized spoken phrases and only include detail that is useful when heard.",
+};
+
+const TEXT_RESPONSE_GUIDANCE: ChatMessage = {
+  role: "system",
+  content: TEXT_MARKDOWN_RESPONSE_GUIDANCE,
 };
 
 const PLANNER_FALLBACK_GUIDANCE: ChatMessage = {
@@ -400,7 +405,9 @@ function buildMessages(
   });
   return [
     { role: "system", content: SHIVA_SYSTEM_PROMPT },
-    ...(interactionMode === "voice" ? [VOICE_RESPONSE_GUIDANCE] : []),
+    ...(interactionMode === "voice"
+      ? [VOICE_RESPONSE_GUIDANCE]
+      : [TEXT_RESPONSE_GUIDANCE]),
     ...(explicitMemory ? [explicitMemoryInstruction(explicitMemory)] : []),
     ...(memoryContext ? [memoryContext] : []),
     ...(faceIdentityContext ? [faceIdentityContext] : []),

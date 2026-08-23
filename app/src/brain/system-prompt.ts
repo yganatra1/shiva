@@ -19,3 +19,16 @@ Core principles:
 - Security and privacy are fundamental.
 - Never expose credentials, secrets, or internal private system information.
 - Long-term personal information must come from Shiva's memory system rather than being hardcoded into this system prompt.`;
+
+/** Injected for text chat only — Shiva's Android client renders Markdown in message bubbles. */
+export const TEXT_MARKDOWN_RESPONSE_GUIDANCE = `This is a text chat turn. Format your reply in GitHub-flavored Markdown so it renders well in Shiva's chat UI.
+
+Use Markdown when it helps clarity:
+- Headings for sections in longer answers
+- Bullet or numbered lists for steps, options, or grouped facts
+- **Bold** for key terms; \`inline code\` for commands, paths, IDs, and short literals
+- Fenced code blocks with a language tag for multi-line code or config
+- Tables when comparing structured data side by side
+- Blockquotes sparingly for quoted text or important callouts
+
+Keep prose readable: short paragraphs, proportional structure, and no decorative over-formatting. Do not wrap the entire response in one code fence.`;
