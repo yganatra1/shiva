@@ -9,7 +9,7 @@ import {
 } from "./api/chat-route";
 import { registerErrorHandling } from "./api/error-handler";
 import { registerExecutionSettingsRoute } from "./api/execution-settings-route";
-import { registerDeviceSocketRoute } from "./api/device-socket-route";
+import { registerDeviceSocketRelayRoute } from "./api/device-socket-relay-route";
 import { registerHealthRoute } from "./api/health-route";
 import { registerPeopleRoutes } from "./api/people-route";
 import { registerVoiceRoutes } from "./api/voice-route";
@@ -20,7 +20,7 @@ import { OllamaEmbeddingProvider } from "./brain/ollama-embedding-provider";
 import { OllamaProvider } from "./brain/ollama-provider";
 import type { AppConfig } from "./config/environment";
 import { createDatabase } from "./database/pool";
-import { DeviceCommandDispatcher } from "./device/device-command-dispatcher";
+import type { DeviceDispatcher } from "./device/device-dispatcher";
 import {
   FaceRecognitionService,
   type FaceRecognitionServiceOptions,
@@ -82,7 +82,7 @@ export interface AppOverrides {
   readonly voicePlaybackCoordinator?: VoicePlaybackCoordinator;
   readonly agentOrchestrator?: AgentOrchestratorPort;
   readonly executionStatus?: ExecutionStatusPort;
-  readonly deviceDispatcher?: DeviceCommandDispatcher;
+  readonly deviceDispatcher?: DeviceDispatcher;
 }
 
 export function createApp(config: AppConfig, overrides: AppOverrides = {}): FastifyInstance {
@@ -192,6 +192,7 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
         },
         config.agentTraceLog ? consoleTrace : undefined,
         faceRecognition,
+        overrides.deviceDispatcher,
       )
     : undefined;
   const agentOrchestrator =
@@ -200,10 +201,6 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     overrides.executionStatus ??
     agentRuntime?.executionStatus ??
     createInMemoryExecutionStatus(config);
-  const deviceDispatcher =
-    overrides.deviceDispatcher ??
-    agentRuntime?.deviceDispatcher ??
-    new DeviceCommandDispatcher();
   const chatService = new ShivaChatService({
     provider,
     repository,
@@ -271,9 +268,8 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
       playbackCoordinator: voicePlaybackCoordinator,
       ...(voicePerformance ? { performance: voicePerformance } : {}),
     });
-    registerDeviceSocketRoute(instance, {
-      dispatcher: deviceDispatcher,
-      ...(config.deviceWsToken ? { authToken: config.deviceWsToken } : {}),
+    registerDeviceSocketRelayRoute(instance, {
+      deviceAgentUrl: config.deviceAgentUrl,
     });
   });
 

@@ -4,8 +4,8 @@ import { defineSkill } from "../define-skill";
 import type { SkillContext, SkillResult } from "../types";
 import {
   deviceErrorToFailure,
-  type DeviceCommandDispatcher,
-} from "../../device/device-command-dispatcher";
+  type DeviceDispatcher,
+} from "../../device/device-dispatcher";
 
 const inputSchema = z
   .object({
@@ -21,7 +21,7 @@ export interface DeviceCallOutput {
   readonly result?: Readonly<Record<string, string>>;
 }
 
-export function createDeviceCallSkill(dispatcher?: DeviceCommandDispatcher) {
+export function createDeviceCallSkill(dispatcher?: DeviceDispatcher) {
   return defineSkill<DeviceCallInput, DeviceCallOutput>({
     name: "device_call",
     description:

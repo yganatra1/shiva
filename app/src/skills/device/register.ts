@@ -1,5 +1,5 @@
 import type { AIProvider } from "../../brain/ai-provider";
-import type { DeviceCommandDispatcher } from "../../device/device-command-dispatcher";
+import type { DeviceDispatcher } from "../../device/device-dispatcher";
 import type { FaceRecognitionService } from "../../face/face-recognition-service";
 import type { SkillRegistry } from "../registry";
 import { createDeviceCallSkill } from "../device-call/skill";
@@ -10,7 +10,7 @@ import { createDeviceNotificationsReadSkill } from "../device-notifications-read
 
 export function registerDeviceSkills(
   registry: SkillRegistry,
-  dispatcher: DeviceCommandDispatcher,
+  dispatcher: DeviceDispatcher,
   provider: AIProvider,
   recognition?: Pick<FaceRecognitionService, "identify">,
 ): void {

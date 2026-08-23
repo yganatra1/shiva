@@ -24,15 +24,22 @@ People UI    -> /api/people + per-photo enrollments
                                              -> InsightFace service :8103
                                              -> people + 512-d face gallery in PostgreSQL
 Attached photo / device camera --------------> identify -> grounded person context
+
+Android app -> WS /device/ws (relayed, unmodified) -> shiva-device-agent :3002 (own process)
+                                             -> DeviceCommandDispatcher owns the phone's
+                                                live socket and command correlation
+device_call / device_camera_capture / ... --> POST /v1/dispatch -> phone's real result
+delegate_to_agent("device", goal) ----------> POST /v1/delegate -> device-agent's own
+                                                small planner+tool loop -> result
 ```
 
 The API does not put model, embedding, persistence, or external-service details in route handlers. Provider and repository interfaces keep those boundaries explicit. `/chat` and the voice WebSocket share the same conversation, memory, persistence, cancellation, and model path; voice mode only adds speech-friendly response guidance. Every non-explicit-memory turn reaches the semantic planner after the same context is built. The planner decides from the registered catalog whether to use skills, ask a clarification, describe the real catalog, or delegate tool-free conversation to the existing streaming provider. There is no keyword/regex intent router.
 
-Google Sheets is the sole expense source of truth. Shiva does not maintain a PostgreSQL expense ledger, row cache, or synchronization mirror. PostgreSQL stores conversation/memory data, the people directory and separate 512-dimensional face gallery, per-user Google resource bindings, durable execution settings and confirmations, plus agent/skill audit records. Face templates are never mixed with the 768-dimensional semantic-memory vectors. See [docs/memory-architecture.md](docs/memory-architecture.md), [docs/face-architecture.md](docs/face-architecture.md), [docs/voice-architecture.md](docs/voice-architecture.md), and [docs/agent-architecture.md](docs/agent-architecture.md).
+Google Sheets is the sole expense source of truth. Shiva does not maintain a PostgreSQL expense ledger, row cache, or synchronization mirror. PostgreSQL stores conversation/memory data, the people directory and separate 512-dimensional face gallery, per-user Google resource bindings, durable execution settings and confirmations, plus agent/skill audit records. Face templates are never mixed with the 768-dimensional semantic-memory vectors. See [docs/memory-architecture.md](docs/memory-architecture.md), [docs/face-architecture.md](docs/face-architecture.md), [docs/voice-architecture.md](docs/voice-architecture.md), [docs/agent-architecture.md](docs/agent-architecture.md), and [docs/device-architecture.md](docs/device-architecture.md).
 
 This version still does not add wake words, always-listening mode, streaming ASR, VAD, barge-in, speaker recognition, face liveness/anti-spoofing, voice cloning, authentication, cloud fallback, procedural memory, a knowledge graph, arbitrary browser automation, or a general-purpose shell/tool runtime. A face match is personal context, not authentication or authority.
 
-The official Android companion lives in [`android/`](android/README.md). It is a native Kotlin client over Tailscale, not a second brain.
+The official Android companion lives in [`android/`](android/README.md). It is a native Kotlin client over Tailscale, not a second brain. It still connects to the same `shiva-api` origin and `/device/ws` path as always — `shiva-api` relays that connection to the separate `shiva-device-service` process, which is the one that actually owns the phone's live socket and command correlation. See [docs/device-architecture.md](docs/device-architecture.md).
 
 ## Requirements
 
@@ -78,6 +85,7 @@ SHIVA_MAX_EXECUTION_MODE=FULL_ACCESS
 SHIVA_CONFIRMATION_TTL_MS=300000
 EXPENSE_SHEET_ID=
 EXPENSE_SHEET_REQUEST_TIMEOUT_MS=15000
+DEVICE_SERVICE_URL=http://127.0.0.1:3002
 GOOGLE_OAUTH_CLIENT_ID=
 GOOGLE_OAUTH_CLIENT_SECRET=
 GOOGLE_OAUTH_REFRESH_TOKEN=
@@ -118,6 +126,9 @@ FACE_CUDA_DEVICE_ID=0
 FACE_DETECTION_SIZE=640
 SHIVA_PERF_LOG=false
 NODE_ENV=development
+DEVICE_SERVICE_HOST=127.0.0.1
+DEVICE_SERVICE_PORT=3002
+DEVICE_WS_TOKEN=
 ```
 
 `SHIVA_USER_ID` identifies the single Shiva owner and must remain stable across restarts. People, face galleries, memories, and agent state are owner-scoped to that UUID. Use a strong database password in real environments. Node and all three Python services deliberately resolve the root `.env`.
@@ -127,6 +138,8 @@ The Node gateway uses `FACE_SERVICE_URL` and owns identity matching policy. The 
 `SHIVA_KEEP_ALIVE` accepts Ollama duration strings such as `30m` or numeric seconds. Use `SHIVA_KEEP_ALIVE=-1` to keep the chat model loaded indefinitely; Shiva serializes numeric environment values as JSON numbers as required by Ollama.
 
 `SHIVA_MAX_EXECUTION_MODE` is the host-controlled authority ceiling and accepts `SAFE`, `AUTO`, or `FULL_ACCESS`. The current mode itself is stored in PostgreSQL so conversational changes survive restarts. Effective authority is the lower of the stored mode and this configured maximum; lockdown forces the effective mode to `SAFE`. `SHIVA_CONFIRMATION_TTL_MS` controls how long an exact pending action can be approved and defaults to 300,000 ms (five minutes).
+
+`DEVICE_SERVICE_URL` is how `shiva-api` reaches `agents/device-service`, the separate process that owns the Android app's live connection; `DEVICE_SERVICE_HOST`/`DEVICE_SERVICE_PORT` are what that process itself binds to, and `DEVICE_WS_TOKEN` (read only by device-service) gates its `/device/ws` endpoint. See [docs/device-architecture.md](docs/device-architecture.md).
 
 The initial database state is `AUTO` with lockdown disabled. Lowering authority and entering lockdown are immediate. Raising authority, leaving lockdown, and sensitive/destructive operations require an exact action-bound confirmation. Settings carry a monotonic revision: control changes commit with compare-and-set, confirmations are bound to the revision they were created under, and writes recheck state immediately before starting. This is intentionally not an internal permission matrix: Google OAuth scopes, cloud IAM, operating-system permissions, and registered adapters remain the actual capability boundary.
 
@@ -481,7 +494,18 @@ npm run db:migrate
 npm start
 ```
 
-Then start ASR, TTS, and face analysis from three additional RunPod shells using the Python service commands above with repository path `/workspace/shiva/repo`. Keep ports 8101–8103 bound to localhost. Warm each model and confirm the face response reports `CPUExecutionProvider`. From your browser, access only the Fastify port through the platform's private tunnel/proxy.
+From another RunPod shell, start `shiva-device-service` the same way — it has no database and nothing to migrate:
+
+```bash
+cd /workspace/shiva/repo/agents/device-service
+npm install
+npm test
+npm run typecheck
+npm run build
+npm start
+```
+
+Then start ASR, TTS, and face analysis from three additional RunPod shells using the Python service commands above with repository path `/workspace/shiva/repo`. Keep ports 8101–8103 and device-service's 3002 bound to localhost. Warm each model and confirm the face response reports `CPUExecutionProvider`. From your browser, access only the Fastify port through the platform's private tunnel/proxy; the Android app also connects only to that same port (see [docs/device-architecture.md](docs/device-architecture.md)).
 
 Before `/chat` verification, ensure the two configured models exist:
 
@@ -502,7 +526,7 @@ The future Ubuntu/NVIDIA-server path is:
 Git -> Ubuntu NVIDIA server -> Docker Compose
 ```
 
-The Compose definition runs the API, pgvector-enabled PostgreSQL, and internal ASR/TTS/face containers while leaving Ollama externally configurable. It publishes only the Shiva API; model-service ports use the private Compose network. See [infra/README.md](infra/README.md).
+The Compose definition runs the API, pgvector-enabled PostgreSQL, internal ASR/TTS/face containers, and device-service, while leaving Ollama externally configurable. It publishes only the Shiva API; model-service and device-service ports use the private Compose network. See [infra/README.md](infra/README.md).
 
 ## Commands
 
@@ -517,3 +541,5 @@ The Compose definition runs the API, pgvector-enabled PostgreSQL, and internal A
 | `npm run db:migrate:dev` | Apply migrations from TypeScript |
 | `npm run db:migrate` | Apply migrations from compiled output |
 | `npm start` | Run the compiled API |
+
+Run from `app/`. `agents/device-service` has the same `dev`/`test`/`typecheck`/`build`/`start` scripts (no database, so no `db:*` commands) — see [agents/device-service/README.md](agents/device-service/README.md).

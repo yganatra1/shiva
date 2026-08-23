@@ -3,8 +3,8 @@ import { z } from "zod";
 import type { AIProvider } from "../../brain/ai-provider";
 import {
   deviceErrorToFailure,
-  type DeviceCommandDispatcher,
-} from "../../device/device-command-dispatcher";
+  type DeviceDispatcher,
+} from "../../device/device-dispatcher";
 import type { FaceRecognitionService } from "../../face/face-recognition-service";
 import { defineSkill } from "../define-skill";
 import type { SkillContext, SkillResult } from "../types";
@@ -47,7 +47,7 @@ const IMAGE_FIELD_CANDIDATES = [
 ] as const;
 
 export function createDeviceCameraCaptureSkill(
-  dispatcher?: DeviceCommandDispatcher,
+  dispatcher?: DeviceDispatcher,
   provider?: AIProvider,
   recognition?: Pick<FaceRecognitionService, "identify">,
 ) {

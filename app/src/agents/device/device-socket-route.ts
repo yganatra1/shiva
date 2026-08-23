@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import type { RawData } from "ws";
 import { z } from "zod";
 
-import type { DeviceCommandDispatcher } from "../device/device-command-dispatcher";
+import type { DeviceCommandDispatcher } from "./device-command-dispatcher";
 
 const HEARTBEAT_INTERVAL_MS = 25_000;
 const querySchema = z.object({ token: z.string().optional() }).strict();
@@ -16,10 +16,14 @@ export interface DeviceSocketRouteOptions {
 }
 
 /**
- * The Android companion app's single connection: the server pushes
+ * The Android companion app's single connection: this process pushes
  * device_command messages and the phone replies with device_command_result,
  * correlated by DeviceCommandDispatcher. No audio/binary frames here, unlike
- * the voice socket — every message is JSON text.
+ * shiva-api's voice socket — every message is JSON text.
+ *
+ * shiva-api never terminates this connection itself: it relays the phone's
+ * WebSocket through to here unmodified (see app/src/api/device-socket-relay-route.ts)
+ * so the Android app's configured server URL never has to change.
  */
 export function registerDeviceSocketRoute(
   app: FastifyInstance,

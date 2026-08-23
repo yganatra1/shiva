@@ -7,6 +7,18 @@ export const IMPLEMENTED_DEVICE_COMMAND_TYPES = [
   "device.notifications.list",
   "device.notifications.read",
   "device.camera.capture",
+  "device.app.open",
+  "device.app.list",
+  "device.ui.inspect",
+  "device.ui.find",
+  "device.ui.click",
+  "device.ui.type",
+  "device.ui.scroll",
+  "device.ui.wait",
+  "device.ui.screenshot",
+  "device.ui.gesture",
+  "device.ui.back",
+  "device.ui.global",
 ] as const;
 
 /**
@@ -52,7 +64,7 @@ export interface DeviceCommandResult {
 
 /** Small metadata fields (name, phone, mime, etc.). */
 const DEVICE_RESULT_FIELD_MAX = 2_000;
-/** Base64 JPEG from the phone can be up to ~512 KiB raw (~700 KiB encoded). */
+/** Base64 JPEG from the phone (camera capture or UI screenshot) can be up to ~512 KiB raw (~700 KiB encoded). */
 const DEVICE_RESULT_IMAGE_FIELD_MAX = 1_500_000;
 
 const deviceCommandStatusSchema = z.preprocess((value) => {

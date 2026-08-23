@@ -1,7 +1,10 @@
+import { AgentClient } from "../agents/agent-client";
+import { AgentRegistry } from "../agents/agent-registry";
 import type { AIProvider } from "../brain/ai-provider";
 import type { AppConfig } from "../config/environment";
 import type { ShivaDatabase } from "../database/pool";
-import { DeviceCommandDispatcher } from "../device/device-command-dispatcher";
+import type { DeviceDispatcher } from "../device/device-dispatcher";
+import { DeviceServiceClient } from "../device/device-service-client";
 import type { FaceRecognitionService } from "../face/face-recognition-service";
 import { DrizzlePeopleRepository } from "../people/people-repository";
 import {
@@ -16,6 +19,7 @@ import { ExecutionStatusService } from "../security/execution-status";
 import { ExecutionPolicyEngine } from "../security/policy-engine";
 import { SkillExecutor } from "../skills/executor";
 import { registerExecutionControlSkills } from "../skills/execution-control/register";
+import { registerAgentSkills } from "../skills/agents/register";
 import { registerCoreSkills } from "../skills/core/register";
 import { registerSystemSkills } from "../skills/system/register";
 import { registerGoogleSkills } from "../skills/google/register";
@@ -33,7 +37,7 @@ import type { AgentOrchestratorPort } from "./types";
 export interface AgentRuntime {
   readonly orchestrator: AgentOrchestratorPort;
   readonly executionStatus: ExecutionStatusService;
-  readonly deviceDispatcher: DeviceCommandDispatcher;
+  readonly deviceDispatcher: DeviceDispatcher;
 }
 
 export function createAgentRuntime(
@@ -43,6 +47,7 @@ export function createAgentRuntime(
   onAuditError: (error: unknown) => void = () => {},
   onTrace?: AgentTraceLogger,
   faceRecognition?: FaceRecognitionService,
+  deviceDispatcherOverride?: DeviceDispatcher,
 ): AgentRuntime {
   const registry = new SkillRegistry(createPackRegistry());
   const executionState = new ExecutionStateService(
@@ -62,12 +67,26 @@ export function createAgentRuntime(
   // fixed-schema expense ledger. Their code, tools, and tests are untouched
   // and registerFinanceSkills still works, in case this is ever reverted.
   registerGoogleSkills(registry, config);
-  const deviceDispatcher = new DeviceCommandDispatcher({
-    ...(onTrace ? { onTrace } : {}),
-  });
+  const deviceDispatcher =
+    deviceDispatcherOverride ??
+    new DeviceServiceClient({
+      baseUrl: config.deviceAgentUrl,
+      ...(onTrace ? { onTrace } : {}),
+    });
   registerDeviceSkills(registry, deviceDispatcher, provider, faceRecognition);
   registerPeopleSkills(registry, new DrizzlePeopleRepository(database));
   registerWebSkills(registry, config);
+  const agentRegistry = new AgentRegistry();
+  agentRegistry.register({
+    name: "device",
+    description:
+      "Controls the connected Android phone through a small autonomous loop over its UI (open apps, inspect/tap/type/scroll, take screenshots) to accomplish a goal that needs more than one well-defined action.",
+    baseUrl: config.deviceAgentUrl,
+  });
+  const agentClient = new AgentClient(agentRegistry, {
+    ...(onTrace ? { onTrace } : {}),
+  });
+  registerAgentSkills(registry, agentClient, agentRegistry);
 
   const audit = new AgentAuditRepository(database);
   const executor = new SkillExecutor(

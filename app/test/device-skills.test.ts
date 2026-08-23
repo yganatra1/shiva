@@ -4,9 +4,11 @@ import { test } from "node:test";
 import { ExecutionPolicyEngine } from "../src/security/policy-engine.js";
 import type { AIProvider, ChatInput, ChatResult } from "../src/brain/ai-provider.js";
 import {
-  DeviceCommandDispatcher,
-  type DeviceTransport,
-} from "../src/device/device-command-dispatcher.js";
+  DeviceDispatchError,
+  type DeviceCommandResult,
+  type DeviceDispatcher,
+  type DispatchOptions,
+} from "../src/device/device-dispatcher.js";
 import { SkillExecutor } from "../src/skills/executor.js";
 import { createDeviceCallSkill } from "../src/skills/device-call/skill.js";
 import { createDeviceCameraCaptureSkill } from "../src/skills/device-camera-capture/skill.js";
@@ -34,16 +36,40 @@ const context: SkillContext = {
   now: () => new Date("2026-08-22T00:00:00Z"),
 };
 
-class RecordingTransport implements DeviceTransport {
-  readonly sent: string[] = [];
+/** Resolves dispatch() directly with a canned result/error — no wire simulation needed. */
+class FakeDeviceDispatcher implements DeviceDispatcher {
+  readonly calls: { type: string; arguments: Record<string, string> }[] = [];
+  private next:
+    | { readonly kind: "result"; readonly value: DeviceCommandResult }
+    | { readonly kind: "error"; readonly value: unknown } = {
+    kind: "error",
+    value: new DeviceDispatchError(
+      "DEVICE_NOT_CONNECTED",
+      "No device is currently connected.",
+    ),
+  };
 
-  send(message: string): void {
-    this.sent.push(message);
+  respondWith(result: DeviceCommandResult): void {
+    this.next = { kind: "result", value: result };
+  }
+
+  failWith(error: unknown): void {
+    this.next = { kind: "error", value: error };
+  }
+
+  async dispatch(
+    type: string,
+    commandArguments: Readonly<Record<string, string>>,
+    _options?: DispatchOptions,
+  ): Promise<DeviceCommandResult> {
+    this.calls.push({ type, arguments: { ...commandArguments } });
+    if (this.next.kind === "error") throw this.next.value;
+    return this.next.value;
   }
 }
 
 function registryWithDevicePack(
-  dispatcher?: DeviceCommandDispatcher,
+  dispatcher?: DeviceDispatcher,
   provider?: AIProvider,
 ): SkillRegistry {
   const packs = new PackRegistry();
@@ -73,64 +99,30 @@ class FakeVisionProvider implements AIProvider {
   }
 }
 
-/** SkillExecutor awaits policy/audit steps before the skill actually dispatches. */
-async function waitForSentCommand(transport: RecordingTransport): Promise<{
-  id: string;
-  type: string;
-  arguments: Record<string, string>;
-}> {
-  // Waits for a genuinely new message, not just any message ever sent — a
-  // second call within the same test must not re-find the first command.
-  const startLength = transport.sent.length;
-  const deadline = Date.now() + 2_000;
-  while (transport.sent.length <= startLength) {
-    if (Date.now() > deadline) {
-      throw new Error("Timed out waiting for a device command to be sent.");
-    }
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  const sent = JSON.parse(transport.sent.at(-1) ?? "{}") as {
-    command: { id: string; type: string; arguments: Record<string, string> };
-  };
-  return sent.command;
-}
-
-function respondToCommand(
-  dispatcher: DeviceCommandDispatcher,
-  commandId: string,
-  overrides: Record<string, unknown>,
-): void {
-  dispatcher.handleMessage(
-    JSON.stringify({
-      type: "device_command_result",
-      result: { commandId, status: "COMPLETED", ...overrides },
-    }),
-  );
-}
-
 test("device_contacts_search dispatches and returns whatever the phone reports", async () => {
-  const dispatcher = new DeviceCommandDispatcher();
-  const transport = new RecordingTransport();
-  dispatcher.connect(transport);
+  const dispatcher = new FakeDeviceDispatcher();
+  dispatcher.respondWith({
+    commandId: "cmd-1",
+    status: "COMPLETED",
+    result: { name: "Charmi", phone: "+911234567890" },
+  });
   const registry = registryWithDevicePack(dispatcher);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
-  const pending = executor.execute(
+  const result = await executor.execute(
     "device_contacts_search",
     { query: "Charmi" },
     context,
     { userAuthorized: true },
   );
-  const command = await waitForSentCommand(transport);
-  respondToCommand(dispatcher, command.id, {
-    result: { name: "Charmi", phone: "+911234567890" },
-  });
-  const result = await pending;
 
   assert.deepEqual(result, {
     success: true,
     data: { status: "COMPLETED", result: { name: "Charmi", phone: "+911234567890" } },
   });
+  assert.deepEqual(dispatcher.calls, [
+    { type: "device.contacts.search", arguments: { query: "Charmi" } },
+  ]);
   const summary = registry.list().find((skill) => skill.name === "device_contacts_search");
   assert.equal(summary?.pack, "device");
   assert.equal(summary?.configured, true);
@@ -138,33 +130,28 @@ test("device_contacts_search dispatches and returns whatever the phone reports",
 });
 
 test("device_call sends direct as a string and maps a non-COMPLETED status to failure", async () => {
-  const dispatcher = new DeviceCommandDispatcher();
-  const transport = new RecordingTransport();
-  dispatcher.connect(transport);
+  const dispatcher = new FakeDeviceDispatcher();
+  dispatcher.respondWith({
+    commandId: "cmd-1",
+    status: "DENIED",
+    error: "User declined the call permission.",
+  });
   const registry = registryWithDevicePack(dispatcher);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
-  const pending = executor.execute(
+  const result = await executor.execute(
     "device_call",
     { number: "+911234567890", direct: true },
     context,
     { userAuthorized: true },
   );
-  const command = await waitForSentCommand(transport);
-  assert.deepEqual(command.arguments, { number: "+911234567890", direct: "true" });
 
-  dispatcher.handleMessage(
-    JSON.stringify({
-      type: "device_command_result",
-      result: {
-        commandId: command.id,
-        status: "DENIED",
-        error: "User declined the call permission.",
-      },
-    }),
-  );
-  const result = await pending;
-
+  assert.deepEqual(dispatcher.calls, [
+    {
+      type: "device.phone.call",
+      arguments: { number: "+911234567890", direct: "true" },
+    },
+  ]);
   assert.equal(result.success, false);
   if (!result.success) {
     assert.equal(result.error.code, "DEVICE_COMMAND_DENIED");
@@ -175,7 +162,7 @@ test("device_call sends direct as a string and maps a non-COMPLETED status to fa
 });
 
 test("both device skills fail closed with DEVICE_NOT_CONNECTED when nothing is connected", async () => {
-  const dispatcher = new DeviceCommandDispatcher();
+  const dispatcher = new FakeDeviceDispatcher();
   const registry = registryWithDevicePack(dispatcher);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
@@ -201,46 +188,44 @@ test("every device skill reports configured=true even with no dispatcher (regist
 });
 
 test("the device pack groups all five skills", () => {
-  const registry = registryWithDevicePack(new DeviceCommandDispatcher());
+  const registry = registryWithDevicePack(new FakeDeviceDispatcher());
   const pack = registry.listPacks().find((entry) => entry.name === "device");
   assert.equal(pack?.skillCount, 5);
 });
 
 test("device_notifications_list and device_notifications_read pass through whatever the phone reports", async () => {
-  const dispatcher = new DeviceCommandDispatcher();
-  const transport = new RecordingTransport();
-  dispatcher.connect(transport);
+  const dispatcher = new FakeDeviceDispatcher();
   const registry = registryWithDevicePack(dispatcher);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
-  const listPending = executor.execute(
+  dispatcher.respondWith({
+    commandId: "cmd-1",
+    status: "COMPLETED",
+    result: { "notif-1_title": "Message from Charmi", "notif-1_key": "abc123" },
+  });
+  const listResult = await executor.execute(
     "device_notifications_list",
     {},
     context,
     { userAuthorized: true },
   );
-  const listCommand = await waitForSentCommand(transport);
-  assert.equal(listCommand.type, "device.notifications.list");
-  respondToCommand(dispatcher, listCommand.id, {
-    result: { "notif-1_title": "Message from Charmi", "notif-1_key": "abc123" },
-  });
-  const listResult = await listPending;
   assert.equal(listResult.success, true);
+  assert.equal(dispatcher.calls[0]?.type, "device.notifications.list");
 
-  const readPending = executor.execute(
+  dispatcher.respondWith({
+    commandId: "cmd-2",
+    status: "COMPLETED",
+    result: { title: "Message from Charmi", body: "Are we still on for lunch?" },
+  });
+  const readResult = await executor.execute(
     "device_notifications_read",
     { key: "abc123" },
     context,
     { userAuthorized: true },
   );
-  const readCommand = await waitForSentCommand(transport);
-  assert.equal(readCommand.type, "device.notifications.read");
-  assert.deepEqual(readCommand.arguments, { key: "abc123" });
-  respondToCommand(dispatcher, readCommand.id, {
-    result: { title: "Message from Charmi", body: "Are we still on for lunch?" },
-  });
-  const readResult = await readPending;
 
+  assert.equal(dispatcher.calls[1]?.type, "device.notifications.read");
+  assert.deepEqual(dispatcher.calls[1]?.arguments, { key: "abc123" });
   assert.deepEqual(readResult, {
     success: true,
     data: {
@@ -251,23 +236,21 @@ test("device_notifications_list and device_notifications_read pass through whate
 });
 
 test("device_camera_capture finds the image field, calls the model to describe it, and never returns raw image bytes", async () => {
-  const dispatcher = new DeviceCommandDispatcher();
-  const transport = new RecordingTransport();
-  dispatcher.connect(transport);
+  const dispatcher = new FakeDeviceDispatcher();
+  dispatcher.respondWith({
+    commandId: "cmd-1",
+    status: "COMPLETED",
+    result: { imageBase64: "ZmFrZS1qcGVnLWJ5dGVz", mimeType: "image/jpeg" },
+  });
   const provider = new FakeVisionProvider();
   const registry = registryWithDevicePack(dispatcher, provider);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
-  const pending = executor.execute("device_camera_capture", {}, context, {
+  const result = await executor.execute("device_camera_capture", {}, context, {
     userAuthorized: true,
   });
-  const command = await waitForSentCommand(transport);
-  assert.equal(command.type, "device.camera.capture");
-  respondToCommand(dispatcher, command.id, {
-    result: { imageBase64: "ZmFrZS1qcGVnLWJ5dGVz", mimeType: "image/jpeg" },
-  });
-  const result = await pending;
 
+  assert.equal(dispatcher.calls[0]?.type, "device.camera.capture");
   assert.deepEqual(result, {
     success: true,
     data: { status: "COMPLETED", description: "A cat sitting on a windowsill." },
@@ -280,21 +263,19 @@ test("device_camera_capture finds the image field, calls the model to describe i
 });
 
 test("device_camera_capture reports the seen field names when it can't recognize the image field", async () => {
-  const dispatcher = new DeviceCommandDispatcher();
-  const transport = new RecordingTransport();
-  dispatcher.connect(transport);
+  const dispatcher = new FakeDeviceDispatcher();
+  dispatcher.respondWith({
+    commandId: "cmd-1",
+    status: "COMPLETED",
+    result: { someUnexpectedField: "x" },
+  });
   const provider = new FakeVisionProvider();
   const registry = registryWithDevicePack(dispatcher, provider);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
-  const pending = executor.execute("device_camera_capture", {}, context, {
+  const result = await executor.execute("device_camera_capture", {}, context, {
     userAuthorized: true,
   });
-  const command = await waitForSentCommand(transport);
-  respondToCommand(dispatcher, command.id, {
-    result: { someUnexpectedField: "x" },
-  });
-  const result = await pending;
 
   assert.equal(result.success, true);
   if (!result.success) return;
@@ -304,20 +285,20 @@ test("device_camera_capture reports the seen field names when it can't recognize
 });
 
 test("device_camera_capture still reports success with a note when the model can't describe the photo", async () => {
-  const dispatcher = new DeviceCommandDispatcher();
-  const transport = new RecordingTransport();
-  dispatcher.connect(transport);
+  const dispatcher = new FakeDeviceDispatcher();
+  dispatcher.respondWith({
+    commandId: "cmd-1",
+    status: "COMPLETED",
+    result: { imageBase64: "abc" },
+  });
   const provider = new FakeVisionProvider();
   provider.failure = new Error("model does not support vision");
   const registry = registryWithDevicePack(dispatcher, provider);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
-  const pending = executor.execute("device_camera_capture", {}, context, {
+  const result = await executor.execute("device_camera_capture", {}, context, {
     userAuthorized: true,
   });
-  const command = await waitForSentCommand(transport);
-  respondToCommand(dispatcher, command.id, { result: { imageBase64: "abc" } });
-  const result = await pending;
 
   assert.equal(result.success, true);
   if (!result.success) return;

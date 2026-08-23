@@ -165,6 +165,10 @@ const environmentSchema = z
     .min(1_000)
     .max(120_000)
     .default(15_000),
+  DEVICE_AGENT_URL: httpBaseUrlSchema.default("http://127.0.0.1:3002"),
+  DEVICE_AGENT_HOST: z.string().trim().min(1).max(255).default("127.0.0.1"),
+  DEVICE_AGENT_PORT: z.coerce.number().int().min(1).max(65_535).default(3002),
+  DEVICE_AGENT_MAX_STEPS: z.coerce.number().int().min(1).max(32).default(15),
   DEVICE_WS_TOKEN: optionalSecretSchema,
   GOOGLE_OAUTH_CLIENT_ID: optionalSecretSchema,
   GOOGLE_OAUTH_CLIENT_SECRET: optionalSecretSchema,
@@ -292,6 +296,13 @@ export interface AppConfig {
   readonly confirmationTtlMs: number;
   readonly expenseSheetId?: string;
   readonly expenseSheetRequestTimeoutMs: number;
+  /** Where the device agent listens; shiva-api never holds the phone's WebSocket itself. */
+  readonly deviceAgentUrl: string;
+  /** Bind address/port for the device-agent process itself (app/src/agents/device). */
+  readonly deviceAgentHost: string;
+  readonly deviceAgentPort: number;
+  /** Bounds the device-agent's own tool-calling loop for one delegated goal. */
+  readonly deviceAgentMaxSteps: number;
   /** Required Android companion app connection token; unset means no auth is enforced. */
   readonly deviceWsToken?: string;
   readonly googleUserOAuth?: {
@@ -364,6 +375,10 @@ export function loadConfig(): AppConfig {
       : {}),
     expenseSheetRequestTimeoutMs:
       result.data.EXPENSE_SHEET_REQUEST_TIMEOUT_MS,
+    deviceAgentUrl: result.data.DEVICE_AGENT_URL,
+    deviceAgentHost: result.data.DEVICE_AGENT_HOST,
+    deviceAgentPort: result.data.DEVICE_AGENT_PORT,
+    deviceAgentMaxSteps: result.data.DEVICE_AGENT_MAX_STEPS,
     ...(result.data.DEVICE_WS_TOKEN
       ? { deviceWsToken: result.data.DEVICE_WS_TOKEN }
       : {}),

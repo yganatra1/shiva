@@ -28,6 +28,8 @@ services:
         condition: service_started
       face:
         condition: service_started
+      device-agent:
+        condition: service_started
     env_file:
       - path: ../../.env
         required: false
@@ -39,10 +41,34 @@ services:
       ASR_SERVICE_URL: http://asr:8101
       TTS_SERVICE_URL: http://tts:8102
       FACE_SERVICE_URL: http://face:8103
+      DEVICE_AGENT_URL: http://device-agent:3002
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:
       - ${SHIVA_BIND_ADDRESS:-127.0.0.1}:${PORT:-3000}:${PORT:-3000}
+
+  # Same image/build as shiva-api — it's the same npm package, just a
+  # different process/entry point (app/src/agents/device). No database, no
+  # migration step: this container just owns the phone's live connection and
+  # its own small tool-calling loop.
+  device-agent:
+    build:
+      context: ../..
+      dockerfile: infra/docker/app.Dockerfile
+    command: ["node", "dist/agents/device/device-agent-runner.js"]
+    restart: unless-stopped
+    env_file:
+      - path: ../../.env
+        required: false
+    environment:
+      DEVICE_AGENT_HOST: 0.0.0.0
+      DEVICE_AGENT_PORT: 3002
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      NODE_ENV: production
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    expose:
+      - "3002"
 
   asr:
     build:

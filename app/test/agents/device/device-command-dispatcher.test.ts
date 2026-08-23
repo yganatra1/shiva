@@ -6,8 +6,8 @@ import {
   DeviceDispatchError,
   deviceErrorToFailure,
   type DeviceTransport,
-} from "../src/device/device-command-dispatcher.js";
-import { deviceCommandResultMessageSchema } from "../src/device/device-protocol.js";
+} from "../../../src/agents/device/device-command-dispatcher.js";
+import { deviceCommandResultMessageSchema } from "../../../src/agents/device/device-protocol.js";
 
 class RecordingTransport implements DeviceTransport {
   readonly sent: string[] = [];
@@ -223,4 +223,30 @@ test("the result message schema accepts every status and rejects unknown fields"
     }).success,
     false,
   );
+});
+
+test("IMPLEMENTED_DEVICE_COMMAND_TYPES includes the full UI-automation surface", async () => {
+  const { IMPLEMENTED_DEVICE_COMMAND_TYPES } = await import(
+    "../../../src/agents/device/device-protocol.js"
+  );
+  for (const type of [
+    "device.app.open",
+    "device.app.list",
+    "device.ui.inspect",
+    "device.ui.find",
+    "device.ui.click",
+    "device.ui.type",
+    "device.ui.scroll",
+    "device.ui.wait",
+    "device.ui.screenshot",
+    "device.ui.gesture",
+    "device.ui.back",
+    "device.ui.global",
+  ] as const) {
+    assert.ok(
+      (IMPLEMENTED_DEVICE_COMMAND_TYPES as readonly string[]).includes(type),
+      `expected ${type} to be implemented`,
+    );
+  }
+  assert.equal(IMPLEMENTED_DEVICE_COMMAND_TYPES.length, 17);
 });

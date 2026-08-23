@@ -42,5 +42,10 @@ export function createPackRegistry(): PackRegistry {
     description:
       "Look up people Shiva has been taught, their aliases, relationships, profile details, and face-enrollment status.",
   });
+  packs.register({
+    name: "agents",
+    description:
+      "Delegate a self-contained goal to one of Shiva's autonomous background agents (each with its own reasoning loop and tools) and get back its result.",
+  });
   return packs;
 }

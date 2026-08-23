@@ -281,3 +281,5 @@ function clampTimeout(timeoutMs: number | undefined): number {
   if (timeoutMs === undefined) return DEFAULT_COMMAND_TIMEOUT_MS;
   return Math.min(MAX_COMMAND_TIMEOUT_MS, Math.max(1_000, timeoutMs));
 }
+
+export { DEFAULT_COMMAND_TIMEOUT_MS, MAX_COMMAND_TIMEOUT_MS };
