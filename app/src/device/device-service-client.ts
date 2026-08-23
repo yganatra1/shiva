@@ -11,7 +11,7 @@ import {
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 20_000;
 const MAX_COMMAND_TIMEOUT_MS = 120_000;
-/** Extra slack over the device-side timeout for device-service's own network/processing time. */
+/** Extra slack over the device-side timeout for the device agent's own network/processing time. */
 const CLIENT_TIMEOUT_BUFFER_MS = 5_000;
 
 const deviceCommandResultSchema = z.object({
@@ -40,13 +40,11 @@ export interface DeviceServiceClientOptions {
 }
 
 /**
- * shiva-api's view of the phone: asks the device agent (app/src/agents/device,
- * its own process) to run one direct device.* command and waits for the real
- * result over a plain internal HTTP call (POST /v1/dispatch). shiva-api
- * never holds the Android WebSocket or correlates command IDs itself — that
- * all lives in the device agent. Used only by the 5 direct, single-shot
- * device skills (device_call, device_contacts_search, ...); open-ended goals
- * go through delegate_to_agent/AgentClient instead.
+ * Compatibility client for the device agent's single-command /v1/dispatch
+ * endpoint. The production main runtime no longer constructs this client or
+ * registers direct device skills; every phone goal now goes through
+ * delegate_to_agent/AgentClient and /v1/delegate. The adapter remains useful
+ * for focused protocol tests and older internal callers.
  */
 export class DeviceServiceClient implements DeviceDispatcher {
   private readonly baseUrl: string;
@@ -84,7 +82,7 @@ export class DeviceServiceClient implements DeviceDispatcher {
         }
         this.onTrace(
           { type, timeoutMs },
-          "device service client: request to device-service timed out",
+          "device service client: request to the device agent timed out",
         );
         throw new DeviceDispatchError(
           "DEVICE_TIMEOUT",
@@ -93,7 +91,7 @@ export class DeviceServiceClient implements DeviceDispatcher {
       }
       this.onTrace(
         { type, err: String(error) },
-        "device service client: could not reach device-service",
+        "device service client: could not reach the device agent",
       );
       throw new DeviceDispatchError(
         "DEVICE_SEND_FAILED",
@@ -107,7 +105,7 @@ export class DeviceServiceClient implements DeviceDispatcher {
       const message = await readErrorMessage(response);
       this.onTrace(
         { type, status: response.status, failure },
-        "device service client: device-service reported a dispatch failure",
+        "device service client: the device agent reported a dispatch failure",
       );
       throw new DeviceDispatchError(failure, message ?? "The device command failed.");
     }
@@ -117,11 +115,11 @@ export class DeviceServiceClient implements DeviceDispatcher {
     if (!parsed.success) {
       this.onTrace(
         { type, issues: parsed.error.issues },
-        "device service client: device-service returned an unexpected response shape",
+        "device service client: the device agent returned an unexpected response shape",
       );
       throw new DeviceDispatchError(
         "DEVICE_SEND_FAILED",
-        "device-service returned an unexpected response.",
+        "the device agent returned an unexpected response.",
       );
     }
     this.onTrace({ type, status: parsed.data.status }, "device service client: dispatch resolved");

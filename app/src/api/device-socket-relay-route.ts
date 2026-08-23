@@ -76,20 +76,20 @@ export function registerDeviceSocketRelayRoute(
       upstream.on("close", (code: number, reason: Buffer) => {
         request.log.info(
           { code, reason: reason.toString("utf8") },
-          "Device socket relay: device-service connection closed",
+          "Device socket relay: device agent connection closed",
         );
         closeBoth();
       });
       upstream.on("error", (error) => {
         request.log.warn(
           { err: error },
-          "Device socket relay: could not reach device-service",
+          "Device socket relay: could not reach the device agent",
         );
         closeBoth();
       });
 
       // The phone can be flaky (cell network, backgrounding) — this leg needs
-      // its own heartbeat rather than relying on the device-service<->relay
+      // its own heartbeat rather than relying on the device-agent<->relay
       // leg's, which only proves the relay itself is alive.
       let alive = true;
       const heartbeat = setInterval(() => {

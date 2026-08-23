@@ -61,6 +61,12 @@ async function openDeviceSocket(
   return new DeviceSocketRecorder(socket as unknown as WebSocket);
 }
 
+async function listen(
+  app: ReturnType<typeof createDeviceAgentApp>,
+): Promise<string> {
+  return app.listen({ host: "127.0.0.1", port: 0 });
+}
+
 test("a connected device receives dispatched commands and its result resolves the dispatch", async (context) => {
   const dispatcher = new DeviceCommandDispatcher({ createCommandId: () => "cmd-1" });
   const app = createDeviceAgentApp(testConfig, { dispatcher });
@@ -238,5 +244,57 @@ test("POST /v1/delegate drives the planner against the phone and returns its res
   assert.deepEqual(response.json(), { success: true, summary: "Opened Zepto.", steps: 1 });
   assert.equal(planner.contexts.length, 2);
   assert.equal(planner.contexts[1]?.steps.length, 1);
+  assert.equal(planner.contexts[1]?.steps[0]?.result.status, "COMPLETED");
+});
+
+test("a real HTTP delegation is not cancelled when its request body finishes", async (context) => {
+  const dispatcher = new DeviceCommandDispatcher({ createCommandId: () => "cmd-1" });
+  dispatcher.connect({
+    send: (message: string) => {
+      const sent = JSON.parse(message) as { command: { id: string } };
+      setTimeout(
+        () =>
+          dispatcher.handleMessage(
+            JSON.stringify({
+              type: "device_command_result",
+              result: {
+                commandId: sent.command.id,
+                status: "COMPLETED",
+                result: { name: "Miralididi", phone: "+911234567890" },
+              },
+            }),
+          ),
+        25,
+      );
+    },
+  });
+  const planner = new ScriptedPlanner([
+    {
+      type: "call_tool",
+      tool: "device.contacts.search",
+      arguments: { query: "miralididi" },
+    },
+    {
+      type: "done",
+      success: true,
+      summary: "Miralididi's phone number is +911234567890.",
+    },
+  ]);
+  const app = createDeviceAgentApp(testConfig, { dispatcher, planner });
+  context.after(() => app.close());
+  const origin = await listen(app);
+
+  const response = await fetch(`${origin}/v1/delegate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ goal: "Find miralididi's phone number." }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    success: true,
+    summary: "Miralididi's phone number is +911234567890.",
+    steps: 1,
+  });
   assert.equal(planner.contexts[1]?.steps[0]?.result.status, "COMPLETED");
 });

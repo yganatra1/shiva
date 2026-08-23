@@ -62,7 +62,7 @@ export function createDelegateToAgentSkill(
   return defineSkill<z.infer<typeof inputSchema>, DelegateToAgentOutput>({
     name: "delegate_to_agent",
     description:
-      `Hands off a self-contained goal to one of Shiva's autonomous background agents and returns its result. Each agent has its own reasoning loop and tools — it figures out the steps itself; you only give it the goal. Available agents:\n${catalog || "  (none registered)"}\nUse this instead of a direct device_* skill when the request needs multiple exploratory steps (e.g. finding and tapping through an app's UI) rather than one well-defined action.`,
+      `Hands off a self-contained goal to one of Shiva's autonomous background agents and returns its result. Each agent has its own reasoning loop and tools — it figures out the steps itself; you only give it the complete goal. Available agents:\n${catalog || "  (none registered)"}\nThe device agent owns every Android-phone task, including single-step contact searches, calls, notifications, camera requests, and multi-step app UI work. Always delegate phone work here; no direct device skills exist in the main agent.`,
     inputDescription: `{ "agent": ${agentNames.map((name) => `"${name}"`).join(" | ") || "string"}, "goal": string (a complete, self-contained description of what the agent should accomplish) }`,
     pack: "agents",
     inputSchema,

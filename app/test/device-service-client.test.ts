@@ -10,7 +10,7 @@ import { DeviceServiceClient } from "../src/device/device-service-client.js";
 
 type FakeResponse = { readonly status: number; readonly body: unknown } | "hang";
 
-/** Stands in for shiva-device-service's HTTP surface (/v1/dispatch, /v1/status). */
+/** Stands in for the device agent's HTTP surface (/v1/dispatch, /v1/status). */
 async function startFakeDeviceService(
   handler: (body: unknown) => FakeResponse,
 ): Promise<{ readonly url: string; close(): Promise<void> }> {
@@ -28,7 +28,7 @@ async function startFakeDeviceService(
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (typeof address === "string" || address === null) {
-    throw new Error("Expected the fake device-service to bind a TCP port.");
+    throw new Error("Expected the fake device agent to bind a TCP port.");
   }
   return {
     url: `http://127.0.0.1:${address.port}`,
@@ -52,7 +52,7 @@ test("dispatch resolves with the phone's result on 200", async (context) => {
   });
 });
 
-test("dispatch omits result/error fields device-service didn't send", async (context) => {
+test("dispatch omits result/error fields the device agent didn't send", async (context) => {
   const fake = await startFakeDeviceService(() => ({
     status: 200,
     body: { commandId: "cmd-1", status: "COMPLETED" },
@@ -89,7 +89,7 @@ test("dispatch maps each HTTP failure status to the matching DeviceDispatchError
   }
 });
 
-test("dispatch throws DEVICE_SEND_FAILED when device-service returns a malformed body", async (context) => {
+test("dispatch throws DEVICE_SEND_FAILED when the device agent returns a malformed body", async (context) => {
   const fake = await startFakeDeviceService(() => ({
     status: 200,
     body: { oops: "not a DeviceCommandResult" },
@@ -104,7 +104,7 @@ test("dispatch throws DEVICE_SEND_FAILED when device-service returns a malformed
   );
 });
 
-test("dispatch throws DEVICE_SEND_FAILED when device-service is unreachable", async () => {
+test("dispatch throws DEVICE_SEND_FAILED when the device agent is unreachable", async () => {
   const client = new DeviceServiceClient({ baseUrl: "http://127.0.0.1:1" });
 
   await assert.rejects(
@@ -143,7 +143,7 @@ test("dispatch rejects immediately for an already-aborted signal", async () => {
   );
 });
 
-test("isConnected reflects device-service's reported status", async (context) => {
+test("isConnected reflects the device agent's reported status", async (context) => {
   const fake = await startFakeDeviceService(() => ({
     status: 200,
     body: { connected: true },
@@ -154,7 +154,7 @@ test("isConnected reflects device-service's reported status", async (context) =>
   assert.equal(await client.isConnected(), true);
 });
 
-test("isConnected reports false when device-service is unreachable", async () => {
+test("isConnected reports false when the device agent is unreachable", async () => {
   const client = new DeviceServiceClient({ baseUrl: "http://127.0.0.1:1" });
   assert.equal(await client.isConnected(), false);
 });

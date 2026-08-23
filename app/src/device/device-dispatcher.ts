@@ -1,10 +1,8 @@
 /**
- * shiva-api never talks to the Android app directly — the live connection,
- * command correlation, and timeouts live in the device agent, a separate
- * process (app/src/agents/device). This module holds only what skills need
- * to depend on: the result/error shapes and the dispatch contract itself.
- * See DeviceServiceClient for the concrete implementation that reaches the
- * device agent over HTTP.
+ * The live Android connection, command correlation, and timeouts live in the
+ * separate device-agent process. These result/error shapes are shared by its
+ * internal dispatcher and the retained compatibility adapters; the main
+ * Shiva runtime delegates whole goals rather than depending on this contract.
  */
 
 export const DEVICE_COMMAND_STATUSES = [
@@ -46,7 +44,7 @@ export interface DispatchOptions {
   readonly signal?: AbortSignal;
 }
 
-/** What every device skill depends on — satisfied by DeviceServiceClient. */
+/** Single-command compatibility contract, satisfied by DeviceServiceClient. */
 export interface DeviceDispatcher {
   dispatch(
     type: string,

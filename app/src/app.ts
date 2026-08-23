@@ -20,7 +20,6 @@ import { OllamaEmbeddingProvider } from "./brain/ollama-embedding-provider";
 import { OllamaProvider } from "./brain/ollama-provider";
 import type { AppConfig } from "./config/environment";
 import { createDatabase } from "./database/pool";
-import type { DeviceDispatcher } from "./device/device-dispatcher";
 import {
   FaceRecognitionService,
   type FaceRecognitionServiceOptions,
@@ -82,7 +81,6 @@ export interface AppOverrides {
   readonly voicePlaybackCoordinator?: VoicePlaybackCoordinator;
   readonly agentOrchestrator?: AgentOrchestratorPort;
   readonly executionStatus?: ExecutionStatusPort;
-  readonly deviceDispatcher?: DeviceDispatcher;
 }
 
 export function createApp(config: AppConfig, overrides: AppOverrides = {}): FastifyInstance {
@@ -191,8 +189,6 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
           app.log.error({ err: error }, "Agent audit finalization failed");
         },
         config.agentTraceLog ? consoleTrace : undefined,
-        faceRecognition,
-        overrides.deviceDispatcher,
       )
     : undefined;
   const agentOrchestrator =

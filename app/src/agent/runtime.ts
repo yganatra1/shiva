@@ -3,9 +3,6 @@ import { AgentRegistry } from "../agents/agent-registry";
 import type { AIProvider } from "../brain/ai-provider";
 import type { AppConfig } from "../config/environment";
 import type { ShivaDatabase } from "../database/pool";
-import type { DeviceDispatcher } from "../device/device-dispatcher";
-import { DeviceServiceClient } from "../device/device-service-client";
-import type { FaceRecognitionService } from "../face/face-recognition-service";
 import { DrizzlePeopleRepository } from "../people/people-repository";
 import {
   ConfirmationService,
@@ -24,7 +21,6 @@ import { registerCoreSkills } from "../skills/core/register";
 import { registerSystemSkills } from "../skills/system/register";
 import { registerGoogleSkills } from "../skills/google/register";
 import { registerPeopleSkills } from "../skills/people/register";
-import { registerDeviceSkills } from "../skills/device/register";
 import { registerWebSkills } from "../skills/web/register";
 import { createPackRegistry } from "../skills/packs";
 import { SkillRegistry } from "../skills/registry";
@@ -37,7 +33,6 @@ import type { AgentOrchestratorPort } from "./types";
 export interface AgentRuntime {
   readonly orchestrator: AgentOrchestratorPort;
   readonly executionStatus: ExecutionStatusService;
-  readonly deviceDispatcher: DeviceDispatcher;
 }
 
 export function createAgentRuntime(
@@ -46,8 +41,6 @@ export function createAgentRuntime(
   config: AppConfig,
   onAuditError: (error: unknown) => void = () => {},
   onTrace?: AgentTraceLogger,
-  faceRecognition?: FaceRecognitionService,
-  deviceDispatcherOverride?: DeviceDispatcher,
 ): AgentRuntime {
   const registry = new SkillRegistry(createPackRegistry());
   const executionState = new ExecutionStateService(
@@ -67,20 +60,13 @@ export function createAgentRuntime(
   // fixed-schema expense ledger. Their code, tools, and tests are untouched
   // and registerFinanceSkills still works, in case this is ever reverted.
   registerGoogleSkills(registry, config);
-  const deviceDispatcher =
-    deviceDispatcherOverride ??
-    new DeviceServiceClient({
-      baseUrl: config.deviceAgentUrl,
-      ...(onTrace ? { onTrace } : {}),
-    });
-  registerDeviceSkills(registry, deviceDispatcher, provider, faceRecognition);
   registerPeopleSkills(registry, new DrizzlePeopleRepository(database));
   registerWebSkills(registry, config);
   const agentRegistry = new AgentRegistry();
   agentRegistry.register({
     name: "device",
     description:
-      "Controls the connected Android phone through a small autonomous loop over its UI (open apps, inspect/tap/type/scroll, take screenshots) to accomplish a goal that needs more than one well-defined action.",
+      "Owns all work on the connected Android phone, including contacts, calls, notifications, camera capture, app launching, and multi-step UI interaction. Every phone task, including a single direct lookup, must be delegated to this agent.",
     baseUrl: config.deviceAgentUrl,
   });
   const agentClient = new AgentClient(agentRegistry, {
@@ -118,6 +104,5 @@ export function createAgentRuntime(
       confirmations,
       config.userId,
     ),
-    deviceDispatcher,
   };
 }

@@ -33,11 +33,6 @@ export function createPackRegistry(): PackRegistry {
       "Create, read, and update Google Sheets with whatever structure the task needs.",
   });
   packs.register({
-    name: "device",
-    description:
-      "Act through the connected Android phone: search contacts, place calls, read notifications, capture and describe photos.",
-  });
-  packs.register({
     name: "people",
     description:
       "Look up people Shiva has been taught, their aliases, relationships, profile details, and face-enrollment status.",
@@ -45,7 +40,7 @@ export function createPackRegistry(): PackRegistry {
   packs.register({
     name: "agents",
     description:
-      "Delegate a self-contained goal to one of Shiva's autonomous background agents (each with its own reasoning loop and tools) and get back its result.",
+      "Delegate a self-contained goal to one of Shiva's autonomous background agents and get back its result. All Android-phone work, including direct contacts, calls, notifications, and camera requests, belongs to the device agent in this pack.",
   });
   return packs;
 }

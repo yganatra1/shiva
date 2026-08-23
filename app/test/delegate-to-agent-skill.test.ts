@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { AgentDelegationError } from "../src/agents/agent-client.js";
 import { AgentRegistry } from "../src/agents/agent-registry.js";
 import { createDelegateToAgentSkill } from "../src/skills/delegate-to-agent/skill.js";
+import { createPackRegistry } from "../src/skills/packs.js";
 import type { SkillContext } from "../src/skills/types.js";
 
 const context: SkillContext = {
@@ -51,6 +52,31 @@ test("delegates to the named agent and returns its summary on success", async ()
     data: { summary: "Opened Zepto and added tomatoes.", steps: 4 },
   });
   assert.deepEqual(client.calls, [{ agent: "device", goal: "order tomato from zepto" }]);
+});
+
+test("the main-agent contract routes every phone task through sensitive delegation", () => {
+  const skill = createDelegateToAgentSkill(
+    new FakeAgentClient(),
+    registryWithDevice(),
+  );
+
+  assert.match(skill.description, /every Android-phone task/i);
+  assert.match(skill.description, /single-step contact searches/i);
+  assert.deepEqual(skill.execution, {
+    mutability: "write",
+    impact: "sensitive",
+    confirmationReason:
+      "This delegates a goal to an autonomous agent that can take real actions (tapping through apps, placing calls, etc.) without further confirmation on each individual step.",
+  });
+});
+
+test("the production pack seed exposes agents but no competing direct-device pack", () => {
+  const packNames = createPackRegistry()
+    .list()
+    .map((pack) => pack.name);
+
+  assert.equal(packNames.includes("agents"), true);
+  assert.equal(packNames.includes("device"), false);
 });
 
 test("a business-level agent failure (success=false) maps to a skill failure, not a thrown error", async () => {

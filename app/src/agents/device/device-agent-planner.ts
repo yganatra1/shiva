@@ -75,9 +75,14 @@ export class ShivaDeviceAgentPlanner implements DeviceAgentPlanner {
   async decide(context: DeviceAgentPlanningContext): Promise<DeviceAgentDecision> {
     const systemPrompt = buildPlannerPrompt(context);
     const userInput = buildIterationInput(context);
+    const images = latestImages(context);
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
-      { role: "user", content: userInput },
+      {
+        role: "user",
+        content: userInput,
+        ...(images.length > 0 ? { images } : {}),
+      },
     ];
     let firstFailure: DeviceAgentPlannerError | undefined;
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -100,6 +105,7 @@ export class ShivaDeviceAgentPlanner implements DeviceAgentPlanner {
         messages: attemptMessages,
         responseFormat: decisionResponseFormat,
         temperature: 0,
+        ...(context.signal ? { signal: context.signal } : {}),
       });
       const parsed = decisionSchema.safeParse(parseJsonLoosely(result.content));
       if (parsed.success) {
@@ -138,9 +144,13 @@ ${tools}
 
 Rules:
 - You have at most ${context.maxSteps} total tool calls for this goal.
+- You own every Android-phone goal delegated to you, whether it needs one direct tool call or a multi-step UI workflow.
+- For contacts, calls, notifications, camera capture, or app listing/opening, use the corresponding direct device.* tool instead of navigating the UI unnecessarily.
 - Before acting on the screen, call device.ui.inspect or device.ui.find to see what's actually there — never assume an element exists or guess coordinates blind.
+- When the latest camera or screenshot result says its image is attached, inspect that attached image directly. Never ask for its base64 text or claim that an omitted payload prevents you from seeing the attachment.
 - A tool call can come back FAILED, UNSUPPORTED, or DENIED. Read the result and adjust — retry with different arguments, try a different tool, or call done with success=false if the goal genuinely cannot be completed. Never call done with success=true unless the last relevant observation actually shows it worked.
 - Never repeat an identical tool call with identical arguments that already failed — change something or stop.
+- For a successful read, include the requested returned facts in the final summary; do not merely say that the lookup succeeded.
 - If correctionRequired is present below, the runtime rejected your previous decision; fix that exact problem this time.
 - summary must be a concrete, honest account of what happened — never claim an action succeeded without an observation backing it up.`;
 }
@@ -150,9 +160,49 @@ function buildIterationInput(context: DeviceAgentPlanningContext): string {
     goal: context.goal,
     stepNumber: context.stepNumber,
     remainingSteps: context.maxSteps - context.stepNumber + 1,
-    priorSteps: context.steps,
+    priorSteps: context.steps.map(redactImagePayload),
     ...(context.correctionRequired ? { correctionRequired: context.correctionRequired } : {}),
   });
+}
+
+function latestImages(context: DeviceAgentPlanningContext): readonly string[] {
+  for (let index = context.steps.length - 1; index >= 0; index -= 1) {
+    const step = context.steps[index];
+    if (!step || !isImageTool(step.tool) || step.result.status !== "COMPLETED") {
+      continue;
+    }
+    const data = step.result.result?.data;
+    const encoding = step.result.result?.encoding;
+    const mime = step.result.result?.mime;
+    if (
+      data &&
+      (!encoding || encoding.toLowerCase() === "base64") &&
+      (!mime || mime.toLowerCase().startsWith("image/"))
+    ) {
+      return [data];
+    }
+  }
+  return [];
+}
+
+function redactImagePayload(step: DeviceAgentPlanningContext["steps"][number]) {
+  if (!isImageTool(step.tool) || !step.result.result?.data) {
+    return step;
+  }
+  return {
+    ...step,
+    result: {
+      ...step.result,
+      result: {
+        ...step.result.result,
+        data: `[base64 image omitted from text; attached to this planner turn, ${step.result.result.data.length} characters]`,
+      },
+    },
+  };
+}
+
+function isImageTool(tool: string): boolean {
+  return tool === "device.camera.capture" || tool === "device.ui.screenshot";
 }
 
 function parseJsonLoosely(content: string): unknown {

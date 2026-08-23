@@ -138,7 +138,8 @@ test("a planner failure ends the goal instead of looping forever", async () => {
 
 test("an AbortSignal stops the loop before the next planner call", async () => {
   const controller = new AbortController();
-  const planner = new ScriptedPlanner(() => {
+  const planner = new ScriptedPlanner((context) => {
+    assert.equal(context.signal, controller.signal);
     controller.abort();
     return { type: "call_tool", tool: "device.ui.click", arguments: {} };
   });
@@ -147,4 +148,24 @@ test("an AbortSignal stops the loop before the next planner call", async () => {
   await assert.rejects(() =>
     runDeviceAgentGoal("anything", dispatcher, planner, { signal: controller.signal }),
   );
+});
+
+test("a caller cancellation during dispatch is propagated instead of becoming a tool result", async () => {
+  const controller = new AbortController();
+  const planner = new ScriptedPlanner(() => ({
+    type: "call_tool",
+    tool: "device.ui.click",
+    arguments: {},
+  }));
+  const dispatcher = new FakeDispatcher(() => {
+    controller.abort();
+    return new DeviceDispatchError("CANCELLED", "cancelled");
+  });
+
+  await assert.rejects(() =>
+    runDeviceAgentGoal("anything", dispatcher, planner, {
+      signal: controller.signal,
+    }),
+  );
+  assert.equal(planner.contexts.length, 1);
 });

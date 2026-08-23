@@ -23,14 +23,15 @@ People UI    -> /api/people + per-photo enrollments
                                              -> Fastify identity policy
                                              -> InsightFace service :8103
                                              -> people + 512-d face gallery in PostgreSQL
-Attached photo / device camera --------------> identify -> grounded person context
+Attached chat photo -------------------------> identify -> grounded person context
 
 Android app -> WS /device/ws (relayed, unmodified) -> shiva-device-agent :3002 (own process)
                                              -> DeviceCommandDispatcher owns the phone's
                                                 live socket and command correlation
-device_call / device_camera_capture / ... --> POST /v1/dispatch -> phone's real result
-delegate_to_agent("device", goal) ----------> POST /v1/delegate -> device-agent's own
-                                                small planner+tool loop -> result
+all phone tasks -> delegate_to_agent("device", goal) -> POST /v1/delegate
+                                             -> device-agent's own planner chooses from
+                                                all 17 device.* tools -> phone -> result
+                                             -> camera/screenshot -> private vision input
 ```
 
 The API does not put model, embedding, persistence, or external-service details in route handlers. Provider and repository interfaces keep those boundaries explicit. `/chat` and the voice WebSocket share the same conversation, memory, persistence, cancellation, and model path; voice mode only adds speech-friendly response guidance. Every non-explicit-memory turn reaches the semantic planner after the same context is built. The planner decides from the registered catalog whether to use skills, ask a clarification, describe the real catalog, or delegate tool-free conversation to the existing streaming provider. There is no keyword/regex intent router.
@@ -39,7 +40,7 @@ Google Sheets is the sole expense source of truth. Shiva does not maintain a Pos
 
 This version still does not add wake words, always-listening mode, streaming ASR, VAD, barge-in, speaker recognition, face liveness/anti-spoofing, voice cloning, authentication, cloud fallback, procedural memory, a knowledge graph, arbitrary browser automation, or a general-purpose shell/tool runtime. A face match is personal context, not authentication or authority.
 
-The official Android companion lives in [`android/`](android/README.md). It is a native Kotlin client over Tailscale, not a second brain. It still connects to the same `shiva-api` origin and `/device/ws` path as always — `shiva-api` relays that connection to the separate `shiva-device-service` process, which is the one that actually owns the phone's live socket and command correlation. See [docs/device-architecture.md](docs/device-architecture.md).
+The official Android companion lives in [`android/`](android/README.md). It is a native Kotlin client over Tailscale, not a second brain. It still connects to the same `shiva-api` origin and `/device/ws` path as always — `shiva-api` relays that connection to the separate `shiva-device-agent` process, which is the one that actually owns the phone's live socket, command correlation, and its own small tool-calling loop for delegated goals. See [docs/device-architecture.md](docs/device-architecture.md).
 
 ## Requirements
 
@@ -85,7 +86,7 @@ SHIVA_MAX_EXECUTION_MODE=FULL_ACCESS
 SHIVA_CONFIRMATION_TTL_MS=300000
 EXPENSE_SHEET_ID=
 EXPENSE_SHEET_REQUEST_TIMEOUT_MS=15000
-DEVICE_SERVICE_URL=http://127.0.0.1:3002
+DEVICE_AGENT_URL=http://127.0.0.1:3002
 GOOGLE_OAUTH_CLIENT_ID=
 GOOGLE_OAUTH_CLIENT_SECRET=
 GOOGLE_OAUTH_REFRESH_TOKEN=
@@ -126,8 +127,9 @@ FACE_CUDA_DEVICE_ID=0
 FACE_DETECTION_SIZE=640
 SHIVA_PERF_LOG=false
 NODE_ENV=development
-DEVICE_SERVICE_HOST=127.0.0.1
-DEVICE_SERVICE_PORT=3002
+DEVICE_AGENT_HOST=127.0.0.1
+DEVICE_AGENT_PORT=3002
+DEVICE_AGENT_MAX_STEPS=15
 DEVICE_WS_TOKEN=
 ```
 
@@ -139,7 +141,7 @@ The Node gateway uses `FACE_SERVICE_URL` and owns identity matching policy. The 
 
 `SHIVA_MAX_EXECUTION_MODE` is the host-controlled authority ceiling and accepts `SAFE`, `AUTO`, or `FULL_ACCESS`. The current mode itself is stored in PostgreSQL so conversational changes survive restarts. Effective authority is the lower of the stored mode and this configured maximum; lockdown forces the effective mode to `SAFE`. `SHIVA_CONFIRMATION_TTL_MS` controls how long an exact pending action can be approved and defaults to 300,000 ms (five minutes).
 
-`DEVICE_SERVICE_URL` is how `shiva-api` reaches `agents/device-service`, the separate process that owns the Android app's live connection; `DEVICE_SERVICE_HOST`/`DEVICE_SERVICE_PORT` are what that process itself binds to, and `DEVICE_WS_TOKEN` (read only by device-service) gates its `/device/ws` endpoint. See [docs/device-architecture.md](docs/device-architecture.md).
+`DEVICE_AGENT_URL` is how `shiva-api` reaches the device agent (`app/src/agents/device`), the separate process that owns the Android app's live connection and its own small tool-calling loop; `DEVICE_AGENT_HOST`/`DEVICE_AGENT_PORT` are what that process itself binds to, `DEVICE_AGENT_MAX_STEPS` bounds one delegated goal's tool-calling loop, and `DEVICE_WS_TOKEN` (read only by the device agent) gates its `/device/ws` endpoint. See [docs/device-architecture.md](docs/device-architecture.md).
 
 The initial database state is `AUTO` with lockdown disabled. Lowering authority and entering lockdown are immediate. Raising authority, leaving lockdown, and sensitive/destructive operations require an exact action-bound confirmation. Settings carry a monotonic revision: control changes commit with compare-and-set, confirmations are bound to the revision they were created under, and writes recheck state immediately before starting. This is intentionally not an internal permission matrix: Google OAuth scopes, cloud IAM, operating-system permissions, and registered adapters remain the actual capability boundary.
 
@@ -276,6 +278,8 @@ Errors before the first streamed chunk use a sanitized JSON envelope. Once strea
 
 Expense, web, and ordinary questions use the same `/chat` or voice conversation contract. Every non-explicit-memory turn first gives the planner the actual registered skill catalog, including whether each external integration is configured. The planner can delegate tool-free conversation back to the existing streaming path, request one clarification, return a registry-derived capability summary, or make a skill call. Its first skill call declares the complete minimal skill set for the original task. The agent loop validates and freezes that set; later decisions may only use that exact scope, so web pages and tool observations cannot add a new capability mid-run. A malformed or conflicting planner decision is rejected internally and returned to the planner as precise corrective feedback; Shiva continues the same bounded run without executing the rejected action.
 
+The main API does not register individual Android skills. Every phone request—from one contact lookup or notification read through a multi-step app workflow—uses the sensitive `delegate_to_agent` skill with `agent: "device"`. The device agent then plans and executes the required `device.*` operations against the connected phone and returns one grounded result. The outer delegation remains subject to Shiva's normal execution policy and exact confirmation flow.
+
 Execution controls use the same conversation path. Useful manual checks include:
 
 ```text
@@ -375,7 +379,7 @@ Public gateway routes are:
 - `POST /api/people/:personId/faces` and `DELETE /api/people/:personId/faces/:faceId`
 - `POST /face/enroll?personId=…`, `POST /face/identify`, `POST /face/verify?personId=…`, and `GET /face/health`
 
-Face uploads are raw JPEG, PNG, or WebP bodies, not base64 JSON or multipart data. The 10 MiB per-photo ceiling is independent of `/chat`'s smaller image limits. Fastify is the only browser-facing service; it calls the localhost-only Python service and never returns source filenames, embeddings, or duplicate hashes. Identification returns unknown for low-quality, below-threshold, or ambiguous faces instead of guessing. Attached `/chat` images are recognized automatically and matched person details are supplied to Gemma as bounded, explicitly untrusted context. The `people_search` skill gives the planner durable access to taught details even when no photo is attached, and phone camera capture combines its visual description with local enrolled identities.
+Face uploads are raw JPEG, PNG, or WebP bodies, not base64 JSON or multipart data. The 10 MiB per-photo ceiling is independent of `/chat`'s smaller image limits. Fastify is the only browser-facing service; it calls the localhost-only Python service and never returns source filenames, embeddings, or duplicate hashes. Identification returns unknown for low-quality, below-threshold, or ambiguous faces instead of guessing. Attached `/chat` images are recognized automatically and matched person details are supplied to Gemma as bounded, explicitly untrusted context. The `people_search` skill gives the planner durable access to taught details even when no photo is attached. Delegated phone camera and UI screenshot bytes go only to the device agent's vision-capable planner; their base64 payloads are omitted from its textual context and traces.
 
 The internal Python adapter uses `buffalo_l` (SCRFD-10GF detection plus a ResNet50 recognition model) and returns normalized 512-dimensional embeddings. Start and warm it in a third shell:
 
@@ -494,18 +498,14 @@ npm run db:migrate
 npm start
 ```
 
-From another RunPod shell, start `shiva-device-service` the same way — it has no database and nothing to migrate:
+From another RunPod shell, start the device agent — same `app/` build as above (already installed/built by the steps above), just a different entry point, no database:
 
 ```bash
-cd /workspace/shiva/repo/agents/device-service
-npm install
-npm test
-npm run typecheck
-npm run build
-npm start
+cd /workspace/shiva/repo/app
+npm run start:device-agent
 ```
 
-Then start ASR, TTS, and face analysis from three additional RunPod shells using the Python service commands above with repository path `/workspace/shiva/repo`. Keep ports 8101–8103 and device-service's 3002 bound to localhost. Warm each model and confirm the face response reports `CPUExecutionProvider`. From your browser, access only the Fastify port through the platform's private tunnel/proxy; the Android app also connects only to that same port (see [docs/device-architecture.md](docs/device-architecture.md)).
+Then start ASR, TTS, and face analysis from three additional RunPod shells using the Python service commands above with repository path `/workspace/shiva/repo`. Keep ports 8101–8103 and the device agent's 3002 bound to localhost. Warm each model and confirm the face response reports `CPUExecutionProvider`. From your browser, access only the Fastify port through the platform's private tunnel/proxy; the Android app also connects only to that same port (see [docs/device-architecture.md](docs/device-architecture.md)).
 
 Before `/chat` verification, ensure the two configured models exist:
 
@@ -526,7 +526,7 @@ The future Ubuntu/NVIDIA-server path is:
 Git -> Ubuntu NVIDIA server -> Docker Compose
 ```
 
-The Compose definition runs the API, pgvector-enabled PostgreSQL, internal ASR/TTS/face containers, and device-service, while leaving Ollama externally configurable. It publishes only the Shiva API; model-service and device-service ports use the private Compose network. See [infra/README.md](infra/README.md).
+The Compose definition runs the API, pgvector-enabled PostgreSQL, internal ASR/TTS/face containers, and the device agent, while leaving Ollama externally configurable. It publishes only the Shiva API; model-service and device-agent ports use the private Compose network. See [infra/README.md](infra/README.md).
 
 ## Commands
 
@@ -541,5 +541,7 @@ The Compose definition runs the API, pgvector-enabled PostgreSQL, internal ASR/T
 | `npm run db:migrate:dev` | Apply migrations from TypeScript |
 | `npm run db:migrate` | Apply migrations from compiled output |
 | `npm start` | Run the compiled API |
+| `npm run dev:device-agent` | Hot-reload the device agent from TypeScript |
+| `npm run start:device-agent` | Run the compiled device agent |
 
-Run from `app/`. `agents/device-service` has the same `dev`/`test`/`typecheck`/`build`/`start` scripts (no database, so no `db:*` commands) — see [agents/device-service/README.md](agents/device-service/README.md).
+All run from `app/` — the device agent (`app/src/agents/device`) is the same package, just a different entry point/process; no separate install, build, or `db:*` commands. See [docs/device-architecture.md](docs/device-architecture.md).

@@ -32,6 +32,7 @@ export interface DeviceAgentPlanningContext {
   readonly stepNumber: number;
   readonly maxSteps: number;
   readonly correctionRequired?: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface DeviceAgentPlanner {

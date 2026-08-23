@@ -48,6 +48,7 @@ export async function runDeviceAgentGoal(
         stepNumber,
         maxSteps,
         ...(correctionRequired ? { correctionRequired } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
       });
     } catch (error: unknown) {
       if (!(error instanceof DeviceAgentPlannerError)) throw error;
@@ -76,6 +77,7 @@ export async function runDeviceAgentGoal(
       });
       steps.push({ step: stepNumber, tool: decision.tool, arguments: decision.arguments, result });
     } catch (error: unknown) {
+      if (options.signal?.aborted) throw error;
       if (!(error instanceof DeviceDispatchError)) throw error;
       // Surfaced as a synthetic failed step rather than aborting the goal —
       // a dispatch-level failure (timeout, momentary disconnect) is exactly

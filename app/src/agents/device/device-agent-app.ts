@@ -75,8 +75,15 @@ export function createDeviceAgentApp(
     }
 
     const controller = new AbortController();
-    const onClose = (): void => controller.abort();
-    request.raw.on("close", onClose);
+    const abortOnPrematureClose = (): void => {
+      if (!reply.raw.writableEnded) {
+        controller.abort();
+      }
+    };
+    reply.raw.once("close", abortOnPrematureClose);
+    if (reply.raw.destroyed && !reply.raw.writableEnded) {
+      controller.abort();
+    }
     try {
       const result = await runDeviceAgentGoal(parsed.data.goal, dispatcher, planner, {
         maxSteps: config.deviceAgentMaxSteps,
@@ -84,7 +91,7 @@ export function createDeviceAgentApp(
       });
       return reply.status(200).send(result);
     } finally {
-      request.raw.off("close", onClose);
+      reply.raw.removeListener("close", abortOnPrematureClose);
     }
   });
 

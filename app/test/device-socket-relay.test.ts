@@ -14,7 +14,7 @@ const chatProvider = {
   },
 };
 
-/** Stands in for shiva-device-service: a bare WebSocket server on /device/ws. */
+/** Stands in for the device agent: a bare WebSocket server on /device/ws. */
 async function startFakeDeviceService(): Promise<{
   readonly url: string;
   readonly nextConnection: Promise<UpstreamWebSocket & { readonly requestUrl: string }>;
@@ -31,7 +31,7 @@ async function startFakeDeviceService(): Promise<{
   );
   const address = server.address();
   if (typeof address === "string" || address === null) {
-    throw new Error("Expected the fake device-service to bind a TCP port.");
+    throw new Error("Expected the fake device agent to bind a TCP port.");
   }
   return {
     url: `http://127.0.0.1:${address.port}`,
@@ -70,7 +70,7 @@ class DeviceSocketRecorder {
   }
 }
 
-test("the phone's messages are relayed to device-service and its replies come back unmodified", async (context) => {
+test("the phone's messages are relayed to the device agent and its replies come back unmodified", async (context) => {
   const fakeDeviceService = await startFakeDeviceService();
   context.after(() => fakeDeviceService.close());
 
@@ -119,7 +119,7 @@ test("a plain GET on the device endpoint asks for an upgrade", async (context) =
   assert.equal(response.json().error.code, "UPGRADE_REQUIRED");
 });
 
-test("the phone's connection closes when device-service is unreachable", async (context) => {
+test("the phone's connection closes when the device agent is unreachable", async (context) => {
   const app = createApp(
     { ...testConfig, deviceAgentUrl: "http://127.0.0.1:1" },
     createTestOverrides(chatProvider),

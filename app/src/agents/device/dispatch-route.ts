@@ -19,11 +19,11 @@ export interface DispatchRouteOptions {
 }
 
 /**
- * shiva-api's internal-only view of the phone for the 5 direct, single-shot
- * device skills (device_call, device_contacts_search, ...): it sends one
- * high-level device.* command and waits for the real result, without ever
- * holding the Android WebSocket itself. Not exposed publicly — reachable
- * only over the loopback/Compose-internal network shiva-api calls it on.
+ * Internal compatibility endpoint for one named device.* command. The main
+ * Shiva runtime no longer registers direct device skills and routes all phone
+ * work through /v1/delegate; keeping this narrow endpoint is useful for
+ * protocol diagnostics and older internal clients without exposing it
+ * publicly.
  */
 export function registerDispatchRoute(
   app: FastifyInstance,
@@ -44,8 +44,15 @@ export function registerDispatchRoute(
     // request (its caller cancelled, or it hit its own timeout), stop
     // waiting on the phone for a reply nobody is listening for anymore.
     const controller = new AbortController();
-    const onClose = (): void => controller.abort();
-    request.raw.on("close", onClose);
+    const abortOnPrematureClose = (): void => {
+      if (!reply.raw.writableEnded) {
+        controller.abort();
+      }
+    };
+    reply.raw.once("close", abortOnPrematureClose);
+    if (reply.raw.destroyed && !reply.raw.writableEnded) {
+      controller.abort();
+    }
 
     try {
       const { type, arguments: commandArguments, timeoutMs } = parsed.data;
@@ -60,7 +67,7 @@ export function registerDispatchRoute(
         error: { code: error.failure, message: error.message },
       });
     } finally {
-      request.raw.off("close", onClose);
+      reply.raw.removeListener("close", abortOnPrematureClose);
     }
   });
 
