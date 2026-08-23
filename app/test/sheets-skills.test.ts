@@ -271,6 +271,43 @@ test("sheets_read, sheets_update, and sheets_add_tab reach the client and return
     /use sheets_read.*live header\/current structure/i,
   );
 
+  const writesBeforeMissingMode = client.written.length;
+  const missingMode = await executor.execute(
+    "sheets_update",
+    {
+      spreadsheetId: "sheet-1",
+      range: "'August 2026'!C2:C6",
+      values: [["Food"], ["Groceries"], ["Furniture"], ["Food"], ["Sports"]],
+    },
+    context,
+    { userAuthorized: true },
+  );
+  assert.equal(missingMode.success, false);
+  if (!missingMode.success) {
+    assert.equal(missingMode.error.code, "INVALID_SKILL_INPUT");
+    assert.match(missingMode.error.message, /mode/i);
+  }
+  assert.equal(client.written.length, writesBeforeMissingMode);
+
+  const exactColumnUpdate = await executor.execute(
+    "sheets_update",
+    {
+      spreadsheetId: "sheet-1",
+      range: "'August 2026'!C2:C6",
+      values: [["Food"], ["Groceries"], ["Furniture"], ["Food"], ["Sports"]],
+      mode: "update",
+    },
+    context,
+    { userAuthorized: true },
+  );
+  assert.equal(exactColumnUpdate.success, true);
+  assert.deepEqual(client.written.at(-1), {
+    spreadsheetId: "sheet-1",
+    range: "'August 2026'!C2:C6",
+    values: [["Food"], ["Groceries"], ["Furniture"], ["Food"], ["Sports"]],
+    mode: "update",
+  });
+
   const addTab = await executor.execute(
     "sheets_add_tab",
     {

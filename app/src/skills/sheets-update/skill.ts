@@ -17,7 +17,7 @@ const inputSchema = z.object({
   spreadsheetId: z.string().trim().min(5).max(256),
   range: z.string().trim().min(1).max(300),
   values: z.array(z.array(cellSchema).max(50)).min(1).max(500),
-  mode: z.enum(["update", "append"]).default("append"),
+  mode: z.enum(["update", "append"]),
 });
 
 export type SheetsUpdateInput = z.infer<typeof inputSchema>;
@@ -31,9 +31,9 @@ export function createSheetsUpdateSkill(client?: GoogleSheetsClient) {
   return defineSkill<SheetsUpdateInput, SheetsUpdateOutput>({
     name: "sheets_update",
     description:
-      "Writes values into an existing Google Sheet at the given spreadsheetId + A1-notation range. mode=\"append\" adds new rows after the sheet's current content (use this for adding entries, e.g. a new expense/log/inventory row); mode=\"update\" overwrites the exact given range in place (use this to correct or replace existing cells). Before appending to an existing sheet, use sheets_read in the same run to discover the exact tab name and inspect its live header/current structure, then align the row and write to that exact tab; never guess Sheet1 unless it was returned, unless sheets_create just returned that structure in this run.",
+      "Writes values into an existing Google Sheet at the given spreadsheetId + A1-notation range. mode is required: mode=\"update\" overwrites exactly the requested cells (use this for edits or backfills such as C2:C6); mode=\"append\" adds complete new rows to the logical table, and Google may begin the result at that table's first column, so anchor the range to the whole table rather than a bounded existing column. Before writing, use sheets_read in the same run to discover the exact tab name and inspect its live header/current structure, then align the values and write to that exact tab; never guess Sheet1 unless it was returned, unless sheets_create just returned that structure in this run.",
     inputDescription:
-      '{ "spreadsheetId": string, "range": "A1 notation", "values": (string|number|boolean|null)[][], "mode"?: "update"|"append" (default "append") }',
+      '{ "spreadsheetId": string, "range": "A1 notation", "values": (string|number|boolean|null)[][], "mode": "update"|"append" (required; update writes the exact range, append adds complete rows to a table) }',
     pack: "google",
     inputSchema,
     execution: { mutability: "write", impact: "normal" },

@@ -313,21 +313,30 @@ test("writeValues in update mode PUTs the exact range without :append", async ()
   const sheets = client(async (input, init) => {
     requests.push({ url: String(input), init });
     return jsonResponse({
-      updatedRange: "Sheet1!A1:A1",
-      updatedRows: 1,
+      updatedRange: "'August 2026'!C2:C6",
+      updatedRows: 5,
       updatedColumns: 1,
     });
   });
 
-  await sheets.writeValues({
+  const result = await sheets.writeValues({
     spreadsheetId: "sheet-123",
-    range: "Sheet1!A1",
-    values: [["fixed"]],
+    range: "'August 2026'!C2:C6",
+    values: [["Food"], ["Groceries"], ["Furniture"], ["Food"], ["Sports"]],
     mode: "update",
   });
 
+  assert.deepEqual(result, {
+    updatedRange: "'August 2026'!C2:C6",
+    updatedRows: 5,
+    updatedColumns: 1,
+  });
   assert.equal(requests[0]?.init?.method, "PUT");
   assert.doesNotMatch(requests[0]?.url ?? "", /:append/);
+  assert.match(
+    decodeURIComponent(new URL(requests[0]?.url ?? "").pathname),
+    /\/values\/'August 2026'!C2:C6$/,
+  );
 });
 
 test("401/403 map to AUTH while invalid-range 400 and missing 404 map to invalid input", async () => {
