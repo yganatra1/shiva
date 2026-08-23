@@ -33,7 +33,7 @@ export function registerErrorHandling(app: FastifyInstance): void {
     if (publicError.statusCode >= 500) {
       request.log.error(
         {
-          err: error,
+          ...safeErrorLogMetadata(error),
           apiErrorCode: publicError.code,
           providerFailure:
             error instanceof AIProviderError ? error.failure : undefined,
@@ -54,6 +54,27 @@ export function registerErrorHandling(app: FastifyInstance): void {
       },
     });
   });
+}
+
+/**
+ * Never pass an arbitrary error to Pino's `err` serializer here. Database
+ * wrappers can embed SQL parameters in their message, stack, query, and params
+ * properties; face queries contain biometric vectors.
+ */
+export function safeErrorLogMetadata(error: unknown): {
+  readonly errorType: string;
+  readonly errorCode: string | undefined;
+  readonly causeType: string | undefined;
+  readonly causeCode: string | undefined;
+} {
+  const cause = getErrorCause(error);
+  return {
+    errorType: getErrorType(error),
+    errorCode: getErrorMetadata(error).code,
+    causeType: cause === undefined ? undefined : getErrorType(cause),
+    causeCode:
+      cause === undefined ? undefined : getErrorMetadata(cause).code,
+  };
 }
 
 function toPublicError(error: unknown): PublicError {
@@ -263,6 +284,21 @@ function getErrorMetadata(error: unknown): {
         ? candidate.statusCode
         : undefined,
   };
+}
+
+function getErrorCause(error: unknown): unknown {
+  if (typeof error !== "object" || error === null || !("cause" in error)) {
+    return undefined;
+  }
+  return error.cause;
+}
+
+function getErrorType(error: unknown): string {
+  if (error instanceof Error && error.name.trim()) {
+    return error.name;
+  }
+  if (error === null) return "null";
+  return typeof error;
 }
 
 function providerErrorToPublicError(error: AIProviderError): PublicError {
