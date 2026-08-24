@@ -1732,19 +1732,16 @@ test("planner skill calls fail closed when authorization is omitted", async () =
   assert.equal(attempts, 2);
 });
 
-test("the planner's onTrace logs the request, the raw response, and a parse rejection", async () => {
+test("the planner's onTrace logs the request, the raw response, thinking when present, and a parse rejection", async () => {
   const traces: Array<{ detail: Record<string, unknown>; message: string }> = [];
   let attempts = 0;
   const planner = new ShivaAgentPlanner(
     {
       async chat() {
         attempts += 1;
-        return {
-          content:
-            attempts === 1
-              ? "not valid json"
-              : '{"type":"direct_chat"}',
-        };
+        return attempts === 1
+          ? { content: "not valid json", thinking: "hmm, let me see" }
+          : { content: '{"type":"direct_chat"}' };
       },
       async *streamChat() {
         throw new Error("Planner decisions must use structured chat().");
@@ -1773,7 +1770,11 @@ test("the planner's onTrace logs the request, the raw response, and a parse reje
   assert.equal(traces[0]?.detail.step, 1);
   assert.ok(typeof traces[0]?.detail.systemPrompt === "string");
   assert.equal(traces[1]?.detail.rawResponse, "not valid json");
+  assert.equal(traces[1]?.detail.rawThinking, "hmm, let me see");
   assert.deepEqual(traces[3]?.detail.decision, { type: "direct_chat" });
+  // The second attempt's fake response carried no thinking field at all, so
+  // the trace must omit rawThinking entirely rather than logging it empty.
+  assert.equal("rawThinking" in (traces[3]?.detail ?? {}), false);
 });
 
 test("orchestrator sends every turn to semantic planner selection", async () => {

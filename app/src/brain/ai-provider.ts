@@ -17,10 +17,14 @@ export interface ChatInput {
 
 export interface ChatResult {
   readonly content: string;
+  /** Accumulated reasoning text, when the model/provider produced any. */
+  readonly thinking?: string;
 }
 
 export interface ChatChunk {
   readonly content: string;
+  /** This chunk's reasoning delta, when the model/provider produced any. */
+  readonly thinking?: string;
 }
 
 export interface AIProvider {

@@ -110,13 +110,24 @@ export class ShivaDeviceAgentPlanner implements DeviceAgentPlanner {
       const parsed = decisionSchema.safeParse(parseJsonLoosely(result.content));
       if (parsed.success) {
         this.onTrace?.(
-          { step: context.stepNumber, attempt, rawResponse: result.content, decision: parsed.data },
+          {
+            step: context.stepNumber,
+            attempt,
+            rawResponse: result.content,
+            ...(result.thinking ? { rawThinking: result.thinking } : {}),
+            decision: parsed.data,
+          },
           "device agent planner response",
         );
         return parsed.data;
       }
       this.onTrace?.(
-        { step: context.stepNumber, attempt, rawResponse: result.content },
+        {
+          step: context.stepNumber,
+          attempt,
+          rawResponse: result.content,
+          ...(result.thinking ? { rawThinking: result.thinking } : {}),
+        },
         "device agent planner response rejected",
       );
       firstFailure ??= new DeviceAgentPlannerError(

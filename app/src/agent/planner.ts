@@ -228,7 +228,13 @@ export class ShivaAgentPlanner implements AgentPlanner {
           context.observations.length > 0,
         );
         this.onTrace?.(
-          { step: context.step, attempt, rawResponse: result.content, decision },
+          {
+            step: context.step,
+            attempt,
+            rawResponse: result.content,
+            ...(result.thinking ? { rawThinking: result.thinking } : {}),
+            decision,
+          },
           "agent planner response",
         );
         return decision;
@@ -239,6 +245,7 @@ export class ShivaAgentPlanner implements AgentPlanner {
             step: context.step,
             attempt,
             rawResponse: result.content,
+            ...(result.thinking ? { rawThinking: result.thinking } : {}),
             parseError: error.message,
           },
           "agent planner response rejected",

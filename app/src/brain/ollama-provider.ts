@@ -22,6 +22,7 @@ const ollamaStreamChunkSchema = z
     message: z
       .object({
         content: z.string(),
+        thinking: z.string().optional(),
       })
       .optional(),
   })
@@ -42,9 +43,11 @@ export class OllamaProvider implements AIProvider {
 
   async chat(input: ChatInput): Promise<ChatResult> {
     let content = "";
+    let thinking = "";
 
     for await (const chunk of this.streamChat(input)) {
       content += chunk.content;
+      if (chunk.thinking) thinking += chunk.thinking;
     }
 
     if (content.trim().length === 0) {
@@ -54,7 +57,7 @@ export class OllamaProvider implements AIProvider {
       );
     }
 
-    return { content };
+    return { content, ...(thinking ? { thinking } : {}) };
   }
 
   async *streamChat(input: ChatInput): AsyncIterable<ChatChunk> {
@@ -137,13 +140,19 @@ export class OllamaProvider implements AIProvider {
       }
 
       let completed = false;
-      let receivedContent = false;
+      // Thinking deltas are a legitimate, expected part of a response (see
+      // ChatChunk.thinking) — a model can spend many chunks reasoning before
+      // it emits its first content token. Tracking only `content` here would
+      // wrongly treat that normal, in-progress state as "nothing came back."
+      let receivedAnyOutput = false;
 
       for await (const payload of readNdjson(response.body)) {
-        if (ollamaStreamErrorSchema.safeParse(payload).success) {
+        const streamError = ollamaStreamErrorSchema.safeParse(payload);
+        if (streamError.success) {
+          const detail = truncateForLog(streamError.data.error);
           throw new AIProviderError(
             "UPSTREAM_ERROR",
-            "Ollama reported an error while streaming.",
+            `Ollama reported an error while streaming.${detail ? ` ${detail}` : ""}`,
           );
         }
 
@@ -156,9 +165,10 @@ export class OllamaProvider implements AIProvider {
         }
 
         const content = parsedChunk.data.message?.content ?? "";
-        if (content.length > 0) {
-          receivedContent = true;
-          yield { content };
+        const thinking = parsedChunk.data.message?.thinking ?? "";
+        if (content.length > 0 || thinking.length > 0) {
+          receivedAnyOutput = true;
+          yield { content, ...(thinking ? { thinking } : {}) };
         }
 
         if (parsedChunk.data.done) {
@@ -181,7 +191,7 @@ export class OllamaProvider implements AIProvider {
         );
       }
 
-      if (!receivedContent) {
+      if (!receivedAnyOutput) {
         throw new AIProviderError(
           "INVALID_RESPONSE",
           "Ollama returned an empty response.",
@@ -286,14 +296,18 @@ async function discardResponseBody(response: Response): Promise<void> {
 
 const MAX_ERROR_BODY_CHARS = 500;
 
+function truncateForLog(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > MAX_ERROR_BODY_CHARS
+    ? `${trimmed.slice(0, MAX_ERROR_BODY_CHARS)}...`
+    : trimmed;
+}
+
 /** Best-effort capture of Ollama's own error text (e.g. an unsupported option) for diagnosis. */
 async function readErrorBody(response: Response): Promise<string | undefined> {
   try {
-    const text = (await response.text()).trim();
-    if (!text) return undefined;
-    return text.length > MAX_ERROR_BODY_CHARS
-      ? `${text.slice(0, MAX_ERROR_BODY_CHARS)}...`
-      : text;
+    return truncateForLog(await response.text());
   } catch {
     return undefined;
   }

@@ -57,6 +57,66 @@ test("the provider streams NDJSON chunks and chat() collects them", async (conte
   }
 });
 
+test("the provider surfaces thinking deltas separately from content", async (context) => {
+  const upstream = createServer((request, response) => {
+    request.resume();
+    response.setHeader("content-type", "application/x-ndjson");
+    response.write(
+      `${JSON.stringify({ done: false, message: { content: "", thinking: "Let me " } })}\n`,
+    );
+    response.write(
+      `${JSON.stringify({ done: false, message: { content: "", thinking: "think." } })}\n`,
+    );
+    response.write(
+      `${JSON.stringify({ done: false, message: { content: "Answer" } })}\n`,
+    );
+    response.end(`${JSON.stringify({ done: true })}\n`);
+  });
+  context.after(() => closeServer(upstream));
+
+  const provider = createProvider(await listenOnRandomPort(upstream), 1_000);
+  const messages = [{ role: "user" as const, content: "Hello" }];
+
+  const chunks: Array<{ content: string; thinking?: string }> = [];
+  for await (const chunk of provider.streamChat({ messages })) {
+    chunks.push(chunk);
+  }
+  assert.deepEqual(chunks, [
+    { content: "", thinking: "Let me " },
+    { content: "", thinking: "think." },
+    { content: "Answer" },
+  ]);
+
+  const result = await provider.chat({ messages });
+  assert.deepEqual(result, { content: "Answer", thinking: "Let me think." });
+});
+
+test("a thinking-only stream is not misreported as empty by streamChat, even though chat() still requires real content", async (context) => {
+  const upstream = createServer((request, response) => {
+    request.resume();
+    response.setHeader("content-type", "application/x-ndjson");
+    response.write(
+      `${JSON.stringify({ done: false, message: { content: "", thinking: "Hmm." } })}\n`,
+    );
+    response.end(`${JSON.stringify({ done: true })}\n`);
+  });
+  context.after(() => closeServer(upstream));
+
+  const provider = createProvider(await listenOnRandomPort(upstream), 1_000);
+  const messages = [{ role: "user" as const, content: "Hello" }];
+
+  const chunks: Array<{ content: string; thinking?: string }> = [];
+  for await (const chunk of provider.streamChat({ messages })) {
+    chunks.push(chunk);
+  }
+  assert.deepEqual(chunks, [{ content: "", thinking: "Hmm." }]);
+
+  // streamChat() itself must not treat "thinking arrived but no content yet"
+  // as an empty/broken response. chat() still correctly rejects this exact
+  // case, since it has no usable content to return to its caller.
+  await expectProviderFailure(provider.chat({ messages }), "INVALID_RESPONSE");
+});
+
 test("the provider sends the infinite keep-alive sentinel as a number", async (context) => {
   let requestBody: unknown;
   const upstream = createServer((request, response) => {
@@ -252,6 +312,30 @@ test("the provider falls back to JSON mode when Ollama rejects a schema", async 
 
   assert.equal(result.content, '{"memories":[]}');
   assert.deepEqual(formats, [format, "json"]);
+});
+
+test("an in-stream Ollama error surfaces its own detail text, not just a generic message", async (context) => {
+  const upstream = createServer((request, response) => {
+    request.resume();
+    response.setHeader("content-type", "application/x-ndjson");
+    response.write(
+      `${JSON.stringify({ done: false, message: { content: "Partial" } })}\n`,
+    );
+    response.end(
+      `${JSON.stringify({ error: "model requires more system memory" })}\n`,
+    );
+  });
+  context.after(() => closeServer(upstream));
+
+  const provider = createProvider(await listenOnRandomPort(upstream), 1_000);
+
+  await assert.rejects(
+    provider.chat({ messages: [{ role: "user", content: "Hello" }] }),
+    (error: unknown) =>
+      error instanceof AIProviderError &&
+      error.failure === "UPSTREAM_ERROR" &&
+      error.message.includes("model requires more system memory"),
+  );
 });
 
 test("the provider rejects malformed or incomplete streams", async (context) => {
