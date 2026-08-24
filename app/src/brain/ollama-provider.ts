@@ -78,7 +78,7 @@ export class OllamaProvider implements AIProvider {
         body: JSON.stringify({
           model: this.options.model,
           messages: input.messages,
-          think: false,
+          think: true,
           stream: true,
           keep_alive: this.options.keepAlive,
           options: {
@@ -106,7 +106,7 @@ export class OllamaProvider implements AIProvider {
           body: JSON.stringify({
             model: this.options.model,
             messages: input.messages,
-            think: false,
+            think: true,
             stream: true,
             keep_alive: this.options.keepAlive,
             options: {
