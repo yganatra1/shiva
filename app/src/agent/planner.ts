@@ -221,6 +221,8 @@ export class ShivaAgentPlanner implements AgentPlanner {
         temperature: 0,
         ...(context.request.signal ? { signal: context.request.signal } : {}),
       });
+
+      console.log('CONTENT', result);
       try {
         const decision = parseDecision(
           result.content,
