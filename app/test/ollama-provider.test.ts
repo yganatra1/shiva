@@ -269,10 +269,6 @@ test("the provider forwards a JSON Schema for structured output", async (context
   assert.deepEqual(requestBody.format, format);
   assert.ok(isRecord(requestBody.options));
   assert.equal(requestBody.options.temperature, undefined);
-  // Grammar-constrained decoding has hit real init failures combined with
-  // thinking mode on this model/Ollama build, so schema-format calls stay
-  // think:false even though plain chat now defaults to think:true.
-  assert.equal(requestBody.think, false);
 });
 
 test("the provider falls back to JSON mode when Ollama rejects a schema", async (context) => {

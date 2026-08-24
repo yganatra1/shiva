@@ -70,13 +70,6 @@ export class OllamaProvider implements AIProvider {
       this.options.requestTimeoutMs,
     );
     timeout.unref();
-    // Schema-constrained calls (skill_call/decision JSON, memory extraction,
-    // etc.) compile the format into a grammar for constrained decoding.
-    // Combining that with thinking mode has hit real grammar-init failures on
-    // this model/Ollama build (mid-stream, after the 200 already committed —
-    // see the in-stream UPSTREAM_ERROR handling below), so those calls stay
-    // think:false; ordinary unconstrained chat keeps thinking on.
-    const think = input.responseFormat === undefined;
 
     try {
       let response = await fetch(this.chatEndpoint, {
@@ -88,7 +81,7 @@ export class OllamaProvider implements AIProvider {
         body: JSON.stringify({
           model: this.options.model,
           messages: input.messages,
-          think,
+          think: true,
           stream: true,
           keep_alive: this.options.keepAlive,
           options: {
@@ -116,7 +109,7 @@ export class OllamaProvider implements AIProvider {
           body: JSON.stringify({
             model: this.options.model,
             messages: input.messages,
-            think,
+            think: true,
             stream: true,
             keep_alive: this.options.keepAlive,
             options: {
