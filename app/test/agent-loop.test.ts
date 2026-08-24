@@ -1630,11 +1630,61 @@ test("provider-neutral planner requests strict JSON and validates the decision",
     /\"outcome\"/,
   );
   assert.match(inputs[0]?.messages[0]?.content ?? "", /Never claim an action succeeded/);
-  assert.match(
+  // Core registers no Google skills (see runtime.ts's includeGoogle: false),
+  // so its default (role "core") prompt must not carry Google-only rules.
+  assert.doesNotMatch(
     inputs[0]?.messages[0]?.content ?? "",
-    /Never say a row was added or changed unless a sheets_update observation.*success=true/i,
+    /sheets_update/i,
   );
   assert.equal(inputs[0]?.temperature, 0);
+});
+
+test("role \"agent\" prompt carries only its injected domain rules and drops Core-only decision types", async () => {
+  const inputs: ChatInput[] = [];
+  const planner = new ShivaAgentPlanner(
+    {
+      async chat(input) {
+        inputs.push(input);
+        return { content: '{"type":"respond","message":"done"}' };
+      },
+      async *streamChat() {
+        throw new Error("Planner decisions must use structured chat().");
+      },
+    },
+    undefined,
+    {
+      role: "agent",
+      domainRules: ["- Use sheets_update only after reading the sheet's live header."],
+    },
+  );
+
+  await planner.decide({
+    request,
+    packs: [],
+    openPacks: [],
+    skills: [],
+    observations: [
+      {
+        step: 1,
+        skill: "sheets_read",
+        arguments: {},
+        result: { success: true, data: {} },
+      },
+    ],
+    step: 2,
+    maxSteps: 8,
+    now: new Date("2026-08-20T00:00:00Z"),
+  });
+
+  const prompt = inputs[0]?.messages[0]?.content ?? "";
+  assert.match(prompt, /Use sheets_update only after reading the sheet's live header/);
+  assert.doesNotMatch(prompt, /direct_chat/);
+  assert.doesNotMatch(prompt, /describe_capabilities/);
+  assert.doesNotMatch(prompt, /approve_confirmation/);
+  assert.doesNotMatch(prompt, /deny_confirmation/);
+  assert.doesNotMatch(prompt, /delegate_to_agent/);
+  assert.doesNotMatch(prompt, /workspace terminal/);
+  assert.doesNotMatch(prompt, /clarify/);
 });
 
 test("the planner prompt gives a worked example for resolving a CONFIRMATION_REQUIRED observation", async () => {

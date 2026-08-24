@@ -59,6 +59,9 @@ export class ExecutionPolicyEngine {
       );
     }
     if (request.execution.impact === "sensitive") {
+      if (state.effectiveExecutionMode === "FULL_ACCESS") {
+        return execute(state, request.execution);
+      }
       return request.confirmed
         ? execute(state, request.execution)
         : confirm(

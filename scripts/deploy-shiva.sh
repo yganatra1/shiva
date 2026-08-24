@@ -323,7 +323,7 @@ module.exports = {
       name: "shiva-device-agent",
       cwd: "$APP",
       script: "npm",
-      args: "start:device-agent",
+      args: "run start:device-agent",
       interpreter: "none",
 
       autorestart: true,
@@ -365,7 +365,7 @@ module.exports = {
       name: "shiva-google-agent",
       cwd: "$APP",
       script: "npm",
-      args: "start:google-agent",
+      args: "run start:google-agent",
       interpreter: "none",
 
       autorestart: true,

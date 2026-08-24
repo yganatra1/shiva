@@ -120,7 +120,7 @@ test("an invalid input's specific validation issues reach the caller, not just t
   assert.match(result.error.message, /wrongKey/);
 });
 
-test("FULL_ACCESS still requires confirmation for a sensitive action", async () => {
+test("FULL_ACCESS executes a sensitive action without confirmation", async () => {
   const registry = new SkillRegistry();
   let executions = 0;
   registerValueSkill(
@@ -136,6 +136,38 @@ test("FULL_ACCESS still requires confirmation for a sensitive action", async () 
     },
   );
   const { executor } = createHarness(registry, { mode: "FULL_ACCESS" });
+
+  const result = await executor.execute(
+    "destroy_example",
+    { value: "all" },
+    context(),
+    { userAuthorized: true },
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(executions, 1);
+  assert.equal(
+    await executor.getPendingConfirmation(USER_ID, CONVERSATION_ID, NOW),
+    undefined,
+  );
+});
+
+test("AUTO still requires confirmation for a sensitive action", async () => {
+  const registry = new SkillRegistry();
+  let executions = 0;
+  registerValueSkill(
+    registry,
+    "destroy_example",
+    {
+      mutability: "write",
+      impact: "sensitive",
+      confirmationReason: "This permanently destroys the example.",
+    },
+    () => {
+      executions += 1;
+    },
+  );
+  const { executor } = createHarness(registry, { mode: "AUTO" });
 
   const result = await executor.execute(
     "destroy_example",

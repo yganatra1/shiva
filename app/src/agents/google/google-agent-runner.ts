@@ -13,6 +13,7 @@ import { AgentWorker } from "../shared/agent-worker";
 import { RedisAgentTransport } from "../shared/redis-agent-transport";
 import { CoreAuthorizedAgentExecutionPolicy } from "./core-authorized-execution-policy";
 import { createGoogleAgentTaskHandler } from "./google-agent-task-handler";
+import { GOOGLE_AGENT_DOMAIN_RULES } from "./google-planner-rules";
 
 async function start(): Promise<void> {
   let closeTransport: (() => Promise<void>) | undefined;
@@ -35,7 +36,10 @@ async function start(): Promise<void> {
       new CoreAuthorizedAgentExecutionPolicy(),
     );
     const loop = new AgentLoop(
-      new ShivaAgentPlanner(provider),
+      new ShivaAgentPlanner(provider, undefined, {
+        role: "agent",
+        domainRules: GOOGLE_AGENT_DOMAIN_RULES,
+      }),
       executor,
       registry,
       config.agentMaxSteps,
