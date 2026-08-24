@@ -182,6 +182,38 @@ echo
 echo "Base packages installed."
 echo
 
+# Shiva's worker recovery uses XAUTOCLAIM, so do not rely on an older Ubuntu
+# archive package. Install current Redis from its official APT repository and
+# fail the bootstrap before PM2 can enter a worker restart loop.
+REDIS_KEYRING_PATH=/usr/share/keyrings/redis-archive-keyring.gpg
+REDIS_APT_LIST_PATH=/etc/apt/sources.list.d/redis.list
+REDIS_RELEASE_CODENAME="$(lsb_release -cs)"
+curl -fsSL https://packages.redis.io/gpg \
+    | gpg --dearmor --yes -o "$REDIS_KEYRING_PATH"
+chmod 0644 "$REDIS_KEYRING_PATH"
+echo "deb [signed-by=$REDIS_KEYRING_PATH] https://packages.redis.io/deb $REDIS_RELEASE_CODENAME main" \
+    > "$REDIS_APT_LIST_PATH"
+apt-get update
+apt-get install -y redis
+
+REDIS_INSTALLED_VERSION="$(redis-server --version | sed -n 's/.*v=\([0-9][0-9.]*\).*/\1/p')"
+REDIS_INSTALLED_MAJOR="${REDIS_INSTALLED_VERSION%%.*}"
+if [[ ! "$REDIS_INSTALLED_MAJOR" =~ ^[0-9]+$ ]] || (( REDIS_INSTALLED_MAJOR < 7 )); then
+    echo "Redis 7 or newer is required; installed version: ${REDIS_INSTALLED_VERSION:-unknown}."
+    exit 1
+fi
+echo "Redis $REDIS_INSTALLED_VERSION installed from packages.redis.io."
+echo
+
+# Redis Streams carry durable inter-process agent work. Enable AOF so queued
+# tasks and responses survive service/VM restarts on direct Ubuntu installs.
+if [[ -f /etc/redis/redis.conf ]]; then
+    sed -i 's/^appendonly .*/appendonly yes/' /etc/redis/redis.conf
+    sed -i 's/^appendfsync .*/appendfsync everysec/' /etc/redis/redis.conf
+    systemctl enable redis-server >/dev/null 2>&1 || true
+    systemctl restart redis-server >/dev/null 2>&1 || service redis-server restart
+fi
+
 
 # ------------------------------------------------------------
 # Git configuration defaults

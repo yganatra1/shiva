@@ -80,12 +80,12 @@ fi
 echo "PM2:  $(pm2 --version)"
 
 # ------------------------------------------------------------
-# PostgreSQL + Ollama
+# PostgreSQL + Redis + Ollama
 # ------------------------------------------------------------
 
 echo
 echo
-echo "[2/9] Starting PostgreSQL + Ollama..."
+echo "[2/9] Starting PostgreSQL + Redis + Ollama..."
 
 "$ROOT/scripts/start-postgres.sh"
 
@@ -104,6 +104,26 @@ if ! psql "$DATABASE_URL" -c "SELECT 1;" >/dev/null 2>&1; then
 fi
 
 echo "Database: READY"
+
+export REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379}"
+if ! redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
+  if command -v service >/dev/null 2>&1; then
+    service redis-server start >/dev/null 2>&1 || true
+  fi
+fi
+if ! redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
+  echo "ERROR: Redis is not available at the configured REDIS_URL."
+  exit 1
+fi
+
+REDIS_VERSION="$(redis-cli -u "$REDIS_URL" --raw INFO server 2>/dev/null | tr -d '\r' | sed -n 's/^redis_version:\([0-9][0-9.]*\)$/\1/p' | head -n 1)"
+REDIS_MAJOR="${REDIS_VERSION%%.*}"
+if [[ ! "$REDIS_MAJOR" =~ ^[0-9]+$ ]] || (( REDIS_MAJOR < 7 )); then
+  echo "ERROR: Redis 7 or newer is required for agent task recovery (found: ${REDIS_VERSION:-unknown})."
+  exit 1
+fi
+
+echo "Redis $REDIS_VERSION: READY"
 
 if ! curl -fsS http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
   echo "ERROR: Ollama is not available."
@@ -287,6 +307,13 @@ module.exports = {
       out_file: "$PM2_LOG_DIR/api-out.log",
       error_file: "$PM2_LOG_DIR/api-error.log",
 
+      // Google credentials belong only to google-agent. Core coordinates the
+      // request and owns policy, but no longer executes Google skills.
+      filter_env: [
+        "GOOGLE_",
+        "EXPENSE_SHEET_ID"
+      ],
+
       env: {
         NODE_ENV: "production"
       }
@@ -305,6 +332,71 @@ module.exports = {
 
       out_file: "$PM2_LOG_DIR/device-agent-out.log",
       error_file: "$PM2_LOG_DIR/device-agent-error.log",
+
+      // PM2 inherits the deployment shell. Filter secret-bearing Core/Google
+      // prefixes before it starts the npm wrapper; the runner then applies a
+      // strict allowlist again before accepting work.
+      filter_env: [
+        "DATABASE_",
+        "POSTGRES_",
+        "GOOGLE_",
+        "BRAVE_",
+        "WEB_",
+        "EXPENSE_",
+        "EMBEDDING_",
+        "WORKING_MEMORY_",
+        "MEMORY_",
+        "ASR_",
+        "TTS_",
+        "FACE_",
+        "SHIVA_USER_",
+        "SHIVA_MAX_EXECUTION_MODE",
+        "SHIVA_CONFIRMATION_",
+        "AGENT_TASK_TIMEOUT_MS",
+        "DEVICE_AGENT_URL"
+      ],
+
+      env: {
+        NODE_ENV: "production"
+      }
+    },
+
+    {
+      name: "shiva-google-agent",
+      cwd: "$APP",
+      script: "npm",
+      args: "start:google-agent",
+      interpreter: "none",
+
+      autorestart: true,
+      restart_delay: 2000,
+      max_restarts: 20,
+
+      out_file: "$PM2_LOG_DIR/google-agent-out.log",
+      error_file: "$PM2_LOG_DIR/google-agent-error.log",
+
+      // Google Agent needs only OAuth/Sheets, Ollama, Redis, and bounded
+      // worker settings. Core owns PostgreSQL and confirmation state.
+      filter_env: [
+        "DATABASE_",
+        "POSTGRES_",
+        "DEVICE_",
+        "BRAVE_",
+        "WEB_",
+        "EMBEDDING_",
+        "WORKING_MEMORY_",
+        "MEMORY_",
+        "ASR_",
+        "TTS_",
+        "FACE_",
+        "SHIVA_MAX_EXECUTION_MODE",
+        "SHIVA_CONFIRMATION_",
+        "SHIVA_PERF_LOG",
+        "SHIVA_AGENT_TRACE_LOG",
+        "AGENT_TASK_TIMEOUT_MS",
+        "EXPENSE_SHEET_ID",
+        "GOOGLE_APPLICATION_CREDENTIALS"
+      ],
 
       env: {
         NODE_ENV: "production"
@@ -326,7 +418,13 @@ module.exports = {
       max_restarts: 20,
 
       out_file: "$PM2_LOG_DIR/asr-out.log",
-      error_file: "$PM2_LOG_DIR/asr-error.log"
+      error_file: "$PM2_LOG_DIR/asr-error.log",
+
+      // Google credentials belong exclusively to google-agent, including
+      // when PM2 starts auxiliary voice services from the same shell.
+      filter_env: [
+        "GOOGLE_"
+      ]
     },
 
     {
@@ -344,7 +442,11 @@ module.exports = {
       max_restarts: 20,
 
       out_file: "$PM2_LOG_DIR/tts-out.log",
-      error_file: "$PM2_LOG_DIR/tts-error.log"
+      error_file: "$PM2_LOG_DIR/tts-error.log",
+
+      filter_env: [
+        "GOOGLE_"
+      ]
     }
   ]
 };
@@ -355,6 +457,7 @@ PMEOF
 
 pm2 delete shiva-api >/dev/null 2>&1 || true
 pm2 delete shiva-device-agent >/dev/null 2>&1 || true
+pm2 delete shiva-google-agent >/dev/null 2>&1 || true
 pm2 delete shiva-asr >/dev/null 2>&1 || true
 pm2 delete shiva-tts >/dev/null 2>&1 || true
 
@@ -404,6 +507,24 @@ wait_for_health \
 wait_for_health \
   "Device Agent" \
   "http://127.0.0.1:3002/health"
+
+wait_for_agent_heartbeat() {
+  local NAME="$1"
+  local AGENT_ID="$2"
+  echo "Waiting for ${NAME} heartbeat..."
+  for i in {1..60}; do
+    if [[ "$(redis-cli -u "$REDIS_URL" EXISTS "shiva:agent:heartbeat:${AGENT_ID}" 2>/dev/null)" == "1" ]]; then
+      echo "${NAME}: READY"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "ERROR: ${NAME} did not publish a Redis heartbeat."
+  return 1
+}
+
+wait_for_agent_heartbeat "Device Agent worker" "device-agent"
+wait_for_agent_heartbeat "Google Agent" "google-agent"
 
 # ------------------------------------------------------------
 # Warm Ollama models
@@ -460,6 +581,7 @@ echo "Useful commands:"
 echo "  pm2 status"
 echo "  pm2 logs shiva-api"
 echo "  pm2 logs shiva-device-agent"
+echo "  pm2 logs shiva-google-agent"
 echo "  pm2 logs shiva-asr"
 echo "  pm2 logs shiva-tts"
 echo "  pm2 monit"

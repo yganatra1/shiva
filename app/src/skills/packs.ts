@@ -6,7 +6,14 @@ import { PackRegistry } from "./pack-registry";
  * first skill is built (see docs/skill-middle-layer-plan.md Phase 4), not
  * ahead of time — an empty pack would waste a planner's open_packs hop.
  */
-export function createPackRegistry(): PackRegistry {
+export interface PackRegistryOptions {
+  /** Specialized Google workers keep this pack; Core delegates it instead. */
+  readonly includeGoogle?: boolean;
+}
+
+export function createPackRegistry(
+  options: PackRegistryOptions = {},
+): PackRegistry {
   const packs = new PackRegistry();
   packs.register({
     name: "execution_control",
@@ -27,11 +34,13 @@ export function createPackRegistry(): PackRegistry {
     name: "web",
     description: "Search the web and read current public pages.",
   });
-  packs.register({
-    name: "google",
-    description:
-      "Create, read, and update Google Sheets with whatever structure the task needs.",
-  });
+  if (options.includeGoogle !== false) {
+    packs.register({
+      name: "google",
+      description:
+        "Create, read, and update Google Sheets with whatever structure the task needs.",
+    });
+  }
   packs.register({
     name: "people",
     description:

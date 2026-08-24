@@ -2,13 +2,86 @@
 
 ## Purpose
 
-The V0.3 agent layer lets Shiva perform a small set of controlled, observable actions without turning the chat server into a general-purpose autonomous runtime. It currently supports:
+Shiva now has two distinct agent layers:
 
-- `record_expense`: append and verify one row in a private Google Sheet;
-- `expense_report`: read fresh expense rows and calculate exact totals per currency;
-- `web_research`: search and inspect current public web sources;
-- `learn_about_shiva`: inspect a bounded repository tree and core project documentation;
-- `workspace_terminal`: iteratively inspect Shiva's repository through a read-only terminal contract while excluding conventional credential and private-key material.
+- **Shiva Core** is the only user-facing brain. It owns intent, memory and people resolution, security checks, context minimization, delegation, continuation reasoning, and final communication.
+- **Specialized agents** are independently managed processes. They receive one minimal natural-language instruction, use only their domain tools, and return one plain natural-language message. They never receive or take over the user conversation.
+
+The current process registry contains `device-agent` and `google-agent`. Its IDs are stable routing identifiers; names, descriptions, and capabilities are free-form human-readable text, so adding a future agent does not expand a central capability enum.
+
+## Durable multi-agent flow
+
+```text
+Client -- HTTP /chat or Core WebSocket --> Shiva Core
+                                            |
+                     memory + people + policy checks
+                                            |
+                     generate short executionContext prose
+                                            |
+             PostgreSQL request/task outbox (durable intent)
+                                            |
+                         shiva:agent:tasks (Redis Stream)
+                                            |
+                              specialized agent process
+                                            |
+                      shiva:agent:responses (plain message)
+                                            |
+                                   Shiva Core reloads:
+                              original user request
+                            + saved executionContext
+                            + latest agent response
+                                            |
+                       next delegation or final Core message
+                                            |
+                       PostgreSQL + WS /chat/updates -> Client
+```
+
+`executionContext` is immutable prose such as “I need to resolve Mom, ask Device Agent to call her, and if she does not answer ask Google Agent to add ₹500 to the expense sheet.” It is deliberately not a workflow definition. There are no persisted step arrays, next-step fields, semantic response enums, or workflow-status enums. Core starts a fresh model reasoning pass for every agent reply.
+
+The Redis envelopes contain only technical routing/correlation fields. An agent instruction carries its semantic context as ordinary text; the response's important field is `message: string`. PostgreSQL stores `orchestration_requests`, `agent_tasks`, and `agent_responses` for recovery and audit. Delivery timestamps, deadlines, attempts, stream IDs, and abandonment markers are transport reliability data, not business workflow state.
+
+Both logical queues use shared streams:
+
+```text
+shiva:agent:tasks
+shiva:agent:responses
+```
+
+Because Redis Streams cannot filter consumer-group reads by `agentId`, each agent ID has its own group on the shared task stream. A group acknowledges foreign entries only in its own group; replicas of the same agent share the intended group. Core uses one response group. Workers acknowledge a task only after publishing its response, recover stale pending entries with `XAUTOCLAIM`, cap delivery attempts, maintain short-lived heartbeats, and shut down gracefully. PostgreSQL is an outbox for tasks that were committed before Redis publication. Core converts expired tasks into a grounded timeout response instead of waiting forever.
+
+Task and response publication is idempotent by `taskId`, and an active worker
+renews its pending-entry lease so a slow handler is not concurrently reclaimed.
+This closes the Redis `XADD`/`XACK` and Core outbox publication crash windows.
+Like any at-least-once queue, it cannot by itself prove exactly-once execution
+inside an external phone or Google API if a process dies after the provider
+commits a side effect but before the worker publishes its response. New
+side-effect adapters should pass the durable task ID through as a provider
+idempotency key whenever that provider supports one.
+
+The shared streams and publication-deduplication keys are deliberately not
+trimmed by a naive `MAXLEN`: doing so could erase work that an offline
+agent-specific consumer group has not seen. Operators should monitor Redis AOF
+growth; safe compaction must use the acknowledged/pending floor across every
+group and retain response deduplication until the correlated task is durably
+terminal in PostgreSQL.
+
+Stream entries survive independent Core/agent process restarts while Redis is
+running. Surviving a Redis service or data-volume restart additionally depends
+on the operator's Redis persistence policy; the supplied Compose/new-pod setup
+enables AOF, but Core does not require or mutate that policy at startup.
+
+The Android `/device/ws` relay remains a separate device bridge. It is not Core-to-agent orchestration and stays in place so the existing companion app does not change endpoints. The old device `/v1/delegate` HTTP endpoint remains temporarily for migration compatibility, but production Core delegation uses Redis only.
+
+Text clients can subscribe to `GET /chat/updates?conversationId=<uuid>` as a WebSocket. Each update includes the persisted assistant `messageId`, conversation ID, message, and timestamp. On reconnect, pass `afterMessageId=<last-seen-message-id>` to resume from PostgreSQL; `limit` defaults to 50 and is capped at 100. With no cursor, Core replays the most recent bounded window. The replay query includes only assistant messages finalized from agent responses, not foreground `/chat` responses, and Core buffers concurrent live updates until replay finishes so there is no subscribe gap. Messages on this socket are authored and persisted by Core; Redis and worker processes are never exposed to the client, and a failed socket or listener cannot roll back agent-response processing.
+
+The V0.3 runtime keeps Core's catalog intentionally small. Core owns
+execution-control, people resolution, web research, self/repository inspection,
+and `delegate_to_agent`. `device-agent` owns the connected Android surface;
+`google-agent` owns the currently registered Google Sheets operations
+(`sheets_find`, `sheets_create`, `sheets_read`, `sheets_add_tab`, and
+`sheets_update`). The older fixed-schema `record_expense`/`expense_report`
+adapters remain in source for incremental migration and tests, but they are not
+registered in the current runtime.
 
 These skills wrap the existing Shiva brain. Text and voice requests still use the same `ShivaChatService`, conversation ID, working memory, long-term memory retrieval, persistence, cancellation, and response transport. The feature does not create a second chat or memory implementation.
 
@@ -67,7 +140,15 @@ The planner emits one validated `direct_chat`, `describe_capabilities`, `clarify
 | Tool | Perform one narrow external operation | Decide user intent or compose the final answer |
 | Audit repository | Record agent/skill execution state in PostgreSQL | Store the expense ledger |
 
-Unknown skills and invalid action metadata fail closed. Skill input schemas reject unknown or malformed arguments. Built-in skill contracts remain registered even when their external integration is not configured: expense execution returns `EXPENSE_SHEET_UNAVAILABLE`, and research returns `WEB_RESEARCH_UNAVAILABLE`. This produces an explicit failed observation instead of silently dropping the capability or letting normal chat guess. A failed observation remains visible to the planner so it can explain the failure or choose another safe action; the evidence gate prevents it from inventing a success.
+Unknown skills and invalid action metadata fail closed. Skill input schemas
+reject unknown or malformed arguments. Registered external contracts remain
+visible even when unconfigured: for example, Core web research returns
+`WEB_RESEARCH_UNAVAILABLE`, while Google Agent's Sheets calls return grounded
+configuration/authentication failures. This produces an explicit failed
+observation instead of silently dropping the capability or letting a model
+guess. A failed observation remains visible to the relevant planner so it can
+explain the failure or choose another safe action; the evidence gate prevents
+it from inventing a success.
 
 ## Shiva workspace architecture
 
@@ -78,6 +159,11 @@ The terminal can read repository source and documentation, including hidden and 
 V0.3 deliberately has no workspace mutation skill. A future update/delete terminal must declare truthful write/sensitive metadata and remain behind the centralized execution policy. Sensitive mutations use the same exact, persisted, expiring confirmation protocol as every other skill; prompt instructions cannot substitute for runtime authorization.
 
 ## Expense architecture
+
+This section documents the fixed-schema expense adapters retained for
+incremental migration. They are not registered in the current Core or Google
+Agent runtime; current expense requests use Google Agent's free-form Sheets
+skills and therefore do not use the binding/provisioning behavior below.
 
 Google Sheets is the sole source of truth for expenses. There is intentionally no PostgreSQL `expenses` table, local row cache, mirror, or synchronization job. The only expense-specific operational state in PostgreSQL is the Google resource binding and short provisioning lease needed to find one user's sheet safely. Agent request text and expense skill payloads are redacted in audit storage and are never queried to calculate a report. The existing conversation/message and memory pipeline remains unchanged, so the database may still contain the user's original expense utterance as normal chat data.
 

@@ -10,6 +10,12 @@ import {
 const rootEnvironmentPath = fileURLToPath(
   new URL("../../../.env", import.meta.url),
 );
+const deviceAgentEnvironmentPath = fileURLToPath(
+  new URL("../../../.env.device-agent", import.meta.url),
+);
+const googleAgentEnvironmentPath = fileURLToPath(
+  new URL("../../../.env.google-agent", import.meta.url),
+);
 
 const httpBaseUrlSchema = z
   .string()
@@ -64,6 +70,19 @@ const postgresqlUrlSchema = z
       });
     }
   });
+const redisUrlSchema = z
+  .string()
+  .trim()
+  .url()
+  .superRefine((value, context) => {
+    const protocol = new URL(value).protocol;
+    if (protocol !== "redis:" && protocol !== "rediss:") {
+      context.addIssue({
+        code: "custom",
+        message: "must use the redis or rediss protocol",
+      });
+    }
+  });
 const httpsBaseUrlSchema = httpBaseUrlSchema.superRefine((value, context) => {
   if (new URL(value).protocol !== "https:") {
     context.addIssue({
@@ -87,6 +106,14 @@ const optionalSecretSchema = z
 const optionalSheetIdSchema = optionalSecretSchema.refine(
   (value) => value === undefined || /^[A-Za-z0-9_-]{5,256}$/.test(value),
   { message: "must be a Google spreadsheet ID, not a full URL" },
+);
+const optionalDeviceMockCallOutcomeSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const normalized = value.trim();
+    return normalized || undefined;
+  },
+  z.enum(["answered", "not_answered"]).optional(),
 );
 const timeZoneSchema = z
   .string()
@@ -134,6 +161,7 @@ const environmentSchema = z
   ),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
   DATABASE_SSL: booleanEnvironmentSchema.default(false),
+  REDIS_URL: redisUrlSchema.default("redis://127.0.0.1:6379"),
   SHIVA_USER_ID: z
     .string()
     .uuid()
@@ -147,6 +175,30 @@ const environmentSchema = z
     .min(1_000)
     .max(1_800_000)
     .default(300_000),
+  AGENT_TASK_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(5_000)
+    .max(1_800_000)
+    .default(300_000),
+  AGENT_RECLAIM_IDLE_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(600_000)
+    .default(30_000),
+  AGENT_MAX_DELIVERY_ATTEMPTS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(20)
+    .default(3),
+  AGENT_HEARTBEAT_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(3)
+    .max(300)
+    .default(15),
   SHIVA_MAX_EXECUTION_MODE: z
     .string()
     .trim()
@@ -170,6 +222,7 @@ const environmentSchema = z
   DEVICE_AGENT_PORT: z.coerce.number().int().min(1).max(65_535).default(3002),
   DEVICE_AGENT_MAX_STEPS: z.coerce.number().int().min(1).max(32).default(15),
   DEVICE_WS_TOKEN: optionalSecretSchema,
+  DEVICE_AGENT_MOCK_CALL_OUTCOME: optionalDeviceMockCallOutcomeSchema,
   GOOGLE_OAUTH_CLIENT_ID: optionalSecretSchema,
   GOOGLE_OAUTH_CLIENT_SECRET: optionalSecretSchema,
   GOOGLE_OAUTH_REFRESH_TOKEN: optionalSecretSchema,
@@ -287,11 +340,16 @@ export interface AppConfig {
   readonly databaseUrl: string;
   readonly databasePoolMax: number;
   readonly databaseSsl: boolean;
+  readonly redisUrl: string;
   readonly userId: string;
   readonly userName: string;
   readonly timeZone: string;
   readonly agentMaxSteps: number;
   readonly agentRequestTimeoutMs: number;
+  readonly agentTaskTimeoutMs: number;
+  readonly agentReclaimIdleMs: number;
+  readonly agentMaxDeliveryAttempts: number;
+  readonly agentHeartbeatTtlSeconds: number;
   readonly maxExecutionMode: ExecutionMode;
   readonly confirmationTtlMs: number;
   readonly expenseSheetId?: string;
@@ -305,6 +363,8 @@ export interface AppConfig {
   readonly deviceAgentMaxSteps: number;
   /** Required Android companion app connection token; unset means no auth is enforced. */
   readonly deviceWsToken?: string;
+  /** Explicit development/POC simulation; unset always uses the real bridge. */
+  readonly deviceAgentMockCallOutcome?: "answered" | "not_answered";
   readonly googleUserOAuth?: {
     readonly clientId: string;
     readonly clientSecret: string;
@@ -336,14 +396,266 @@ export interface AppConfig {
   readonly nodeEnv: "development" | "test" | "production";
 }
 
+/**
+ * The device process deliberately receives only the values needed for Redis,
+ * Ollama, and its Android bridge. Keeping this as a real narrow type prevents
+ * a future device feature from casually reaching for a Core/Google secret.
+ */
+export type DeviceAgentConfig = Pick<
+  AppConfig,
+  | "ollamaUrl"
+  | "model"
+  | "contextLength"
+  | "keepAlive"
+  | "ollamaRequestTimeoutMs"
+  | "redisUrl"
+  | "agentReclaimIdleMs"
+  | "agentMaxDeliveryAttempts"
+  | "agentHeartbeatTtlSeconds"
+  | "deviceAgentHost"
+  | "deviceAgentPort"
+  | "deviceAgentMaxSteps"
+  | "deviceWsToken"
+  | "deviceAgentMockCallOutcome"
+  | "nodeEnv"
+>;
+
+/** Google workers need no Core database, device bridge, web, or voice config. */
+export type GoogleAgentConfig = Pick<
+  AppConfig,
+  | "ollamaUrl"
+  | "model"
+  | "contextLength"
+  | "keepAlive"
+  | "ollamaRequestTimeoutMs"
+  | "redisUrl"
+  | "userId"
+  | "userName"
+  | "timeZone"
+  | "agentMaxSteps"
+  | "agentRequestTimeoutMs"
+  | "agentReclaimIdleMs"
+  | "agentMaxDeliveryAttempts"
+  | "agentHeartbeatTtlSeconds"
+  | "expenseSheetRequestTimeoutMs"
+  | "googleUserOAuth"
+  | "nodeEnv"
+>;
+
 export class ConfigurationError extends Error {
   override readonly name = "ConfigurationError";
 }
 
+/** @internal Dependency seam used to prove production never opens dotenv. */
+export interface AgentEnvironmentLoadOptions {
+  readonly readEnvironmentFile?: (
+    path: string,
+  ) => Readonly<Record<string, string>>;
+}
+
 export function loadConfig(): AppConfig {
   dotenv.config({ path: rootEnvironmentPath, quiet: true });
+  // Core coordinates Google work but does not execute it. Do not retain
+  // provider credentials even if a legacy/shared environment supplied them;
+  // the independently configured google-agent is their only consumer.
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("GOOGLE_")) delete process.env[key];
+  }
+  return parseConfig(process.env);
+}
 
-  const result = environmentSchema.safeParse(process.env);
+const DEVICE_AGENT_ENVIRONMENT_KEYS = [
+  "OLLAMA_URL",
+  "SHIVA_MODEL",
+  "SHIVA_CONTEXT_LENGTH",
+  "SHIVA_KEEP_ALIVE",
+  "OLLAMA_REQUEST_TIMEOUT_MS",
+  "REDIS_URL",
+  "AGENT_RECLAIM_IDLE_MS",
+  "AGENT_MAX_DELIVERY_ATTEMPTS",
+  "AGENT_HEARTBEAT_TTL_SECONDS",
+  "DEVICE_AGENT_HOST",
+  "DEVICE_AGENT_PORT",
+  "DEVICE_AGENT_MAX_STEPS",
+  "DEVICE_WS_TOKEN",
+  "DEVICE_AGENT_MOCK_CALL_OUTCOME",
+  "NODE_ENV",
+] as const;
+
+const GOOGLE_AGENT_ENVIRONMENT_KEYS = [
+  "OLLAMA_URL",
+  "SHIVA_MODEL",
+  "SHIVA_CONTEXT_LENGTH",
+  "SHIVA_KEEP_ALIVE",
+  "OLLAMA_REQUEST_TIMEOUT_MS",
+  "REDIS_URL",
+  "SHIVA_USER_ID",
+  "SHIVA_USER_NAME",
+  "SHIVA_TIME_ZONE",
+  "AGENT_MAX_STEPS",
+  "AGENT_REQUEST_TIMEOUT_MS",
+  "AGENT_RECLAIM_IDLE_MS",
+  "AGENT_MAX_DELIVERY_ATTEMPTS",
+  "AGENT_HEARTBEAT_TTL_SECONDS",
+  "EXPENSE_SHEET_REQUEST_TIMEOUT_MS",
+  "GOOGLE_OAUTH_CLIENT_ID",
+  "GOOGLE_OAUTH_CLIENT_SECRET",
+  "GOOGLE_OAUTH_REFRESH_TOKEN",
+  "NODE_ENV",
+] as const;
+
+/** Non-secret host settings that Node/network libraries may still require. */
+const SAFE_AGENT_RUNTIME_ENVIRONMENT_KEYS = [
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "PATH",
+  "SHELL",
+  "PWD",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LANGUAGE",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TERM",
+  "COLORTERM",
+  "NO_COLOR",
+  "FORCE_COLOR",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+] as const;
+
+/**
+ * Loads a least-privilege config for the independently managed device worker.
+ * Production reads only inherited/PM2/Compose values. Local development may
+ * read the fixed, agent-specific .env.device-agent file; it never opens .env.
+ */
+export function loadDeviceAgentConfig(
+  options: AgentEnvironmentLoadOptions = {},
+): DeviceAgentConfig {
+  const config = loadScopedAgentConfig(
+    DEVICE_AGENT_ENVIRONMENT_KEYS,
+    deviceAgentEnvironmentPath,
+    options,
+  );
+  return {
+    ollamaUrl: config.ollamaUrl,
+    model: config.model,
+    contextLength: config.contextLength,
+    keepAlive: config.keepAlive,
+    ollamaRequestTimeoutMs: config.ollamaRequestTimeoutMs,
+    redisUrl: config.redisUrl,
+    agentReclaimIdleMs: config.agentReclaimIdleMs,
+    agentMaxDeliveryAttempts: config.agentMaxDeliveryAttempts,
+    agentHeartbeatTtlSeconds: config.agentHeartbeatTtlSeconds,
+    deviceAgentHost: config.deviceAgentHost,
+    deviceAgentPort: config.deviceAgentPort,
+    deviceAgentMaxSteps: config.deviceAgentMaxSteps,
+    ...(config.deviceWsToken ? { deviceWsToken: config.deviceWsToken } : {}),
+    ...(config.deviceAgentMockCallOutcome
+      ? { deviceAgentMockCallOutcome: config.deviceAgentMockCallOutcome }
+      : {}),
+    nodeEnv: config.nodeEnv,
+  };
+}
+
+/** Loads only Redis/Ollama/Google values; it never opens Core's root .env. */
+export function loadGoogleAgentConfig(
+  options: AgentEnvironmentLoadOptions = {},
+): GoogleAgentConfig {
+  const config = loadScopedAgentConfig(
+    GOOGLE_AGENT_ENVIRONMENT_KEYS,
+    googleAgentEnvironmentPath,
+    options,
+  );
+  return {
+    ollamaUrl: config.ollamaUrl,
+    model: config.model,
+    contextLength: config.contextLength,
+    keepAlive: config.keepAlive,
+    ollamaRequestTimeoutMs: config.ollamaRequestTimeoutMs,
+    redisUrl: config.redisUrl,
+    userId: config.userId,
+    userName: config.userName,
+    timeZone: config.timeZone,
+    agentMaxSteps: config.agentMaxSteps,
+    agentRequestTimeoutMs: config.agentRequestTimeoutMs,
+    agentReclaimIdleMs: config.agentReclaimIdleMs,
+    agentMaxDeliveryAttempts: config.agentMaxDeliveryAttempts,
+    agentHeartbeatTtlSeconds: config.agentHeartbeatTtlSeconds,
+    expenseSheetRequestTimeoutMs: config.expenseSheetRequestTimeoutMs,
+    ...(config.googleUserOAuth
+      ? { googleUserOAuth: config.googleUserOAuth }
+      : {}),
+    nodeEnv: config.nodeEnv,
+  };
+}
+
+function loadScopedAgentConfig(
+  allowedKeys: readonly string[],
+  developmentEnvironmentPath: string,
+  options: AgentEnvironmentLoadOptions,
+): AppConfig {
+  // Production workers receive an explicit environment from PM2 or Compose
+  // and never perform any dotenv file read. Development must explicitly opt
+  // in, and then gets a fixed per-agent file rather than Core's root .env.
+  // Explicit shell values retain precedence.
+  const loadDevelopmentFile =
+    process.env.NODE_ENV !== "production" &&
+    process.env.SHIVA_LOAD_AGENT_ENV_FILES === "true";
+  const fileEnvironment =
+    loadDevelopmentFile
+      ? {
+          ...(options.readEnvironmentFile ?? readAgentEnvironmentFile)(
+            developmentEnvironmentPath,
+          ),
+        }
+      : {};
+  const fileEnvironmentKeys = Object.keys(fileEnvironment);
+  const allowed = new Set([
+    ...allowedKeys,
+    ...SAFE_AGENT_RUNTIME_ENVIRONMENT_KEYS,
+  ]);
+  const scopedEnvironment: Record<string, string> = {};
+  for (const key of allowed) {
+    const inherited = process.env[key];
+    const fromFile = fileEnvironment[key];
+    if (inherited !== undefined) scopedEnvironment[key] = inherited;
+    else if (fromFile !== undefined) scopedEnvironment[key] = fromFile;
+  }
+  for (const key of fileEnvironmentKeys) {
+    if (!allowed.has(key)) delete fileEnvironment[key];
+  }
+
+  // PM2/npm may inherit arbitrary deployment-shell credentials. Retain only
+  // this agent's declared config plus a small non-secret OS/network baseline;
+  // a denylist cannot anticipate future *_TOKEN or provider-specific names.
+  for (const key of Object.keys(process.env)) {
+    if (!allowed.has(key)) delete process.env[key];
+  }
+
+  return parseConfig(scopedEnvironment);
+}
+
+function readAgentEnvironmentFile(path: string): Record<string, string> {
+  const environment: Record<string, string> = {};
+  dotenv.config({ path, quiet: true, processEnv: environment });
+  return environment;
+}
+
+function parseConfig(environment: NodeJS.ProcessEnv | Record<string, string>): AppConfig {
+
+  const result = environmentSchema.safeParse(environment);
   if (!result.success) {
     const issues = result.error.issues
       .map((issue) => `${issue.path.map(String).join(".")}: ${issue.message}`)
@@ -363,11 +675,16 @@ export function loadConfig(): AppConfig {
     databaseUrl: result.data.DATABASE_URL,
     databasePoolMax: result.data.DATABASE_POOL_MAX,
     databaseSsl: result.data.DATABASE_SSL,
+    redisUrl: result.data.REDIS_URL,
     userId: result.data.SHIVA_USER_ID,
     userName: result.data.SHIVA_USER_NAME,
     timeZone: result.data.SHIVA_TIME_ZONE,
     agentMaxSteps: result.data.AGENT_MAX_STEPS,
     agentRequestTimeoutMs: result.data.AGENT_REQUEST_TIMEOUT_MS,
+    agentTaskTimeoutMs: result.data.AGENT_TASK_TIMEOUT_MS,
+    agentReclaimIdleMs: result.data.AGENT_RECLAIM_IDLE_MS,
+    agentMaxDeliveryAttempts: result.data.AGENT_MAX_DELIVERY_ATTEMPTS,
+    agentHeartbeatTtlSeconds: result.data.AGENT_HEARTBEAT_TTL_SECONDS,
     maxExecutionMode: result.data.SHIVA_MAX_EXECUTION_MODE,
     confirmationTtlMs: result.data.SHIVA_CONFIRMATION_TTL_MS,
     ...(result.data.EXPENSE_SHEET_ID
@@ -381,6 +698,9 @@ export function loadConfig(): AppConfig {
     deviceAgentMaxSteps: result.data.DEVICE_AGENT_MAX_STEPS,
     ...(result.data.DEVICE_WS_TOKEN
       ? { deviceWsToken: result.data.DEVICE_WS_TOKEN }
+      : {}),
+    ...(result.data.DEVICE_AGENT_MOCK_CALL_OUTCOME
+      ? { deviceAgentMockCallOutcome: result.data.DEVICE_AGENT_MOCK_CALL_OUTCOME }
       : {}),
     ...(result.data.GOOGLE_OAUTH_CLIENT_ID &&
     result.data.GOOGLE_OAUTH_CLIENT_SECRET &&

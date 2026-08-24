@@ -13,6 +13,7 @@ Browser GET /voice
        VoiceSession orchestrator
             ├── ASR (internal Qwen service :8101)
             ├── ShivaChatService / Gemma stream
+            ├── CoreUpdateHub + PostgreSQL replay
             ├── StreamingSpeechChunker
             ├── SpeechSynthesisQueue (serial TTS)
             └── TTS (internal Qwen service :8102)
@@ -23,7 +24,7 @@ The browser keeps a single persistent voice connection. It never calls `/voice/s
 
 `/chat` and the voice session both use `ShivaChatService`, conversation IDs, working memory, semantic/episodic retrieval, persistence, cancellation, and the same Gemma provider. Voice mode only adds a system-level speech-friendly response style instruction.
 
-The browser stores the conversation ID in `sessionStorage`, sends it on `session_start` after reconnect, and clears it for **New conversation**. There is no second AI conversation implementation.
+The browser stores the conversation ID and last delivered asynchronous Core message ID in `sessionStorage`, sends both on `session_start` after reconnect, and clears them for **New conversation**. VoiceSession subscribes to Core updates only for that conversation before loading any missed messages from PostgreSQL. Live messages are buffered during replay and deduplicated by durable message ID, so an agent outcome is neither lost in the subscribe gap nor confused with the foreground voice response. Asynchronous outcomes appear in the transcript and its ARIA live region but do not start unsolicited speech synthesis. There is no second AI conversation implementation.
 
 ## WebSocket protocol
 
@@ -33,7 +34,7 @@ Control messages are JSON. Audio is never base64.
 
 | type | role |
 | --- | --- |
-| `session_start` | open/resume; optional `conversationId` |
+| `session_start` | open/resume; optional `conversationId` and `afterMessageId` replay cursor |
 | `user_text` | typed turn |
 | `audio_start` / binary frames / `audio_end` | push-to-talk mic capture |
 | `interrupt` | stop speaking / cancel active turn |
@@ -47,6 +48,7 @@ Control messages are JSON. Audio is never base64.
 | `session_ready` | protocol version, conversation id, preferred `pcm16` |
 | `transcript_partial` / `transcript_final` | ASR result |
 | `assistant_text_delta` / `assistant_text_done` | streamed Gemma text |
+| `core_update` | durable, plain-text Core outcome produced after an asynchronous agent response |
 | `audio_start` / `audio_end` | speech frame boundaries |
 | `turn_done` | `completed` / `interrupted` / `error` |
 | `error` | safe public error codes |

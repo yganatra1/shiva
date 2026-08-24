@@ -25,6 +25,18 @@ export const CONFIRMATION_STATUSES = [
 ] as const;
 export type ConfirmationStatus = (typeof CONFIRMATION_STATUSES)[number];
 
+/**
+ * Authoritative Core context captured when an action first asks for consent.
+ * It lets an approval turn such as "yes" execute the original request without
+ * treating that short approval as a new delegated objective.
+ */
+export interface ConfirmationOriginContext {
+  readonly originalUserRequest?: string;
+  readonly sourceMessageId?: string;
+  readonly orchestrationRequestId?: string;
+  readonly agentResponseId?: string;
+}
+
 export interface ActionConfirmation {
   readonly id: string;
   readonly agentRunId: string;
@@ -32,6 +44,7 @@ export interface ActionConfirmation {
   readonly conversationId: string;
   readonly skill: string;
   readonly sanitizedArguments: unknown;
+  readonly originContext: ConfirmationOriginContext;
   readonly actionHash: string;
   readonly reason: string;
   readonly executionMode: ExecutionMode;
@@ -50,14 +63,41 @@ export type NewActionConfirmation = Omit<
   "status" | "resolvedAt" | "resolvedBy"
 >;
 
+interface ReplacedConfirmation {
+  readonly confirmation: ActionConfirmation;
+  readonly replaced: readonly ActionConfirmation[];
+}
+
+interface PendingConfirmationLookup {
+  readonly pending?: ActionConfirmation;
+  readonly expired: readonly ActionConfirmation[];
+  /** Recent terminal records are replayed so Core restart cannot lose cleanup. */
+  readonly terminal: readonly ActionConfirmation[];
+}
+
+export type ConfirmationTerminalOutcome = Exclude<
+  ConfirmationResolution["outcome"],
+  "approved" | "not_found"
+>;
+
+export interface ConfirmationTerminalEvent {
+  readonly confirmation: ActionConfirmation;
+  readonly outcome: ConfirmationTerminalOutcome;
+  readonly now: Date;
+}
+
+export type ConfirmationTerminalObserver = (
+  event: ConfirmationTerminalEvent,
+) => Promise<void>;
+
 export interface ConfirmationStore {
-  replacePending(input: NewActionConfirmation): Promise<ActionConfirmation>;
+  replacePending(input: NewActionConfirmation): Promise<ReplacedConfirmation>;
   findById(id: string): Promise<ActionConfirmation | undefined>;
   findPending(
     userId: string,
     conversationId: string | undefined,
     now: Date,
-  ): Promise<ActionConfirmation | undefined>;
+  ): Promise<PendingConfirmationLookup>;
   transition(
     id: string,
     from: ConfirmationStatus,
@@ -65,7 +105,7 @@ export interface ConfirmationStore {
     resolvedAt: Date,
     resolvedBy: string | null,
   ): Promise<ActionConfirmation | undefined>;
-  invalidatePending(resolvedAt: Date): Promise<void>;
+  invalidatePending(resolvedAt: Date): Promise<readonly ActionConfirmation[]>;
 }
 
 export class DrizzleConfirmationStore implements ConfirmationStore {
@@ -73,12 +113,12 @@ export class DrizzleConfirmationStore implements ConfirmationStore {
 
   async replacePending(
     input: NewActionConfirmation,
-  ): Promise<ActionConfirmation> {
+  ): Promise<ReplacedConfirmation> {
     return this.db.transaction(async (transaction) => {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`${input.userId}:${input.conversationId}`}, 0))`,
       );
-      await transaction
+      const replaced = await transaction
         .update(actionConfirmations)
         .set({
           status: "DENIED",
@@ -91,13 +131,14 @@ export class DrizzleConfirmationStore implements ConfirmationStore {
             eq(actionConfirmations.conversationId, input.conversationId),
             eq(actionConfirmations.status, "PENDING"),
           ),
-        );
+        )
+        .returning();
       const [created] = await transaction
         .insert(actionConfirmations)
         .values(input)
         .returning();
       if (!created) throw new Error("The confirmation could not be persisted.");
-      return created;
+      return { confirmation: created, replaced };
     });
   }
 
@@ -114,8 +155,8 @@ export class DrizzleConfirmationStore implements ConfirmationStore {
     userId: string,
     conversationId: string | undefined,
     now: Date,
-  ): Promise<ActionConfirmation | undefined> {
-    await this.db
+  ): Promise<PendingConfirmationLookup> {
+    const expired = await this.db
       .update(actionConfirmations)
       .set({ status: "EXPIRED", resolvedAt: now })
       .where(
@@ -127,7 +168,8 @@ export class DrizzleConfirmationStore implements ConfirmationStore {
           eq(actionConfirmations.status, "PENDING"),
           lte(actionConfirmations.expiresAt, now),
         ),
-      );
+      )
+      .returning();
     const [confirmation] = await this.db
       .select()
       .from(actionConfirmations)
@@ -142,7 +184,25 @@ export class DrizzleConfirmationStore implements ConfirmationStore {
       )
       .orderBy(desc(actionConfirmations.createdAt))
       .limit(1);
-    return confirmation;
+    const terminal = await this.db
+      .select()
+      .from(actionConfirmations)
+      .where(
+        and(
+          eq(actionConfirmations.userId, userId),
+          ...(conversationId
+            ? [eq(actionConfirmations.conversationId, conversationId)]
+            : []),
+          inArray(actionConfirmations.status, ["DENIED", "EXPIRED", "FAILED"]),
+        ),
+      )
+      .orderBy(desc(actionConfirmations.resolvedAt))
+      .limit(100);
+    return {
+      ...(confirmation ? { pending: confirmation } : {}),
+      expired,
+      terminal,
+    };
   }
 
   async transition(
@@ -165,13 +225,16 @@ export class DrizzleConfirmationStore implements ConfirmationStore {
     return updated;
   }
 
-  async invalidatePending(resolvedAt: Date): Promise<void> {
-    await this.db
+  async invalidatePending(
+    resolvedAt: Date,
+  ): Promise<readonly ActionConfirmation[]> {
+    return this.db
       .update(actionConfirmations)
       .set({ status: "DENIED", resolvedAt })
       .where(
         inArray(actionConfirmations.status, ["PENDING", "APPROVED"]),
-      );
+      )
+      .returning();
   }
 }
 
@@ -182,19 +245,22 @@ export class InMemoryConfirmationStore implements ConfirmationStore {
 
   async replacePending(
     input: NewActionConfirmation,
-  ): Promise<ActionConfirmation> {
+  ): Promise<ReplacedConfirmation> {
+    const replaced: ActionConfirmation[] = [];
     for (const [id, record] of this.records) {
       if (
         record.userId === input.userId &&
         record.conversationId === input.conversationId &&
         record.status === "PENDING"
       ) {
-        this.records.set(id, {
+        const denied: ActionConfirmation = {
           ...record,
           status: "DENIED",
           resolvedAt: input.createdAt,
           resolvedBy: input.userId,
-        });
+        };
+        this.records.set(id, denied);
+        replaced.push({ ...denied });
       }
     }
     const created: ActionConfirmation = {
@@ -204,7 +270,7 @@ export class InMemoryConfirmationStore implements ConfirmationStore {
       resolvedBy: null,
     };
     this.records.set(created.id, created);
-    return { ...created };
+    return { confirmation: { ...created }, replaced };
   }
 
   async findById(id: string): Promise<ActionConfirmation | undefined> {
@@ -216,8 +282,8 @@ export class InMemoryConfirmationStore implements ConfirmationStore {
     userId: string,
     conversationId: string | undefined,
     now: Date,
-  ): Promise<ActionConfirmation | undefined> {
-    const pending = [...this.records.values()]
+  ): Promise<PendingConfirmationLookup> {
+    const candidates = [...this.records.values()]
       .filter(
         (record) =>
           record.userId === userId &&
@@ -225,13 +291,45 @@ export class InMemoryConfirmationStore implements ConfirmationStore {
             record.conversationId === conversationId) &&
           record.status === "PENDING",
       )
-      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0];
-    if (!pending) return undefined;
-    if (pending.expiresAt.getTime() <= now.getTime()) {
-      await this.transition(pending.id, "PENDING", "EXPIRED", now, null);
-      return undefined;
+      .sort(
+        (left, right) => right.createdAt.getTime() - left.createdAt.getTime(),
+      );
+    const expired: ActionConfirmation[] = [];
+    for (const candidate of candidates) {
+      if (candidate.expiresAt.getTime() > now.getTime()) continue;
+      const transitioned = await this.transition(
+        candidate.id,
+        "PENDING",
+        "EXPIRED",
+        now,
+        null,
+      );
+      if (transitioned) expired.push(transitioned);
     }
-    return { ...pending };
+    const pending = candidates.find(
+      (candidate) => candidate.expiresAt.getTime() > now.getTime(),
+    );
+    const terminal = [...this.records.values()]
+      .filter(
+        (record) =>
+          record.userId === userId &&
+          (conversationId === undefined ||
+            record.conversationId === conversationId) &&
+          (record.status === "DENIED" ||
+            record.status === "EXPIRED" ||
+            record.status === "FAILED"),
+      )
+      .sort(
+        (left, right) =>
+          (right.resolvedAt?.getTime() ?? 0) -
+          (left.resolvedAt?.getTime() ?? 0),
+      )
+      .slice(0, 100);
+    return {
+      ...(pending ? { pending: { ...pending } } : {}),
+      expired,
+      terminal,
+    };
   }
 
   async transition(
@@ -253,17 +351,23 @@ export class InMemoryConfirmationStore implements ConfirmationStore {
     return { ...updated };
   }
 
-  async invalidatePending(resolvedAt: Date): Promise<void> {
+  async invalidatePending(
+    resolvedAt: Date,
+  ): Promise<readonly ActionConfirmation[]> {
+    const invalidated: ActionConfirmation[] = [];
     for (const [id, record] of this.records) {
       if (record.status === "PENDING" || record.status === "APPROVED") {
-        this.records.set(id, {
+        const denied: ActionConfirmation = {
           ...record,
           status: "DENIED",
           resolvedAt,
           resolvedBy: null,
-        });
+        };
+        this.records.set(id, denied);
+        invalidated.push({ ...denied });
       }
     }
+    return invalidated;
   }
 }
 
@@ -279,22 +383,26 @@ export interface ConfirmationResolution {
 }
 
 export class ConfirmationService {
+  private readonly notifiedTerminalIds = new Set<string>();
+
   constructor(
     private readonly store: ConfirmationStore,
     private readonly ttlMs: number,
     private readonly createId: () => string = () => randomUUID(),
+    private readonly onTerminal: ConfirmationTerminalObserver = async () => {},
   ) {
     if (!Number.isInteger(ttlMs) || ttlMs < 1_000 || ttlMs > 3_600_000) {
       throw new RangeError("Confirmation TTL must be 1000-3600000ms.");
     }
   }
 
-  request(input: {
+  async request(input: {
     readonly agentRunId: string;
     readonly userId: string;
     readonly conversationId: string;
     readonly skill: string;
     readonly arguments: unknown;
+    readonly originContext?: ConfirmationOriginContext;
     readonly reason: string;
     readonly executionMode: ExecutionMode;
     readonly mutability: ActionMutability;
@@ -302,13 +410,14 @@ export class ConfirmationService {
     readonly settingsRevision: number;
     readonly now: Date;
   }): Promise<ActionConfirmation> {
-    return this.store.replacePending({
+    const result = await this.store.replacePending({
       id: this.createId(),
       agentRunId: input.agentRunId,
       userId: input.userId,
       conversationId: input.conversationId,
       skill: input.skill,
       sanitizedArguments: sanitizeAuditPayload(input.arguments),
+      originContext: normalizeOriginContext(input.originContext),
       actionHash: actionFingerprint(input.skill, input.arguments),
       reason: sanitizeAuditText(input.reason, 500),
       executionMode: input.executionMode,
@@ -318,14 +427,26 @@ export class ConfirmationService {
       createdAt: input.now,
       expiresAt: new Date(input.now.getTime() + this.ttlMs),
     });
+    for (const replaced of result.replaced) {
+      await this.notifyTerminal(replaced, "denied", input.now);
+    }
+    return result.confirmation;
   }
 
-  findPending(
+  async findPending(
     userId: string,
     conversationId: string | undefined,
     now: Date,
   ): Promise<ActionConfirmation | undefined> {
-    return this.store.findPending(userId, conversationId, now);
+    const result = await this.store.findPending(userId, conversationId, now);
+    for (const expired of result.expired) {
+      await this.notifyTerminal(expired, "expired", now);
+    }
+    for (const terminal of result.terminal) {
+      const outcome = terminalOutcomeForStatus(terminal.status);
+      if (outcome) await this.notifyTerminal(terminal, outcome, now);
+    }
+    return result.pending;
   }
 
   async resolve(input: {
@@ -346,6 +467,14 @@ export class ConfirmationService {
       return { outcome: "not_found" };
     }
     if (confirmation.status !== "PENDING") {
+      // A replay of an EXECUTED confirmation may belong to a delegation that
+      // already queued its next task, so it is not itself a terminal request
+      // signal. Only records that are already terminal without a successful
+      // action get a best-effort lifecycle retry here.
+      const terminalOutcome = terminalOutcomeForStatus(confirmation.status);
+      if (terminalOutcome) {
+        await this.notifyTerminal(confirmation, terminalOutcome, input.now);
+      }
       return { outcome: "already_resolved", confirmation };
     }
     if (confirmation.expiresAt.getTime() <= input.now.getTime()) {
@@ -356,7 +485,11 @@ export class ConfirmationService {
         input.now,
         null,
       );
-      return { outcome: "expired", confirmation: expired ?? confirmation };
+      if (!expired) {
+        return this.resolvedElsewhere(confirmation, input.now);
+      }
+      await this.notifyTerminal(expired, "expired", input.now);
+      return { outcome: "expired", confirmation: expired };
     }
     if (!input.approved) {
       const denied = await this.store.transition(
@@ -366,7 +499,11 @@ export class ConfirmationService {
         input.now,
         input.userId,
       );
-      return { outcome: denied ? "denied" : "already_resolved", confirmation };
+      if (denied) {
+        await this.notifyTerminal(denied, "denied", input.now);
+        return { outcome: "denied", confirmation: denied };
+      }
+      return this.resolvedElsewhere(confirmation, input.now);
     }
     const matches =
       input.skill === confirmation.skill &&
@@ -379,7 +516,11 @@ export class ConfirmationService {
         input.now,
         input.userId,
       );
-      return { outcome: "mismatch", confirmation: denied ?? confirmation };
+      if (!denied) {
+        return this.resolvedElsewhere(confirmation, input.now);
+      }
+      await this.notifyTerminal(denied, "mismatch", input.now);
+      return { outcome: "mismatch", confirmation: denied };
     }
     const approved = await this.store.transition(
       confirmation.id,
@@ -390,7 +531,7 @@ export class ConfirmationService {
     );
     return approved
       ? { outcome: "approved", confirmation: approved }
-      : { outcome: "already_resolved", confirmation };
+      : this.resolvedElsewhere(confirmation, input.now);
   }
 
   async claim(
@@ -439,8 +580,72 @@ export class ConfirmationService {
     return this.store.transition(id, "APPROVED", "FAILED", now, userId);
   }
 
-  invalidatePending(now: Date): Promise<void> {
-    return this.store.invalidatePending(now);
+  async invalidatePending(now: Date): Promise<void> {
+    const invalidated = await this.store.invalidatePending(now);
+    for (const confirmation of invalidated) {
+      await this.notifyTerminal(confirmation, "denied", now);
+    }
+  }
+
+  private notifyTerminal(
+    confirmation: ActionConfirmation,
+    outcome: ConfirmationTerminalOutcome,
+    now: Date,
+  ): Promise<void> {
+    if (this.notifiedTerminalIds.has(confirmation.id)) return Promise.resolve();
+    return this.onTerminal({ confirmation, outcome, now }).then(() => {
+      this.notifiedTerminalIds.add(confirmation.id);
+    });
+  }
+
+  private async resolvedElsewhere(
+    fallback: ActionConfirmation,
+    now: Date,
+  ): Promise<ConfirmationResolution> {
+    const current = (await this.store.findById(fallback.id)) ?? fallback;
+    const terminalOutcome = terminalOutcomeForStatus(current.status);
+    if (terminalOutcome) {
+      await this.notifyTerminal(current, terminalOutcome, now);
+    }
+    return { outcome: "already_resolved", confirmation: current };
+  }
+}
+
+function normalizeOriginContext(
+  context: ConfirmationOriginContext | undefined,
+): ConfirmationOriginContext {
+  if (!context) return {};
+  return {
+    ...(context.originalUserRequest
+      ? { originalUserRequest: context.originalUserRequest }
+      : {}),
+    ...(context.sourceMessageId
+      ? { sourceMessageId: context.sourceMessageId }
+      : {}),
+    ...(context.orchestrationRequestId
+      ? { orchestrationRequestId: context.orchestrationRequestId }
+      : {}),
+    ...(context.agentResponseId
+      ? { agentResponseId: context.agentResponseId }
+      : {}),
+  };
+}
+
+function terminalOutcomeForStatus(
+  status: ConfirmationStatus,
+): ConfirmationTerminalOutcome | undefined {
+  switch (status) {
+    case "DENIED":
+      return "denied";
+    case "EXPIRED":
+      return "expired";
+    case "FAILED":
+      return "already_resolved";
+    case "PENDING":
+    case "APPROVED":
+    case "EXECUTING":
+    case "EXECUTED":
+      return undefined;
   }
 }
 

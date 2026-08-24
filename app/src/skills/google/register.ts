@@ -11,7 +11,10 @@ import { createSheetsUpdateSkill } from "../sheets-update/skill";
 
 export function registerGoogleSkills(
   registry: SkillRegistry,
-  config: AppConfig,
+  config: Pick<
+    AppConfig,
+    "googleUserOAuth" | "expenseSheetRequestTimeoutMs"
+  >,
 ): void {
   const tokenProvider = config.googleUserOAuth
     ? new GoogleUserOAuthAccessTokenProvider(config.googleUserOAuth)

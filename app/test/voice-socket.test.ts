@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import { createApp } from "../src/app.js";
 import type { AIProvider } from "../src/brain/ai-provider.js";
+import { CoreUpdateHub } from "../src/core/core-update-hub.js";
 import { decodeVoiceAudioFrame } from "../src/voice/audio-frame.js";
 import type { ASRInput, ASRProvider, SynthesisInput, TTSProvider } from "../src/voice/provider.js";
 import type { ServerVoiceMessage } from "../src/voice/voice-protocol.js";
@@ -297,6 +298,53 @@ test("a reconnect resumes the same conversation and rejects bad messages", async
     repository.messages.filter((message) => message.role === "user").length,
     2,
   );
+});
+
+test("the voice socket receives Core agent outcomes without another client connection", async (context) => {
+  const updates = new CoreUpdateHub();
+  const app = createApp(testConfig, {
+    ...createTestOverrides(chatProvider),
+    asrProvider: new SocketASRProvider(),
+    ttsProvider: new SocketTTSProvider(),
+    coreUpdateHub: updates,
+  });
+  context.after(() => app.close());
+  await app.ready();
+
+  const conversationId = "10000000-0000-4000-8000-000000000201";
+  const socket = await openVoiceSocket(app);
+  socket.send({ type: "session_start", conversationId });
+  await socket.waitFor(
+    () => socket.controlsOfType("session_ready").length === 1,
+    "session_ready",
+  );
+
+  updates.publish({
+    messageId: "20000000-0000-4000-8000-000000000201",
+    conversationId: "10000000-0000-4000-8000-000000000202",
+    message: "Wrong conversation.",
+    timestamp: "2026-08-24T10:00:00.000Z",
+  });
+  updates.publish({
+    messageId: "20000000-0000-4000-8000-000000000202",
+    conversationId,
+    message: "Mom did not answer, so I added ₹500 to the expense sheet.",
+    timestamp: "2026-08-24T10:00:01.000Z",
+  });
+  await socket.waitFor(
+    () => socket.controlsOfType("core_update").length === 1,
+    "Core agent outcome",
+  );
+
+  assert.deepEqual(socket.controlsOfType("core_update"), [
+    {
+      type: "core_update",
+      messageId: "20000000-0000-4000-8000-000000000202",
+      conversationId,
+      message: "Mom did not answer, so I added ₹500 to the expense sheet.",
+      timestamp: "2026-08-24T10:00:01.000Z",
+    },
+  ]);
 });
 
 test("a plain GET on the voice endpoint asks for an upgrade", async (context) => {

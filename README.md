@@ -28,10 +28,12 @@ Attached chat photo -------------------------> identify -> grounded person conte
 Android app -> WS /device/ws (relayed, unmodified) -> shiva-device-agent :3002 (own process)
                                              -> DeviceCommandDispatcher owns the phone's
                                                 live socket and command correlation
-all phone tasks -> delegate_to_agent("device", goal) -> POST /v1/delegate
-                                             -> device-agent's own planner chooses from
-                                                all 17 device.* tools -> phone -> result
-                                             -> camera/screenshot -> private vision input
+Core delegation -> PostgreSQL outbox -> Redis stream shiva:agent:tasks
+                                             -> device-agent or google-agent process
+                                             -> plain-text response stream -> Shiva Core
+                                             -> reload original request + executionContext
+                                             -> decide next delegation or final user message
+Async text updates <------------------------- WS /chat/updates (Core only)
 ```
 
 The API does not put model, embedding, persistence, or external-service details in route handlers. Provider and repository interfaces keep those boundaries explicit. `/chat` and the voice WebSocket share the same conversation, memory, persistence, cancellation, and model path; voice mode only adds speech-friendly response guidance. Every non-explicit-memory turn reaches the semantic planner after the same context is built. The planner decides from the registered catalog whether to use skills, ask a clarification, describe the real catalog, or delegate tool-free conversation to the existing streaming provider. There is no keyword/regex intent router.
@@ -48,10 +50,11 @@ The official Android companion lives in [`android/`](android/README.md). It is a
 - Python 3.12 for the real ASR/TTS and face services
 - ffmpeg for browser-audio normalization
 - PostgreSQL with the pgvector extension available
+- Redis 7+ (the supplied deployments enable optional AOF persistence)
 - Ollama reachable at `OLLAMA_URL`
 - the configured Gemma model and `embeddinggemma` installed for real `/chat` requests
 - for real face recognition: InsightFace `buffalo_l` and CPU ONNX Runtime; a GPU is not required for Shiva's personal enrollment and occasional identification workload
-- for expense skills: Google user OAuth credentials with the least-privilege `drive.file` scope (recommended), or a legacy pre-existing Sheet shared with a service account
+- for Google/expense work: Google user OAuth credentials supplied only to `google-agent`
 - for web research: a Brave Search API key
 
 Health, typechecking, building, and mocked Node/Python tests do not require Ollama, PostgreSQL, Google Sheets, Brave Search, a GPU, Qwen weights, or InsightFace weights. Mocked tests are not proof of a live Google, Brave, Ollama, InsightFace/CUDA, or RunPod integration.
@@ -62,9 +65,23 @@ From the repository root:
 
 ```bash
 cp .env.example .env
+cp .env.device-agent.example .env.device-agent
+cp .env.google-agent.example .env.google-agent
 ```
 
-Configure these keys without committing `.env`:
+Configure Core in `.env`, the local Device worker in `.env.device-agent`, and
+the local Google worker in `.env.google-agent`. Leave Google credentials and
+the device token empty in Core's `.env`; their values belong in the matching
+agent file. All three real files are gitignored. Production workers ignore
+dotenv files entirely and receive only their PM2-filtered or Compose-explicit
+environments.
+
+`npm run agent:device`, `npm run agent:google`, and their `dev:*` variants
+explicitly opt into those fixed local files. The compiled `start:*` commands
+do not opt in; production continues to use only inherited process values even
+if an agent-specific file happens to exist on disk.
+
+The shared deployment/Compose template's available settings include:
 
 ```text
 PORT=3000
@@ -77,11 +94,16 @@ OLLAMA_REQUEST_TIMEOUT_MS=300000
 DATABASE_URL=postgresql://shiva:change-me@127.0.0.1:5432/shiva
 DATABASE_POOL_MAX=10
 DATABASE_SSL=false
+REDIS_URL=redis://127.0.0.1:6379
 SHIVA_USER_ID=00000000-0000-4000-8000-000000000001
 SHIVA_USER_NAME=Yash
 SHIVA_TIME_ZONE=Asia/Kolkata
 AGENT_MAX_STEPS=12
 AGENT_REQUEST_TIMEOUT_MS=300000
+AGENT_TASK_TIMEOUT_MS=300000
+AGENT_RECLAIM_IDLE_MS=30000
+AGENT_MAX_DELIVERY_ATTEMPTS=3
+AGENT_HEARTBEAT_TTL_SECONDS=15
 SHIVA_MAX_EXECUTION_MODE=FULL_ACCESS
 SHIVA_CONFIRMATION_TTL_MS=300000
 EXPENSE_SHEET_ID=
@@ -131,9 +153,11 @@ DEVICE_AGENT_HOST=127.0.0.1
 DEVICE_AGENT_PORT=3002
 DEVICE_AGENT_MAX_STEPS=15
 DEVICE_WS_TOKEN=
+# POC only: answered | not_answered (leave empty for the real device bridge)
+DEVICE_AGENT_MOCK_CALL_OUTCOME=
 ```
 
-`SHIVA_USER_ID` identifies the single Shiva owner and must remain stable across restarts. People, face galleries, memories, and agent state are owner-scoped to that UUID. Use a strong database password in real environments. Node and all three Python services deliberately resolve the root `.env`.
+`SHIVA_USER_ID` identifies the single Shiva owner and must remain stable across restarts. People, face galleries, memories, and agent state are owner-scoped to that UUID. Use a strong database password in real environments. Shiva Core and all three Python services may resolve the root `.env`; the separate device and Google workers never read it. In development they read only their fixed agent-specific file. In production they read no dotenv file and scrub out-of-scope inherited Shiva variables before accepting tasks.
 
 The Node gateway uses `FACE_SERVICE_URL` and owns identity matching policy. The Python adapter uses the `FACE_*` runtime values beginning with `FACE_HOST`; it has no database access. The default recognition thresholds are starting values, not universal biometric guarantees. Calibrate them against representative known and unknown photos before relying on automatic identity context.
 
@@ -141,11 +165,11 @@ The Node gateway uses `FACE_SERVICE_URL` and owns identity matching policy. The 
 
 `SHIVA_MAX_EXECUTION_MODE` is the host-controlled authority ceiling and accepts `SAFE`, `AUTO`, or `FULL_ACCESS`. The current mode itself is stored in PostgreSQL so conversational changes survive restarts. Effective authority is the lower of the stored mode and this configured maximum; lockdown forces the effective mode to `SAFE`. `SHIVA_CONFIRMATION_TTL_MS` controls how long an exact pending action can be approved and defaults to 300,000 ms (five minutes).
 
-`DEVICE_AGENT_URL` is how `shiva-api` reaches the device agent (`app/src/agents/device`), the separate process that owns the Android app's live connection and its own small tool-calling loop; `DEVICE_AGENT_HOST`/`DEVICE_AGENT_PORT` are what that process itself binds to, `DEVICE_AGENT_MAX_STEPS` bounds one delegated goal's tool-calling loop, and `DEVICE_WS_TOKEN` (read only by the device agent) gates its `/device/ws` endpoint. See [docs/device-architecture.md](docs/device-architecture.md).
+`REDIS_URL` is the private Core/agent transport. `DEVICE_AGENT_URL` remains only for Core's compatibility relay of the Android `/device/ws` connection; agent task orchestration no longer uses direct HTTP. `DEVICE_AGENT_HOST`/`DEVICE_AGENT_PORT` are what the device process binds to, `DEVICE_AGENT_MAX_STEPS` bounds its local tool loop, and `DEVICE_WS_TOKEN` gates its device bridge. `DEVICE_AGENT_MOCK_CALL_OUTCOME=not_answered` explicitly enables the no-phone conditional-call POC; leave it empty in production so no call outcome can be fabricated. See [docs/device-architecture.md](docs/device-architecture.md).
 
 The initial database state is `AUTO` with lockdown disabled. Lowering authority and entering lockdown are immediate. Raising authority, leaving lockdown, and sensitive/destructive operations require an exact action-bound confirmation. Settings carry a monotonic revision: control changes commit with compare-and-set, confirmations are bound to the revision they were created under, and writes recheck state immediately before starting. This is intentionally not an internal permission matrix: Google OAuth scopes, cloud IAM, operating-system permissions, and registered adapters remain the actual capability boundary.
 
-The domain skill contracts include `record_expense`, `expense_report`, `web_research`, `learn_about_shiva`, and `workspace_terminal`. Runtime-owned `get_execution_mode`, `set_execution_mode`, and `set_lockdown` controls expose execution state without giving Gemma direct database access. Expense execution is enabled by the complete `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET`/`GOOGLE_OAUTH_REFRESH_TOKEN` trio, or by the legacy `EXPENSE_SHEET_ID` path. If neither is configured, expense skills return `EXPENSE_SHEET_UNAVAILABLE`. Partial OAuth configuration is rejected at startup. `GOOGLE_APPLICATION_CREDENTIALS` is used only by the legacy sheet-ID path. Without `BRAVE_SEARCH_API_KEY`, research returns `WEB_RESEARCH_UNAVAILABLE`. The two workspace skills are always configured because they operate locally inside this repository. `AGENT_MAX_STEPS` and `AGENT_REQUEST_TIMEOUT_MS` bound the complete planner/tool run.
+Core registers execution-control, people/memory, web, repository/system, and agent-delegation skills. It does not register Google or fixed-schema expense skills. Google Sheets and expense requests are delegated to `google-agent`, whose private catalog contains `sheets_find`, `sheets_create`, `sheets_read`, `sheets_add_tab`, and `sheets_update`. Configure its complete `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET`/`GOOGLE_OAUTH_REFRESH_TOKEN` trio in `.env.google-agent` for local development or in the worker's production environment. Partial OAuth configuration is rejected when that worker starts. The old `record_expense`, `expense_report`, service-account, and managed-ledger adapters remain in source for incremental migration and tests, but they are not registered in the current Core runtime; setting `EXPENSE_SHEET_ID` or `GOOGLE_APPLICATION_CREDENTIALS` does not activate them. Without `BRAVE_SEARCH_API_KEY`, Core web research returns `WEB_RESEARCH_UNAVAILABLE`.
 
 ## Local commands
 
@@ -154,6 +178,8 @@ Exact setup and verification commands:
 ```bash
 cd /path/to/shiva
 cp .env.example .env
+cp .env.device-agent.example .env.device-agent
+cp .env.google-agent.example .env.google-agent
 
 cd app
 npm install
@@ -278,7 +304,7 @@ Errors before the first streamed chunk use a sanitized JSON envelope. Once strea
 
 Expense, web, and ordinary questions use the same `/chat` or voice conversation contract. Every non-explicit-memory turn first gives the planner the actual registered skill catalog, including whether each external integration is configured. The planner can delegate tool-free conversation back to the existing streaming path, request one clarification, return a registry-derived capability summary, or make a skill call. Its first skill call declares the complete minimal skill set for the original task. The agent loop validates and freezes that set; later decisions may only use that exact scope, so web pages and tool observations cannot add a new capability mid-run. A malformed or conflicting planner decision is rejected internally and returned to the planner as precise corrective feedback; Shiva continues the same bounded run without executing the rejected action.
 
-The main API does not register individual Android skills. Every phone request—from one contact lookup or notification read through a multi-step app workflow—uses the sensitive `delegate_to_agent` skill with `agent: "device"`. The device agent then plans and executes the required `device.*` operations against the connected phone and returns one grounded result. The outer delegation remains subject to Shiva's normal execution policy and exact confirmation flow.
+The main API does not register individual Android skills. Every phone request—from one contact lookup or notification read through a multi-step app workflow—uses the sensitive `delegate_to_agent` skill with `agent: "device-agent"`. Core first resolves memory/people details, persists a short prose `executionContext`, and queues only the minimal instruction. The device process returns plain text over Redis; Core—not the worker—decides what happens next and remains subject to Shiva's normal execution policy and exact confirmation flow.
 
 Execution controls use the same conversation path. Useful manual checks include:
 
@@ -330,34 +356,16 @@ curl --no-buffer -i -X POST http://127.0.0.1:3000/chat \
 
 There is no terminal write/update/delete capability in V0.3. This remains true even in `FULL_ACCESS`: an execution mode cannot create a capability that the registered adapter and operating-system user do not have. If workspace mutation is added later, clearly requested ordinary writes will follow the global mode policy and only genuinely sensitive operations will require one exact persisted confirmation. Model text is never a substitute for runtime approval.
 
-With the recommended user OAuth setup, the first expense read or write lazily creates one spreadsheet per Shiva user in that Google user's My Drive. A first `expense_report` that must provision or upgrade resources is therefore classified as a normal write before policy evaluation; after the binding is ready, reports are normal reads. Shiva names the spreadsheet `Shiva Expenses`, creates an `Expenses` tab, freezes row 1, and owns the internal `Expenses!A:G` layout. The user does not create a sheet, choose a tab, or configure a range. The managed header is:
+Google and expense work now uses the independently managed `google-agent`; Core never opens a Google pack or executes a Sheet operation in its own process. Core creates the natural-language execution context, applies the user-facing delegation policy, and sends only a minimal instruction. The Google worker opens its private pack, performs the required `sheets_find`/`sheets_read`/`sheets_create`/`sheets_add_tab`/`sheets_update` chain, and returns one plain-text report for Core to interpret.
 
-```text
-expense_id | occurred_at | amount | currency | description | category | source
-```
+Recommended Google Agent setup:
 
-Recommended Google setup:
+1. In a Google Cloud project, enable the Google Sheets and Drive APIs, configure an OAuth consent screen, and create an OAuth 2.0 client. Use Google's [OAuth offline-access flow](https://developers.google.com/identity/protocols/oauth2/web-server) and [Sheets scope reference](https://developers.google.com/workspace/sheets/api/scopes) when selecting the smallest scopes that cover the files Shiva must find and update.
+2. Complete one user-consent flow with offline access and retain the refresh token securely. Shiva never needs the user's Google password and does not expose an OAuth enrollment/callback UI.
+3. For local development, put the client ID, client secret, and refresh token only in `.env.google-agent`. For Compose or PM2, provide them only to the `google-agent` process environment. Keep them outside Git, logs, prompts, Core's `.env`, and PostgreSQL.
+4. Start Redis, Core, and `google-agent`. A request such as “add ₹500 to my expense sheet” is handled as an ordinary natural-language Sheet task; Core does not impose the legacy `Expenses!A:G` schema or claim a write succeeded until the worker reports grounded success.
 
-1. In a Google Cloud project, enable the Google Sheets API, configure an OAuth consent screen, and create an OAuth 2.0 client. Google's [Sheets creation guide](https://developers.google.com/workspace/sheets/api/guides/create) describes the API resource Shiva provisions.
-2. Complete a one-time user consent flow requesting offline access and only `https://www.googleapis.com/auth/drive.file`; retain the resulting refresh token securely. Use Google's [OAuth offline-access flow](https://developers.google.com/identity/protocols/oauth2/web-server) and [Sheets scope reference](https://developers.google.com/workspace/sheets/api/scopes) as the authority for the bootstrap process.
-3. Put the client ID, client secret, and refresh token in `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REFRESH_TOKEN`. Leave `EXPENSE_SHEET_ID` and `GOOGLE_APPLICATION_CREDENTIALS` empty for autonomous creation.
-4. Apply the committed database migrations before startup:
-
-   ```bash
-   cd app
-   npm install
-   npm run build
-   npm run db:migrate
-   npm start
-   ```
-
-5. Make the first expense request. Shiva creates and initializes the sheet, verifies it, and durably binds its Google resource IDs to `SHIVA_USER_ID`.
-
-The app never needs or asks for the user's Google password or unrestricted account credentials. It consumes an already-authorized refresh token and does not currently expose an OAuth enrollment/callback UI. Keep the OAuth client secret and refresh token outside Git, logs, prompts, and the database. If the OAuth consent screen is External and remains in Google Cloud's Testing status, Google may issue a refresh token that expires after seven days; use the appropriate published consent state for a stable deployment.
-
-`EXPENSE_SHEET_ID` plus `GOOGLE_APPLICATION_CREDENTIALS` remains only as a legacy/manual-adoption path. In that mode an operator creates and shares a spreadsheet with the service-account email as Editor, then supplies its ID. During first adoption Shiva can add a missing `Expenses` tab, initialize an empty header, and freeze row 1; it rejects a populated noncanonical layout rather than overwriting data. A configured bootstrap ID that differs from the durable binding fails closed instead of silently switching ledgers. Supplying any but not all three OAuth values is also rejected at startup.
-
-Every expense report reads the live sheet and computes fixed two-decimal totals per currency across every matching row; it performs no currency conversion. Its 1–25 `limit` (default 25) and 8,000-character serialized detail budget cap only the individual rows exposed to the planner, while `matchedCount` and totals still cover the full filtered result. Every record operation validates the current header, appends one A:G row, reads the exact appended range back, and reports success only if all seven cells match. `expense_sheet_bindings` keeps only the spreadsheet/tab IDs, schema version, status, and a short provisioning lease—never expense rows or OAuth tokens. Expense agent/skill audit records use constant or minimal redacted payloads and are not used for reporting or calculation. Concurrent first requests coordinate through that lease so Shiva does not intentionally create duplicate ledgers, while the runtime classifier ensures any request that would acquire and use that provisioning lease is evaluated as a write.
+The managed `record_expense`/`expense_report` implementation, `expense_sheet_bindings`, `EXPENSE_SHEET_ID`, and `GOOGLE_APPLICATION_CREDENTIALS` path remain migration-only code and tests. They are not registered in the current runtime and do not activate any capability. If a managed ledger is restored later, it should be exposed behind `google-agent` rather than reintroduced into Core.
 
 Web research uses Brave Search to discover sources and a restricted text fetcher to inspect selected public HTTP(S) pages. It rejects local/private destinations, revalidates redirects, accepts only HTML/plain-text content, and enforces the configured timeout and response-size ceiling. Evidence passed to the planner is capped at 6,000 characters per source and 16,000 characters in total. All page text, snippets, and tool-result content is untrusted data: it cannot authorize an action, change execution mode, disable lockdown, widen the already-frozen pack scope, trigger a write, or establish a new objective. It is not a JavaScript browser and cannot access authenticated pages.
 
@@ -365,9 +373,9 @@ Shiva does not maintain granular permission strings. Each registered skill decla
 
 Confirmations are conversational but persist in PostgreSQL. They are bound to one user, conversation, skill, validated action hash, settings revision, classification, and expiry; changed arguments, changed execution state, increased action risk, an expired request, or a prior approval for a different action cannot authorize execution. `PENDING` approval moves through an atomic `APPROVED` → `EXECUTING` claim and finishes as `EXECUTED` or `FAILED`, so concurrent approvals and retries cannot execute it twice. The runtime—not Gemma—owns classification, approval state, mode changes, lockdown, and tool execution status. The planner returns only a grounded response message, allowing a successfully executed search with zero matches to be reported as “not found” without conflicting status labels.
 
-Skill discovery freezes capability packs rather than the first individual tool list. After opening the Google pack, for example, Shiva can naturally chain `sheets_find` → `sheets_read` → `sheets_update`: it finds the file, asks `sheets_read` for the workbook's exact tab names when necessary, reads the selected tab's live header/current structure, then aligns the write without guessing `Sheet1`. Every `sheets_update` must explicitly choose `update` for the exact requested cells or `append` for complete new table rows; append is never an implicit default. A direct first call with validated skills from several packs freezes the union of those packs. Gemma's common matching `type: <skill name>` discriminator slip is normalized locally before strict validation. Once any pack has been opened, the turn is an execution run: invalid planner output after its one retry—or reaching the overall 12-decision ceiling without executing a tool—returns a deterministic “no action was executed” result and never hands the write request to ungrounded normal chat. On corrective follow-ups, the latest user message is the sole current task and older conversation is reference-only, so corrected names and values take precedence immediately.
+Skill discovery freezes capability packs rather than the first individual tool list. Core opens its `agents` pack to select `google-agent`; it has no in-process Google pack. Inside the worker's independently bounded run, Google Agent can naturally chain `sheets_find` → `sheets_read` → `sheets_update`: it finds the file, asks for the workbook's exact tab names when necessary, reads the selected tab's live structure, then aligns the write without guessing `Sheet1`. Every `sheets_update` explicitly chooses `update` for exact requested cells or `append` for complete new rows. Tool output remains untrusted, and the worker cannot widen the sole delegated instruction. Core receives only its final plain-text report and uses the saved execution context to decide whether another delegation is required.
 
-Agent and skill execution metadata is written to `agent_runs` and `skill_runs`; execution audits include effective mode, action classification, confirmation linkage, outcome, sanitized error code, and timing. Inputs and results are bounded and recursively redact credential-shaped fields, labeled secrets, credential-bearing URLs, private keys, JWTs, and common provider-token formats, while expense payloads remain fully redacted. Confirmation reasons and stored arguments are sanitized too. `action_confirmations` stores sanitized arguments plus the exact-action hash, settings revision, and approval lifecycle. These tables are an audit/control plane, not an expense ledger; live credentials belong only in runtime providers and the workspace boundary denies conventional secret-bearing files before model inspection.
+Core agent and skill execution metadata is written to `agent_runs` and `skill_runs`; durable delegated requests, tasks, and plain responses use the orchestration tables. The Google worker intentionally has no PostgreSQL connection or second confirmation store. Core audits include effective mode, action classification, confirmation linkage, outcome, sanitized error code, and timing. Inputs and results are bounded and recursively redact credential-shaped fields, labeled secrets, credential-bearing URLs, private keys, JWTs, and common provider-token formats. Confirmation reasons and stored arguments are sanitized too. These tables are an audit/control plane, not an expense ledger; live Google credentials exist only in the Google worker environment.
 
 ### People and face recognition
 
@@ -483,7 +491,7 @@ For voice turns, deferred automatic memory extraction waits until the browser re
 
 ## Current RunPod direct runtime
 
-The current RunPod Pod does not run Docker Compose. Provision PostgreSQL with pgvector, Ollama, Gemma/embedding models, three Python environments, Qwen voice models, InsightFace weights, ffmpeg, and `/workspace/shiva/repo/.env` separately. If expense skills are enabled, prefer the three user OAuth values described above so Shiva can create and manage the sheet itself; use a protected service-account JSON and manually shared `EXPENSE_SHEET_ID` only for the legacy path. Configure the Brave key separately for web research. Do not overwrite the production `.env` or credentials during pulls.
+The current RunPod Pod does not run Docker Compose. Provision PostgreSQL with pgvector, Redis, Ollama, Gemma/embedding models, three Python environments, Qwen voice models, InsightFace weights, and ffmpeg separately. Redis AOF is recommended when queued work must also survive a Redis service/data-volume restart, but it is not required for independent Core or agent process restarts. The supplied deploy script PM2-manages Core plus each agent independently and filters inherited variables per worker. Core may use `/workspace/shiva/repo/.env`; production workers never read it. Supply Google OAuth only through the PM2 Google Agent environment and the device token only through the Device Agent environment. Configure the Brave key only for Core web research. Do not overwrite production environment files or credentials during pulls.
 
 ```bash
 cd /workspace/shiva/repo
@@ -498,11 +506,16 @@ npm run db:migrate
 npm start
 ```
 
-From another RunPod shell, start the device agent — same `app/` build as above (already installed/built by the steps above), just a different entry point, no database:
+For a manual production run, export each worker's allowed variables in its own shell and set `NODE_ENV=production`; production workers intentionally ignore dotenv files. Start each process in a separate shell (or use PM2):
 
 ```bash
 cd /workspace/shiva/repo/app
 npm run start:device-agent
+```
+
+```bash
+cd /workspace/shiva/repo/app
+npm run start:google-agent
 ```
 
 Then start ASR, TTS, and face analysis from three additional RunPod shells using the Python service commands above with repository path `/workspace/shiva/repo`. Keep ports 8101–8103 and the device agent's 3002 bound to localhost. Warm each model and confirm the face response reports `CPUExecutionProvider`. From your browser, access only the Fastify port through the platform's private tunnel/proxy; the Android app also connects only to that same port (see [docs/device-architecture.md](docs/device-architecture.md)).
@@ -526,7 +539,7 @@ The future Ubuntu/NVIDIA-server path is:
 Git -> Ubuntu NVIDIA server -> Docker Compose
 ```
 
-The Compose definition runs the API, pgvector-enabled PostgreSQL, internal ASR/TTS/face containers, and the device agent, while leaving Ollama externally configurable. It publishes only the Shiva API; model-service and device-agent ports use the private Compose network. See [infra/README.md](infra/README.md).
+The Compose definition runs the API, pgvector-enabled PostgreSQL, persistent Redis, internal ASR/TTS/face containers, and independent device/Google agents, while leaving Ollama externally configurable. It publishes only the Shiva API; Redis, model-service, and agent ports stay on the private Compose network. See [infra/README.md](infra/README.md).
 
 ## Commands
 
@@ -543,5 +556,8 @@ The Compose definition runs the API, pgvector-enabled PostgreSQL, internal ASR/T
 | `npm start` | Run the compiled API |
 | `npm run dev:device-agent` | Hot-reload the device agent from TypeScript |
 | `npm run start:device-agent` | Run the compiled device agent |
+| `npm run dev:google-agent` | Hot-reload the Google agent from TypeScript |
+| `npm run start:google-agent` | Run the compiled Google agent |
+| `npm run agent:device` / `npm run agent:google` | Run one agent directly from TypeScript |
 
 All run from `app/` — the device agent (`app/src/agents/device`) is the same package, just a different entry point/process; no separate install, build, or `db:*` commands. See [docs/device-architecture.md](docs/device-architecture.md).

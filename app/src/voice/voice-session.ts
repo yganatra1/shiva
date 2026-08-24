@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import { AIProviderError } from "../brain/ai-provider";
+import type { CoreUpdate } from "../core/core-update-hub";
+import {
+  CoreUpdateReplayCursorNotFoundError,
+  type CoreUpdateReplaySource,
+} from "../core/core-update-replay";
 import { ConversationNotFoundError } from "../memory/memory-repository";
 import type { ShivaChatService } from "../services/chat-service";
 import {
@@ -42,6 +47,7 @@ import { parseWavPcm16, wavDurationMs } from "./wav-audio";
 
 const DEFAULT_MAX_CAPTURED_AUDIO_BYTES = 25 * 1024 * 1024;
 const MAX_TRACKED_TURN_IDS = 64;
+const CORE_UPDATE_REPLAY_LIMIT = 100;
 
 export interface VoiceSessionTransport {
   readonly isOpen: boolean;
@@ -53,6 +59,11 @@ export interface VoiceSessionTransport {
 export interface VoiceSessionLogger {
   warn(payload: object, message: string): void;
   error(payload: object, message: string): void;
+}
+
+export interface VoiceCoreUpdateSource {
+  subscribe(listener: (update: CoreUpdate) => void): () => void;
+  readonly replay?: CoreUpdateReplaySource;
 }
 
 export interface VoiceSessionOptions {
@@ -67,6 +78,12 @@ export interface VoiceSessionOptions {
   readonly maxCapturedAudioBytes?: number;
   readonly createId?: () => string;
   readonly now?: () => number;
+  readonly coreUpdates?: VoiceCoreUpdateSource;
+}
+
+interface VoiceCoreUpdateReplayState {
+  buffering: boolean;
+  readonly buffered: CoreUpdate[];
 }
 
 interface SpeechChunkJob extends SpeechSynthesisQueueItem {}
@@ -132,6 +149,10 @@ export class VoiceSession {
   private readonly openPlaybackTurns = new Set<string>();
   private conversationId: string | null = null;
   private activeTurn: VoiceTurn | null = null;
+  private coreUpdateConversationId: string | null = null;
+  private coreUpdateGeneration = 0;
+  private coreUpdateUnsubscribe: (() => void) | null = null;
+  private readonly deliveredCoreUpdateIds = new Set<string>();
   private turnSequence = 0;
   private started = false;
   private closed = false;
@@ -209,12 +230,13 @@ export class VoiceSession {
     for (const turnId of [...this.openPlaybackTurns]) {
       this.releasePlayback(turnId);
     }
+    this.detachCoreUpdates();
   }
 
   private dispatch(message: ClientVoiceMessage): void {
     switch (message.type) {
       case "session_start":
-        this.startSession(message.conversationId);
+        this.startSession(message.conversationId, message.afterMessageId);
         return;
       case "user_text":
         if (!this.requireSession()) return;
@@ -253,7 +275,14 @@ export class VoiceSession {
    * clears the current one so the browser's "New conversation" action needs no
    * extra message type, and a reconnect resumes by sending its stored ID.
    */
-  private startSession(conversationId: string | undefined): void {
+  private startSession(
+    conversationId: string | undefined,
+    afterMessageId: string | undefined,
+  ): void {
+    const activeTurn = this.activeTurn;
+    if (activeTurn && !activeTurn.finished) {
+      this.abandonTurn(activeTurn, "interrupted");
+    }
     this.started = true;
     this.conversationId = conversationId ?? null;
     this.send({
@@ -264,6 +293,7 @@ export class VoiceSession {
       preferredAudioFormat: "pcm16",
       audioFrameHeaderBytes: VOICE_AUDIO_FRAME_HEADER_BYTES,
     });
+    this.activateCoreUpdates(this.conversationId, afterMessageId);
   }
 
   private requireSession(): boolean {
@@ -408,7 +438,11 @@ export class VoiceSession {
         turn.abort.signal,
         { mode: "voice" },
       );
+      if (turn.cancelled || this.closed) return;
       this.conversationId = prepared.conversationId;
+      if (this.coreUpdateConversationId !== prepared.conversationId) {
+        this.activateCoreUpdates(prepared.conversationId, undefined);
+      }
 
       let assistantText = "";
       let awaitingFirstToken = true;
@@ -652,6 +686,7 @@ export class VoiceSession {
   private failTurn(turn: VoiceTurn, error: unknown): void {
     if (error instanceof ConversationNotFoundError) {
       this.conversationId = null;
+      this.activateCoreUpdates(null, undefined);
     }
     const classified = classifyVoiceFailure(error);
     if (classified.code === "INTERNAL_ERROR") {
@@ -752,19 +787,198 @@ export class VoiceSession {
     });
   }
 
-  private send(message: ServerVoiceMessage): void {
+  private send(message: ServerVoiceMessage): boolean {
     if (!this.options.transport.isOpen) {
-      return;
+      return false;
     }
     try {
       this.options.transport.sendControl(message);
+      return true;
     } catch (error: unknown) {
       this.options.logger?.warn(
         { err: error, voiceMessageType: message.type },
         "Voice control message could not be delivered",
       );
+      return false;
     }
   }
+
+  private activateCoreUpdates(
+    conversationId: string | null,
+    afterMessageId: string | undefined,
+  ): void {
+    const source = this.options.coreUpdates;
+    this.detachCoreUpdates();
+    if (this.coreUpdateConversationId !== conversationId) {
+      this.deliveredCoreUpdateIds.clear();
+    }
+    this.coreUpdateConversationId = conversationId;
+    if (!source || !conversationId || this.closed) return;
+
+    const generation = this.coreUpdateGeneration;
+    const replayState: VoiceCoreUpdateReplayState = {
+      buffering: source.replay !== undefined,
+      buffered: [],
+    };
+    try {
+      this.coreUpdateUnsubscribe = source.subscribe((update) => {
+        if (
+          this.closed ||
+          generation !== this.coreUpdateGeneration ||
+          update.conversationId !== conversationId
+        ) {
+          return;
+        }
+        if (replayState.buffering) {
+          replayState.buffered.push(update);
+        } else {
+          this.deliverCoreUpdate(update);
+        }
+      });
+    } catch (error: unknown) {
+      this.options.logger?.warn(
+        { err: error, conversationId },
+        "Voice Core update subscription failed",
+      );
+    }
+
+    if (!source.replay) {
+      replayState.buffering = false;
+      return;
+    }
+    this.track(
+      this.replayCoreUpdates(
+        source.replay,
+        conversationId,
+        afterMessageId,
+        generation,
+        replayState,
+      ),
+    );
+  }
+
+  private detachCoreUpdates(): void {
+    this.coreUpdateGeneration += 1;
+    const unsubscribe = this.coreUpdateUnsubscribe;
+    this.coreUpdateUnsubscribe = null;
+    try {
+      unsubscribe?.();
+    } catch (error: unknown) {
+      this.options.logger?.warn(
+        { err: error },
+        "Voice Core update subscription could not be detached",
+      );
+    }
+  }
+
+  private async replayCoreUpdates(
+    replay: CoreUpdateReplaySource,
+    conversationId: string,
+    afterMessageId: string | undefined,
+    generation: number,
+    state: VoiceCoreUpdateReplayState,
+  ): Promise<void> {
+    let persisted: readonly CoreUpdate[] = [];
+    try {
+      persisted = await listCoreUpdateBacklog(
+        replay,
+        conversationId,
+        afterMessageId,
+      );
+    } catch (error: unknown) {
+      if (error instanceof CoreUpdateReplayCursorNotFoundError) {
+        try {
+          persisted = await listCoreUpdateBacklog(
+            replay,
+            conversationId,
+            undefined,
+          );
+        } catch (fallbackError: unknown) {
+          this.logCoreUpdateReplayFailure(fallbackError, conversationId);
+        }
+      } else {
+        this.logCoreUpdateReplayFailure(error, conversationId);
+      }
+    }
+
+    if (
+      this.closed ||
+      generation !== this.coreUpdateGeneration ||
+      this.coreUpdateConversationId !== conversationId
+    ) {
+      state.buffered.length = 0;
+      return;
+    }
+    const pending = deduplicatedChronologicalCoreUpdates([
+      ...persisted,
+      ...state.buffered,
+    ]);
+    state.buffered.length = 0;
+    state.buffering = false;
+    for (const update of pending) this.deliverCoreUpdate(update);
+  }
+
+  private deliverCoreUpdate(update: CoreUpdate): void {
+    if (
+      update.conversationId !== this.conversationId ||
+      this.deliveredCoreUpdateIds.has(update.messageId)
+    ) {
+      return;
+    }
+    if (
+      this.send({
+        type: "core_update",
+        messageId: update.messageId,
+        conversationId: update.conversationId,
+        message: update.message,
+        timestamp: update.timestamp,
+      })
+    ) {
+      this.deliveredCoreUpdateIds.add(update.messageId);
+    }
+  }
+
+  private logCoreUpdateReplayFailure(
+    error: unknown,
+    conversationId: string,
+  ): void {
+    this.options.logger?.warn(
+      { err: error, conversationId },
+      "Voice Core update replay failed; live delivery remains active",
+    );
+  }
+}
+
+async function listCoreUpdateBacklog(
+  replay: CoreUpdateReplaySource,
+  conversationId: string,
+  afterMessageId: string | undefined,
+): Promise<readonly CoreUpdate[]> {
+  const updates: CoreUpdate[] = [];
+  let cursor = afterMessageId;
+  while (true) {
+    const page = await replay.listAfter(
+      conversationId,
+      cursor,
+      CORE_UPDATE_REPLAY_LIMIT,
+    );
+    updates.push(...page);
+    if (page.length < CORE_UPDATE_REPLAY_LIMIT) return updates;
+    const nextCursor = page.at(-1)?.messageId;
+    if (!nextCursor || nextCursor === cursor) return updates;
+    cursor = nextCursor;
+  }
+}
+
+function deduplicatedChronologicalCoreUpdates(
+  updates: readonly CoreUpdate[],
+): readonly CoreUpdate[] {
+  const byId = new Map(updates.map((update) => [update.messageId, update]));
+  return [...byId.values()].sort((left, right) => {
+    const timestampDifference =
+      Date.parse(left.timestamp) - Date.parse(right.timestamp);
+    return timestampDifference || left.messageId.localeCompare(right.messageId);
+  });
 }
 
 function toSynthesizedChunk(audio: Uint8Array): SynthesizedChunk {

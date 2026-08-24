@@ -6,7 +6,10 @@ import {
   type AgentAuditPort,
   type AgentRunStatus,
 } from "./audit";
-import type { SkillExecutor } from "../skills/executor";
+import type {
+  ResolvedConfirmationExecution,
+  SkillExecutor,
+} from "../skills/executor";
 import type { SkillRegistry } from "../skills/registry";
 import type {
   AgentObservation,
@@ -43,6 +46,14 @@ export class AgentTimeoutError extends Error {
   }
 }
 
+export interface ApprovedConfirmationCompletion {
+  readonly requestId: string;
+  readonly responseId: string;
+  readonly outcome: ResolvedConfirmationExecution["resolution"]["outcome"];
+  readonly succeeded: boolean;
+  readonly now: Date;
+}
+
 export class AgentLoop {
   constructor(
     private readonly planner: AgentPlanner,
@@ -56,6 +67,9 @@ export class AgentLoop {
     private readonly onAuditError: (error: unknown) => void = () => {},
     private readonly requestTimeoutMs = DEFAULT_AGENT_REQUEST_TIMEOUT_MS,
     private readonly onTrace?: AgentTraceLogger,
+    private readonly onApprovedConfirmationWithoutDelegation?: (
+      event: ApprovedConfirmationCompletion,
+    ) => Promise<void>,
   ) {
     if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 32) {
       throw new RangeError("Agent max steps must be an integer from 1 to 32.");
@@ -124,6 +138,19 @@ export class AgentLoop {
     let plannerFeedback: string | undefined;
     let plannerFallbackReason: "INVALID_OUTPUT" | "INVALID_SCOPE" =
       "INVALID_OUTPUT";
+    let approvedContinuationAwaitingTerminalResponse:
+      | Omit<ApprovedConfirmationCompletion, "now">
+      | undefined;
+
+    const completeApprovedContinuationAfterTerminalResponse = async () => {
+      const completion = approvedContinuationAwaitingTerminalResponse;
+      if (!completion) return;
+      approvedContinuationAwaitingTerminalResponse = undefined;
+      await this.onApprovedConfirmationWithoutDelegation?.({
+        ...completion,
+        now: this.now(),
+      });
+    };
 
     const currentAllowedSkills = (): readonly string[] | undefined =>
       selectedSkills ??
@@ -207,6 +234,7 @@ export class AgentLoop {
             return await fallBackToCore("INVALID_OUTPUT", step);
           }
           if (error instanceof AgentPlannerError) {
+            await completeApprovedContinuationAfterTerminalResponse();
             await this.finishAuditSafely(
               runId,
               "failed",
@@ -242,6 +270,20 @@ export class AgentLoop {
             userId: scopedRequest.userId,
             userName: scopedRequest.userName,
             timeZone: scopedRequest.timeZone,
+            originalUserRequest:
+              scopedRequest.delegationContinuation?.originalUserRequest ??
+              scopedRequest.userMessage,
+            ...(scopedRequest.sourceMessageId
+              ? { sourceMessageId: scopedRequest.sourceMessageId }
+              : {}),
+            ...(scopedRequest.delegationContinuation
+              ? {
+                  orchestrationRequestId:
+                    scopedRequest.delegationContinuation.requestId,
+                  agentResponseId:
+                    scopedRequest.delegationContinuation.responseId,
+                }
+              : {}),
             signal: scopedSignal,
             now: this.now,
           };
@@ -260,6 +302,35 @@ export class AgentLoop {
                 approved: false,
                 context: confirmationContext,
               });
+          const queuedDelegation = queuedDelegationFrom(resolved.result);
+          const confirmationOrigin = resolved.resolution.originContext;
+          if (
+            resolved.resolution.outcome === "approved" &&
+            !queuedDelegation &&
+            confirmationOrigin.orchestrationRequestId &&
+            confirmationOrigin.agentResponseId
+          ) {
+            const completion = {
+              requestId: confirmationOrigin.orchestrationRequestId,
+              responseId: confirmationOrigin.agentResponseId,
+              outcome: resolved.resolution.outcome,
+              succeeded: resolved.result.success,
+            } satisfies Omit<ApprovedConfirmationCompletion, "now">;
+            if (resolved.result.success) {
+              // A successful non-delegation action is not terminal until Core
+              // has reasoned over its observation and produced the response.
+              // A later queued delegation returns earlier and never reaches
+              // this completion path; the repository also fences child tasks.
+              approvedContinuationAwaitingTerminalResponse = completion;
+            } else {
+              // A failed approved action has no remaining successful work to
+              // summarize, so close its durable request immediately.
+              await this.onApprovedConfirmationWithoutDelegation?.({
+                ...completion,
+                now: this.now(),
+              });
+            }
+          }
           if (!this.registry.has(resolved.skill)) {
             plannerFeedback =
               "The confirmation reference was invalid or unavailable. Do not invent an approval result; answer the current task without claiming execution.";
@@ -275,6 +346,25 @@ export class AgentLoop {
             arguments: approval?.arguments ?? {},
             result: resolved.result,
           });
+          if (queuedDelegation) {
+            const terminalResult = {
+              kind: "delegated" as const,
+              runId,
+              response: queuedDelegation.userMessage,
+              orchestrationRequestId: queuedDelegation.requestId,
+              taskId: queuedDelegation.taskId,
+              steps: step,
+              observations: [...observations],
+            };
+            await this.finishAuditSafely(
+              runId,
+              "succeeded",
+              completedSteps,
+              null,
+              monotonicStartedAt,
+            );
+            return terminalResult;
+          }
           continue;
         }
 
@@ -374,6 +464,11 @@ export class AgentLoop {
         }
 
         if (decision.type === "direct_chat") {
+          if (scopedRequest.delegationContinuation) {
+            plannerFeedback =
+              "direct_chat was rejected because this is a continuation of durable delegated work. Reason from the saved execution context and latest agent response, then either delegate the next required agent task or return a grounded respond decision.";
+            continue;
+          }
           if (selectedSkills || frozenPacks || observations.length > 0) {
             plannerFeedback =
               "direct_chat was rejected because skill execution has already started. Keep the existing frozen scope and observations. Call another allowed skill if more evidence is needed, or return a grounded respond decision.";
@@ -447,7 +542,11 @@ export class AgentLoop {
 
         if (decision.type === "respond") {
           try {
-            assertResponseEvidence(declaredSkills, observations);
+            assertResponseEvidence(
+              declaredSkills,
+              observations,
+              scopedRequest.delegationContinuation !== undefined,
+            );
           } catch (error: unknown) {
             if (!(error instanceof AgentEvidenceError)) throw error;
             plannerFeedback = buildResponseEvidenceFeedback(
@@ -463,6 +562,7 @@ export class AgentLoop {
             steps: step,
             observations: [...observations],
           };
+          await completeApprovedContinuationAfterTerminalResponse();
           await this.finishAuditSafely(
             runId,
             "succeeded",
@@ -498,6 +598,20 @@ export class AgentLoop {
             userId: scopedRequest.userId,
             userName: scopedRequest.userName,
             timeZone: scopedRequest.timeZone,
+            originalUserRequest:
+              scopedRequest.delegationContinuation?.originalUserRequest ??
+              scopedRequest.userMessage,
+            ...(scopedRequest.sourceMessageId
+              ? { sourceMessageId: scopedRequest.sourceMessageId }
+              : {}),
+            ...(scopedRequest.delegationContinuation
+              ? {
+                  orchestrationRequestId:
+                    scopedRequest.delegationContinuation.requestId,
+                  agentResponseId:
+                    scopedRequest.delegationContinuation.responseId,
+                }
+              : {}),
             ...(executionAllowedSkills ? { allowedSkills: executionAllowedSkills } : {}),
             signal: scopedSignal,
             now: this.now,
@@ -513,6 +627,30 @@ export class AgentLoop {
           arguments: decision.arguments,
           result,
         });
+        const queuedDelegation = queuedDelegationFrom(result);
+        if (queuedDelegation) {
+          const terminalResult = {
+            kind: "delegated" as const,
+            runId,
+            response: queuedDelegation.userMessage,
+            orchestrationRequestId: queuedDelegation.requestId,
+            taskId: queuedDelegation.taskId,
+            steps: step,
+            observations: [...observations],
+          };
+          await this.finishAuditSafely(
+            runId,
+            "succeeded",
+            completedSteps,
+            null,
+            monotonicStartedAt,
+          );
+          this.onTrace?.(
+            { runId, step, result: terminalResult },
+            "agent loop queued delegated work",
+          );
+          return terminalResult;
+        }
         this.onTrace?.(
           { runId, step, skill: decision.skill, arguments: decision.arguments, result },
           "agent loop executed skill",
@@ -545,6 +683,7 @@ export class AgentLoop {
         };
       }
       if (observations.length === 0) {
+        await completeApprovedContinuationAfterTerminalResponse();
         return {
           kind: "response",
           runId,
@@ -553,6 +692,7 @@ export class AgentLoop {
           observations: [],
         };
       }
+      await completeApprovedContinuationAfterTerminalResponse();
       return {
         kind: "response",
         runId,
@@ -791,7 +931,9 @@ function normalizeSkillScope(
 function assertResponseEvidence(
   declaredSkills: readonly string[] | undefined,
   observations: readonly AgentObservation[],
+  hasAgentResponseEvidence = false,
 ): void {
+  if (hasAgentResponseEvidence) return;
   if (!declaredSkills) {
     throw new AgentEvidenceError(
       "The planner attempted to respond without a skill plan or tool evidence.",
@@ -805,6 +947,34 @@ function assertResponseEvidence(
       "The planner attempted to respond without required tool evidence.",
     );
   }
+}
+
+interface QueuedDelegationData {
+  readonly queued: true;
+  readonly requestId: string;
+  readonly taskId: string;
+  readonly userMessage: string;
+}
+
+function queuedDelegationFrom(
+  result: AgentObservation["result"],
+): QueuedDelegationData | undefined {
+  if (!result.success || !isRecord(result.data)) return undefined;
+  return result.data.queued === true &&
+    typeof result.data.requestId === "string" &&
+    typeof result.data.taskId === "string" &&
+    typeof result.data.userMessage === "string"
+    ? {
+        queued: true,
+        requestId: result.data.requestId,
+        taskId: result.data.taskId,
+        userMessage: result.data.userMessage,
+      }
+    : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function buildResponseEvidenceFeedback(

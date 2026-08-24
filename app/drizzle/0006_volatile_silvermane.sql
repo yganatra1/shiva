@@ -1,0 +1,1 @@
+ALTER TABLE "action_confirmations" ADD COLUMN "origin_context" jsonb DEFAULT '{}'::jsonb NOT NULL;

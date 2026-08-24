@@ -8,7 +8,9 @@ const CLIENT_TIMEOUT_BUFFER_MS = 5_000;
 
 export type AgentDelegationFailure =
   | "AGENT_NOT_FOUND"
+  | "AGENT_OFFLINE"
   | "AGENT_UNREACHABLE"
+  | "TRANSPORT_UNAVAILABLE"
   | "AGENT_TIMEOUT"
   | "AGENT_FAILED"
   | "CANCELLED";
@@ -64,6 +66,12 @@ export class AgentClient {
       );
     }
     const agent = this.registry.get(agentName);
+    if (!agent.baseUrl) {
+      throw new AgentDelegationError(
+        "AGENT_UNREACHABLE",
+        `The '${agentName}' agent has no legacy HTTP endpoint.`,
+      );
+    }
     options.signal?.throwIfAborted();
 
     const timeoutMs = clampTimeout(options.timeoutMs);

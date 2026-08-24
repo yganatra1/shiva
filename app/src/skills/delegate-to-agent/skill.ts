@@ -2,18 +2,50 @@ import { z } from "zod";
 
 import {
   AgentDelegationError,
-  type AgentClient,
+  type DelegateOptions,
 } from "../../agents/agent-client";
 import type { AgentRegistry } from "../../agents/agent-registry";
+import type { AgentDelegationResult } from "../../agents/types";
 import { defineSkill } from "../define-skill";
-import type { SkillContext, SkillResult } from "../types";
+import type { SkillContext } from "../types";
 
-export interface DelegateToAgentOutput {
-  readonly summary: string;
-  readonly steps?: number;
+export interface QueuedAgentDelegation {
+  readonly queued: true;
+  readonly requestId: string;
+  readonly taskId: string;
+  readonly userMessage: string;
 }
 
-/** Maps a thrown AgentDelegationError to a skill failure code/message; rethrows anything else. */
+export interface DelegationContext {
+  readonly agentRunId: string;
+  readonly conversationId: string;
+  readonly userId: string;
+  readonly sourceMessageId?: string;
+  readonly originalUserRequest?: string;
+  readonly executionContext?: string;
+  readonly userMessage?: string;
+  readonly orchestrationRequestId?: string;
+  readonly agentResponseId?: string;
+  readonly now: Date;
+}
+
+export interface AgentDelegator {
+  delegate(
+    agentId: string,
+    instruction: string,
+    options?: DelegateOptions & { readonly orchestration?: DelegationContext },
+  ): Promise<AgentDelegationResult | QueuedAgentDelegation>;
+}
+
+export type DelegateToAgentOutput =
+  | QueuedAgentDelegation
+  | {
+      /** Migration-only result from the former synchronous HTTP client. */
+      readonly summary: string;
+      readonly steps?: number;
+    };
+
+/** Maps transport/delegation errors to a grounded skill failure. */
 function agentErrorToFailure(
   error: unknown,
 ): { readonly code: string; readonly message: string } {
@@ -24,46 +56,70 @@ function agentErrorToFailure(
     case "AGENT_TIMEOUT":
       return {
         code: "AGENT_TIMEOUT",
-        message: "The agent did not finish this goal in time.",
+        message: "The agent did not finish this task in time.",
       };
     case "AGENT_UNREACHABLE":
       return {
         code: "AGENT_UNREACHABLE",
         message: "The agent process is not reachable right now.",
       };
-    default:
+    case "AGENT_OFFLINE":
       return {
-        code: "AGENT_DELEGATION_FAILED",
+        code: "AGENT_OFFLINE",
         message: error.message,
       };
+    case "TRANSPORT_UNAVAILABLE":
+      return {
+        code: "AGENT_TRANSPORT_UNAVAILABLE",
+        message: "The internal agent queue is unavailable right now.",
+      };
+    default:
+      return { code: "AGENT_DELEGATION_FAILED", message: error.message };
   }
 }
 
 export function createDelegateToAgentSkill(
-  agentClient: Pick<AgentClient, "delegate">,
+  delegator: AgentDelegator,
   agentRegistry: AgentRegistry,
 ) {
   const agents = agentRegistry.list();
-  const agentNames = agents.map((agent) => agent.name);
+  const agentIds = agents.map((agent) => agent.id);
   const catalog = agents
-    .map((agent) => `  - "${agent.name}": ${agent.description}`)
+    .map((agent) => {
+      const capabilities = agent.capabilities
+        .map((capability) => `      - ${capability}`)
+        .join("\n");
+      return `  - "${agent.id}" (${agent.name}): ${agent.description}${capabilities ? `\n    Capabilities:\n${capabilities}` : ""}`;
+    })
     .join("\n");
+  const hasDeviceAgent = agents.some(
+    (agent) => agent.id === "device" || agent.id === "device-agent",
+  );
 
   const inputSchema = z
     .object({
       agent:
-        agentNames.length > 0
-          ? z.enum(agentNames as [string, ...string[]])
+        agentIds.length > 0
+          ? z.enum(agentIds as [string, ...string[]])
           : z.string(),
-      goal: z.string().trim().min(1).max(2_000),
+      instruction: z.string().trim().min(1).max(4_000).optional(),
+      /** @deprecated Accepted only while old callers migrate to instruction. */
+      goal: z.string().trim().min(1).max(4_000).optional(),
+      executionContext: z.string().trim().min(1).max(8_000).optional(),
+      userMessage: z.string().trim().min(1).max(2_000).optional(),
     })
-    .strict();
+    .strict()
+    .refine((input) => Boolean(input.instruction ?? input.goal), {
+      message: "instruction is required",
+      path: ["instruction"],
+    });
 
   return defineSkill<z.infer<typeof inputSchema>, DelegateToAgentOutput>({
     name: "delegate_to_agent",
     description:
-      `Hands off a self-contained goal to one of Shiva's autonomous background agents and returns its result. Each agent has its own reasoning loop and tools — it figures out the steps itself; you only give it the complete goal. Available agents:\n${catalog || "  (none registered)"}\nThe device agent owns every Android-phone task, including single-step contact searches, calls, notifications, camera requests, and multi-step app UI work. Always delegate phone work here; no direct device skills exist in the main agent.`,
-    inputDescription: `{ "agent": ${agentNames.map((name) => `"${name}"`).join(" | ") || "string"}, "goal": string (a complete, self-contained description of what the agent should accomplish) }`,
+      `Durably queues one minimal natural-language instruction for a specialized agent process. The agent replies later in plain text; Shiva Core keeps the conversation and uses its saved natural-language execution context to decide what happens next. Available agents:\n${catalog || "  (none registered)"}\nResolve personal memory, people/contact details, permissions, and cross-agent coordination in Core. Send the chosen agent only the details its narrow task requires.${hasDeviceAgent ? " Every Android-phone task, including single-step contact searches, belongs to the registered device agent." : ""}`,
+    inputDescription:
+      `{ "agent": ${agentIds.map((id) => `"${id}"`).join(" | ") || "string"}, "instruction": string (minimal self-contained task for that agent), "executionContext": string (required on the first delegation: a short natural-language account of the full original request and contingencies; never a flow array or status syntax), "userMessage": string (short acknowledgement to show the user while the task runs) }`,
     pack: "agents",
     inputSchema,
     execution: {
@@ -72,9 +128,27 @@ export function createDelegateToAgentSkill(
       confirmationReason:
         "This delegates a goal to an autonomous agent that can take real actions (tapping through apps, placing calls, etc.) without further confirmation on each individual step.",
     },
-    configured: agentNames.length > 0,
-    async execute(input, context: SkillContext): Promise<SkillResult<DelegateToAgentOutput>> {
-      if (agentNames.length === 0) {
+    classifyExecution(_input, context) {
+      // The first delegation is always a sensitive boundary: its exact
+      // arguments include the prose execution context that describes the full
+      // compound objective and contingencies. Once that exact delegation has
+      // been approved and durably created, Core alone supplies these two
+      // correlation ids while reasoning over an agent response. A follow-on
+      // instruction inside that already-approved objective is therefore an
+      // ordinary write, not a second autonomous-goal confirmation. Lockdown,
+      // Safe mode, and the planner's user-authorized flag still apply normally.
+      return context.orchestrationRequestId && context.agentResponseId
+        ? { mutability: "write", impact: "normal" }
+        : {
+            mutability: "write",
+            impact: "sensitive",
+            confirmationReason:
+              "This delegates a goal to an autonomous agent that can take real actions (tapping through apps, placing calls, etc.) without further confirmation on each individual step.",
+          };
+    },
+    configured: agentIds.length > 0,
+    async execute(input, context: SkillContext) {
+      if (agentIds.length === 0) {
         return {
           success: false,
           error: {
@@ -83,10 +157,59 @@ export function createDelegateToAgentSkill(
           },
         };
       }
+      const instruction = input.instruction ?? input.goal;
+      if (!instruction) {
+        return {
+          success: false,
+          error: {
+            code: "AGENT_INSTRUCTION_REQUIRED",
+            message: "The delegated agent instruction is missing.",
+          },
+        };
+      }
+      if (
+        input.instruction &&
+        !context.orchestrationRequestId &&
+        !input.executionContext
+      ) {
+        return {
+          success: false,
+          error: {
+            code: "EXECUTION_CONTEXT_REQUIRED",
+            message:
+              "Core must create a short natural-language execution context before the first agent delegation.",
+          },
+        };
+      }
       try {
-        const result = await agentClient.delegate(input.agent, input.goal, {
+        const result = await delegator.delegate(input.agent, instruction, {
           ...(context.signal ? { signal: context.signal } : {}),
+          orchestration: {
+            agentRunId: context.agentRunId,
+            conversationId: context.conversationId,
+            userId: context.userId,
+            ...(context.sourceMessageId
+              ? { sourceMessageId: context.sourceMessageId }
+              : {}),
+            ...(context.originalUserRequest
+              ? { originalUserRequest: context.originalUserRequest }
+              : {}),
+            ...(input.executionContext
+              ? { executionContext: input.executionContext }
+              : {}),
+            ...(input.userMessage ? { userMessage: input.userMessage } : {}),
+            ...(context.orchestrationRequestId
+              ? { orchestrationRequestId: context.orchestrationRequestId }
+              : {}),
+            ...(context.agentResponseId
+              ? { agentResponseId: context.agentResponseId }
+              : {}),
+            now: context.now(),
+          },
         });
+        if ("queued" in result) {
+          return { success: true, data: result };
+        }
         if (!result.success) {
           return {
             success: false,

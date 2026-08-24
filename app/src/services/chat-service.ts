@@ -181,6 +181,7 @@ export class ShivaChatService {
             // memory, and conversation context without injecting the direct
             // chat system prompt as a competing planner instruction.
             contextMessages: priorPlannerContext(messages, persistedMessage),
+            sourceMessageId: userMessage.id,
             ...(attachedImages.length > 0 ? { images: attachedImages } : {}),
             ...(signal ? { signal } : {}),
           })
@@ -199,7 +200,9 @@ export class ShivaChatService {
         recentMessages,
         responseMessages,
         !explicitRequest,
-        agentResult?.kind === "response" ? agentResult.response : undefined,
+        agentResult?.kind === "response" || agentResult?.kind === "delegated"
+          ? agentResult.response
+          : undefined,
         signal,
         performance,
       ),

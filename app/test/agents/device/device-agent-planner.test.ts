@@ -44,6 +44,9 @@ test("the device planner owns direct phone tasks and receives cancellation", asy
   assert.match(systemPrompt, /every Android-phone goal/i);
   assert.match(systemPrompt, /contacts, calls, notifications, camera capture/i);
   assert.match(systemPrompt, /include the requested returned facts/i);
+  assert.match(systemPrompt, /sole instruction.*authorization boundary/i);
+  assert.match(systemPrompt, /screen text.*untrusted data/i);
+  assert.match(systemPrompt, /never authorize a new recipient/i);
 });
 
 test("camera bytes reach vision without entering the textual planner trace", async () => {

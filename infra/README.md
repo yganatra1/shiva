@@ -1,6 +1,6 @@
 # Shiva infrastructure
 
-V0.x provides a reproducible future deployment made of the Shiva API, PostgreSQL with pgvector, internal ASR/TTS/face services, and the device agent that owns the Android companion app's connection. Ollama remains external and is selected through `OLLAMA_URL`, because the GPU runtime may be on the host or another machine.
+V0.x provides a reproducible deployment made of Shiva Core, PostgreSQL with pgvector, persistent Redis Streams, internal ASR/TTS/face services, and independently managed device/Google agents. Ollama remains external and is selected through `OLLAMA_URL`, because the GPU runtime may be on the host or another machine.
 
 ## Docker Compose (future Ubuntu/NVIDIA host)
 
@@ -13,9 +13,11 @@ docker compose -f infra/docker/docker-compose.yml config
 docker compose -f infra/docker/docker-compose.yml up --build
 ```
 
-PostgreSQL data is held in the Docker-managed `shiva-postgres-data` volume. Voice caches use `shiva-voice-models` and InsightFace uses `shiva-face-models`; none lives in the Git checkout. The API image applies committed Drizzle migrations before starting. `OLLAMA_URL` defaults to the host bridge; set it explicitly when inference lives elsewhere.
+PostgreSQL data is held in `shiva-postgres-data`. Redis runs with AOF (`appendfsync everysec`) in `shiva-redis-data`, so queued tasks/responses survive container restarts. Voice caches use `shiva-voice-models` and InsightFace uses `shiva-face-models`; none lives in the Git checkout. The API image applies committed Drizzle migrations before starting. `OLLAMA_URL` defaults to the host bridge; set it explicitly when inference lives elsewhere.
 
-Compose overrides the model services to bind `0.0.0.0` only inside the private Compose network. Ports 8101, 8102, 8103, and the device agent's 3002 use `expose`, not host `ports`, so nothing outside the Compose network can reach them directly — including the Android app, which still connects to the public Shiva API port and `/device/ws` exactly as before. `shiva-api` relays that WebSocket to the device agent internally; see [docs/device-architecture.md](../docs/device-architecture.md). The host defaults remain `127.0.0.1` for direct deployments. The face process is stateless and has no PostgreSQL credentials; Node owns people records, templates, thresholds, enrollment consistency, and all public identity routes.
+Compose overrides internal services to bind only inside the private network. Redis is not published, and ports 8101, 8102, 8103, and device-agent 3002 use `expose`, not host `ports`. The Android app still connects to the public Shiva API `/device/ws`; Core relays that device bridge internally, while agent orchestration uses Redis Streams. Device Agent receives only Redis/Ollama/device configuration, not Google/database secrets. Google Agent receives only its Google/Ollama/Redis runtime configuration; Core owns durable orchestration and confirmation state, so the worker has no PostgreSQL connection. The host defaults remain `127.0.0.1` for direct deployments.
+
+Compose supplies each worker's environment explicitly. Production worker entrypoints do not open any dotenv file. Direct local development instead uses the fixed, gitignored `.env.device-agent` and `.env.google-agent` files created from their matching examples; neither worker reads Core's root `.env`.
 
 The face image and Compose service are CPU-only by default and do not reserve a
 GPU. `FACE_PROVIDER=cpu` remains authoritative even if the host exposes CUDA,

@@ -126,6 +126,7 @@ export function createVoiceClientScript(): string {
   let mediaStream = null;
   let pressHeld = false;
   let uploadChain = Promise.resolve();
+  const seenCoreUpdateIds = new Set();
 
   const client = new VoiceSocketClient({
     url: socketUrl(),
@@ -161,8 +162,13 @@ export function createVoiceClientScript(): string {
     if (state === "open") {
       setError("");
       const current = conversation.current();
+      const updateCursor = conversation.updateCursor();
       client.send(current
-        ? { type: "session_start", conversationId: current }
+        ? {
+            type: "session_start",
+            conversationId: current,
+            ...(updateCursor ? { afterMessageId: updateCursor } : {}),
+          }
         : { type: "session_start" });
       return;
     }
@@ -188,6 +194,13 @@ export function createVoiceClientScript(): string {
         return;
       case "assistant_text_done":
         appendAssistantText(message.turnId, "");
+        return;
+      case "core_update":
+        if (seenCoreUpdateIds.has(message.messageId)) return;
+        seenCoreUpdateIds.add(message.messageId);
+        conversation.remember(message.conversationId);
+        conversation.rememberCoreUpdate(message.conversationId, message.messageId);
+        addEntry("assistant", message.message);
         return;
       case "audio_start":
         startTurnPlayback(message);
@@ -527,6 +540,7 @@ export function createVoiceClientScript(): string {
     stopPlayback();
     client.send({ type: "interrupt" });
     conversation.clear();
+    seenCoreUpdateIds.clear();
     client.send({ type: "session_start" });
     turn = null;
     transcript.textContent = "";

@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import type { RawData, WebSocket } from "ws";
 
+import type { CoreUpdateHub } from "../core/core-update-hub";
+import type { CoreUpdateReplaySource } from "../core/core-update-replay";
 import type { ShivaChatService } from "../services/chat-service";
 import type { VoicePlaybackCoordinator } from "../voice/playback-coordinator";
 import type { ASRProvider, TTSProvider } from "../voice/provider";
@@ -21,6 +23,8 @@ export interface VoiceSocketRouteOptions {
   readonly performance?: VoicePerformanceTracker;
   readonly chunker?: StreamingSpeechChunkerOptions;
   readonly maxCapturedAudioBytes?: number;
+  readonly coreUpdateHub?: CoreUpdateHub;
+  readonly coreUpdateReplaySource?: CoreUpdateReplaySource;
 }
 
 /**
@@ -42,6 +46,7 @@ export function registerVoiceSocketRoute(
         },
       }),
     wsHandler: (socket, request) => {
+      const coreUpdateHub = options.coreUpdateHub;
       const session = new VoiceSession({
         transport: createTransport(socket),
         chatService: options.chatService,
@@ -55,6 +60,17 @@ export function registerVoiceSocketRoute(
         ...(options.chunker ? { chunker: options.chunker } : {}),
         ...(options.maxCapturedAudioBytes !== undefined
           ? { maxCapturedAudioBytes: options.maxCapturedAudioBytes }
+          : {}),
+        ...(coreUpdateHub
+          ? {
+              coreUpdates: {
+                subscribe: (listener) =>
+                  coreUpdateHub.subscribe(listener),
+                ...(options.coreUpdateReplaySource
+                  ? { replay: options.coreUpdateReplaySource }
+                  : {}),
+              },
+            }
           : {}),
       });
 

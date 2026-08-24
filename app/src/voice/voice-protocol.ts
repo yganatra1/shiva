@@ -19,6 +19,7 @@ const clientVoiceMessageSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("session_start"),
       conversationId: z.string().uuid().optional(),
+      afterMessageId: z.string().uuid().optional(),
     })
     .strict(),
   z
@@ -120,6 +121,14 @@ export type ServerVoiceMessage =
       readonly type: "assistant_text_done";
       readonly turnId: string;
       readonly text: string;
+    }
+  | {
+      /** Durable Core-authored outcome from an asynchronous agent response. */
+      readonly type: "core_update";
+      readonly messageId: string;
+      readonly conversationId: string;
+      readonly message: string;
+      readonly timestamp: string;
     }
   | {
       readonly type: "audio_start";

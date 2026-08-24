@@ -70,6 +70,17 @@ export class MemoryService {
     input: RememberInteractionInput,
     explicitRequest: boolean,
   ): Promise<ExplicitMemoryResult> {
+    if (
+      containsSecret(input.userMessage.content) ||
+      isFillerMessage(input.userMessage.content)
+    ) {
+      return {
+        stored: [],
+        duplicateCount: 0,
+        rejectedCount: containsSecret(input.userMessage.content) ? 1 : 0,
+        extractedCount: 0,
+      };
+    }
 
     const extracted = await this.extractor.extract({
       userMessage: input.userMessage.content,

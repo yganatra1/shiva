@@ -42,9 +42,7 @@ export class ExecutionPolicyEngine {
   async evaluate(
     request: ExecutionPolicyRequest,
   ): Promise<ExecutionPolicyDecision> {
-    
     const state = await this.state.getState();
-    return execute(state, request.execution);
     if (request.execution.control === "execution_mode") {
       return this.evaluateExecutionModeChange(request, state);
     }

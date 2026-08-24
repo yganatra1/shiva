@@ -353,6 +353,188 @@ export const messages = pgTable(
   ],
 );
 
+/**
+ * Durable natural-language context for one request that Shiva Core delegates
+ * across process boundaries. The context is intentionally prose rather than a
+ * serialized workflow; nullable completion time is only a lifecycle marker.
+ */
+export const orchestrationRequests = pgTable(
+  "orchestration_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    sourceMessageId: uuid("source_message_id")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    originalUserRequest: text("original_user_request").notNull(),
+    executionContext: text("execution_context").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    check(
+      "orchestration_requests_original_request_not_empty",
+      sql`length(btrim(${table.originalUserRequest})) > 0`,
+    ),
+    check(
+      "orchestration_requests_execution_context_not_empty",
+      sql`length(btrim(${table.executionContext})) > 0`,
+    ),
+    check(
+      "orchestration_requests_completion_after_creation",
+      sql`${table.completedAt} IS NULL OR ${table.completedAt} >= ${table.createdAt}`,
+    ),
+    uniqueIndex("orchestration_requests_source_message_unique").on(
+      table.sourceMessageId,
+    ),
+    index("orchestration_requests_conversation_created_idx").on(
+      table.conversationId,
+      table.createdAt.desc(),
+    ),
+    index("orchestration_requests_active_idx")
+      .on(table.updatedAt)
+      .where(sql`${table.completedAt} IS NULL`),
+  ],
+);
+
+/** Minimal durable outbox record for one instruction routed to an agent. */
+export const agentTasks = pgTable(
+  "agent_tasks",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orchestrationRequestId: uuid("orchestration_request_id")
+      .notNull()
+      .references(() => orchestrationRequests.id, { onDelete: "cascade" }),
+    agentId: text("agent_id").notNull(),
+    instruction: text("instruction").notNull(),
+    createdFromResponseId: uuid("created_from_response_id").references(
+      (): AnyPgColumn => agentResponses.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    deadlineAt: timestamp("deadline_at", { withTimezone: true }).notNull(),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    redisMessageId: text("redis_message_id"),
+    deliveryAttempts: integer("delivery_attempts").default(0).notNull(),
+    lastDeliveryError: text("last_delivery_error"),
+    abandonedAt: timestamp("abandoned_at", { withTimezone: true }),
+  },
+  (table) => [
+    check("agent_tasks_agent_id_not_empty", sql`length(btrim(${table.agentId})) > 0`),
+    check(
+      "agent_tasks_instruction_not_empty",
+      sql`length(btrim(${table.instruction})) > 0`,
+    ),
+    check(
+      "agent_tasks_deadline_after_creation",
+      sql`${table.deadlineAt} > ${table.createdAt}`,
+    ),
+    check(
+      "agent_tasks_delivery_attempts_nonnegative",
+      sql`${table.deliveryAttempts} >= 0`,
+    ),
+    check(
+      "agent_tasks_publish_shape",
+      sql`(${table.publishedAt} IS NULL) = (${table.redisMessageId} IS NULL)`,
+    ),
+    uniqueIndex("agent_tasks_source_response_unique")
+      .on(table.createdFromResponseId)
+      .where(sql`${table.createdFromResponseId} IS NOT NULL`),
+    uniqueIndex("agent_tasks_redis_message_unique")
+      .on(table.redisMessageId)
+      .where(sql`${table.redisMessageId} IS NOT NULL`),
+    index("agent_tasks_request_created_idx").on(
+      table.orchestrationRequestId,
+      table.createdAt,
+    ),
+    index("agent_tasks_unpublished_idx")
+      .on(table.createdAt)
+      .where(
+        sql`${table.publishedAt} IS NULL AND ${table.abandonedAt} IS NULL`,
+      ),
+    index("agent_tasks_deadline_idx")
+      .on(table.deadlineAt)
+      .where(sql`${table.abandonedAt} IS NULL`),
+  ],
+);
+
+/**
+ * Plain-language reply from an agent. Processing fields are transport recovery
+ * metadata only; the message itself carries the task's meaning.
+ */
+export const agentResponses = pgTable(
+  "agent_responses",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => agentTasks.id, { onDelete: "cascade" }),
+    agentId: text("agent_id").notNull(),
+    message: text("message").notNull(),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .default({})
+      .notNull(),
+    agentTimestamp: timestamp("agent_timestamp", { withTimezone: true }).notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    redisMessageId: text("redis_message_id").notNull(),
+    processingStartedAt: timestamp("processing_started_at", {
+      withTimezone: true,
+    }),
+    processingAttempts: integer("processing_attempts").default(0).notNull(),
+    lastProcessingError: text("last_processing_error"),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    assistantMessageId: uuid("assistant_message_id").references(
+      () => messages.id,
+      { onDelete: "set null" },
+    ),
+  },
+  (table) => [
+    check(
+      "agent_responses_agent_id_not_empty",
+      sql`length(btrim(${table.agentId})) > 0`,
+    ),
+    check(
+      "agent_responses_message_not_empty",
+      sql`length(btrim(${table.message})) > 0`,
+    ),
+    check(
+      "agent_responses_metadata_object",
+      sql`jsonb_typeof(${table.metadata}) = 'object'`,
+    ),
+    check(
+      "agent_responses_processing_shape",
+      sql`${table.processedAt} IS NULL OR ${table.processingStartedAt} IS NOT NULL`,
+    ),
+    check(
+      "agent_responses_processing_attempts_nonnegative",
+      sql`${table.processingAttempts} >= 0`,
+    ),
+    uniqueIndex("agent_responses_task_unique").on(table.taskId),
+    uniqueIndex("agent_responses_redis_message_unique").on(
+      table.redisMessageId,
+    ),
+    index("agent_responses_unprocessed_idx")
+      .on(table.receivedAt)
+      .where(sql`${table.processedAt} IS NULL`),
+  ],
+);
+
 export const agentRuns = pgTable(
   "agent_runs",
   {
@@ -412,6 +594,15 @@ export const actionConfirmations = pgTable(
       .references(() => conversations.id, { onDelete: "cascade" }),
     skill: text("skill").notNull(),
     sanitizedArguments: jsonb("sanitized_arguments").$type<unknown>().notNull(),
+    originContext: jsonb("origin_context")
+      .$type<{
+        originalUserRequest?: string;
+        sourceMessageId?: string;
+        orchestrationRequestId?: string;
+        agentResponseId?: string;
+      }>()
+      .default({})
+      .notNull(),
     actionHash: text("action_hash").notNull(),
     reason: text("reason").notNull(),
     executionMode: executionMode("execution_mode").notNull(),

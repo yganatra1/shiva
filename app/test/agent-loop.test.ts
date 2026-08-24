@@ -19,13 +19,31 @@ import type {
   AgentRequest,
 } from "../src/agent/types.js";
 import type { ChatInput } from "../src/brain/ai-provider.js";
-import type { PackSummary, ShivaSkill } from "../src/skills/types.js";
+import { AgentRegistry } from "../src/agents/agent-registry.js";
+import {
+  AgentTaskDispatcher,
+  type AgentTaskPublisher,
+} from "../src/agents/agent-task-dispatcher.js";
+import type {
+  AgentTaskRecord,
+  CreateInitialRequestWithTaskInput,
+  CreateNextTaskInput,
+  OrchestrationRepositoryPort,
+  OrchestrationRequestRecord,
+} from "../src/agents/orchestration-repository.js";
+import type { AgentTask } from "../src/agents/shared/protocol.js";
+import type {
+  PackSummary,
+  ShivaSkill,
+  SkillContext,
+} from "../src/skills/types.js";
 import {
   ConfirmationService,
   InMemoryConfirmationStore,
 } from "../src/security/confirmation.js";
 import { ExecutionPolicyEngine } from "../src/security/policy-engine.js";
 import { SkillExecutor } from "../src/skills/executor.js";
+import { createDelegateToAgentSkill } from "../src/skills/delegate-to-agent/skill.js";
 import { PackRegistry } from "../src/skills/pack-registry.js";
 import { SkillRegistry } from "../src/skills/registry.js";
 
@@ -225,6 +243,358 @@ test("agent loop resumes only the exact action approved by a pending confirmatio
   );
 });
 
+test("approved continuation delegation keeps its original Core context and returns queued work", async () => {
+  const confirmationId = "41000000-0000-4000-8000-000000000004";
+  const confirmations = new ConfirmationService(
+    new InMemoryConfirmationStore(),
+    300_000,
+    () => confirmationId,
+  );
+  const registry = new SkillRegistry();
+  const executionContexts: SkillContext[] = [];
+  registry.register({
+    name: "sensitive_delegation_fixture",
+    description: "Queues one sensitive delegated action.",
+    inputDescription: '{ "instruction": string }',
+    inputSchema: z.object({ instruction: z.string() }).strict(),
+    pack: "test",
+    execution: {
+      mutability: "write",
+      impact: "sensitive",
+      confirmationReason: "This fixture delegation is sensitive.",
+    },
+    async execute(_input, context) {
+      executionContexts.push(context);
+      return {
+        success: true,
+        data: {
+          queued: true as const,
+          requestId: "durable-request",
+          taskId: "google-task",
+          userMessage: "I've asked Google Agent to continue.",
+        },
+      };
+    },
+  });
+  const executor = new SkillExecutor(
+    registry,
+    new ExecutionPolicyEngine(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    confirmations,
+  );
+  const now = () => new Date("2026-08-20T00:00:00Z");
+  const continuationRequest: AgentRequest = {
+    ...request,
+    userMessage: "Call Mom and, if needed, add the expense.",
+    delegationContinuation: {
+      requestId: "durable-request",
+      responseId: "device-response",
+      originalUserRequest:
+        "Call Mom and if she doesn't answer then add ₹500 in expense.",
+      executionContext:
+        "After Device Agent reports no answer, ask Google Agent to add ₹500.",
+      latestAgentResponse: "Mom did not answer the call.",
+    },
+  };
+  const pendingDecisions: AgentDecision[] = [
+    {
+      type: "skill_call",
+      skill: "sensitive_delegation_fixture",
+      selectedSkills: ["sensitive_delegation_fixture"],
+      arguments: { instruction: "Add ₹500 to the expense sheet." },
+      authorization: "user_authorized",
+    },
+    {
+      type: "respond",
+      message: "This continuation needs confirmation.",
+    },
+  ];
+  const pendingLoop = new AgentLoop(
+    {
+      async decide() {
+        const decision = pendingDecisions.shift();
+        assert.ok(decision);
+        return decision;
+      },
+    },
+    executor,
+    registry,
+    8,
+    now,
+  );
+  const pending = await pendingLoop.run(continuationRequest);
+  assert.equal(pending.kind, "response");
+  assert.equal(executionContexts.length, 0);
+
+  const completionEvents: unknown[] = [];
+  const approvalLoop = new AgentLoop(
+    {
+      async decide() {
+        return {
+          type: "approve_confirmation",
+          confirmationId,
+          skill: "sensitive_delegation_fixture",
+          arguments: { instruction: "Add ₹500 to the expense sheet." },
+        };
+      },
+    },
+    executor,
+    registry,
+    8,
+    now,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async (event) => {
+      completionEvents.push(event);
+    },
+  );
+  const approved = await approvalLoop.run({
+    ...request,
+    userMessage: "Yes, approve it.",
+    sourceMessageId: "approval-message",
+  });
+
+  assert.equal(approved.kind, "delegated");
+  if (approved.kind !== "delegated") assert.fail("Expected queued delegation.");
+  assert.equal(approved.orchestrationRequestId, "durable-request");
+  assert.equal(approved.taskId, "google-task");
+  assert.equal(
+    executionContexts[0]?.originalUserRequest,
+    continuationRequest.delegationContinuation?.originalUserRequest,
+  );
+  assert.equal(executionContexts[0]?.orchestrationRequestId, "durable-request");
+  assert.equal(executionContexts[0]?.agentResponseId, "device-response");
+  assert.equal(executionContexts[0]?.sourceMessageId, "approval-message");
+  assert.deepEqual(completionEvents, []);
+});
+
+test("real policy and dispatcher preserve initial approval identity and queue a continuation without confirming twice", async () => {
+  const originalRequest =
+    "Call Mom and if she doesn't answer then add ₹500 in expense.";
+  const executionContext =
+    "Call Mom through Device Agent. If she does not answer, ask Google Agent to add ₹500 to the expense sheet.";
+  const sourceMessageId = "42000000-0000-4000-8000-000000000001";
+  const durableRequestId = "42000000-0000-4000-8000-000000000002";
+  const deviceTaskId = "42000000-0000-4000-8000-000000000003";
+  const googleTaskId = "42000000-0000-4000-8000-000000000004";
+  const deviceResponseId = "42000000-0000-4000-8000-000000000005";
+  const confirmationId = "42000000-0000-4000-8000-000000000006";
+  const now = () => new Date("2026-08-20T00:00:00Z");
+  const initialInputs: CreateInitialRequestWithTaskInput[] = [];
+  let nextInput: CreateNextTaskInput | undefined;
+  let durableRequest: OrchestrationRequestRecord | undefined;
+  const tasks = new Map<string, AgentTaskRecord>();
+  const repository = {
+    async createInitialRequestWithTask(input: CreateInitialRequestWithTaskInput) {
+      initialInputs.push(input);
+      durableRequest = orchestrationRequestFixture({
+        id: input.requestId ?? durableRequestId,
+        userId: input.userId,
+        conversationId: input.conversationId,
+        sourceMessageId: input.sourceMessageId,
+        originalUserRequest: input.originalUserRequest,
+        executionContext: input.executionContext,
+        createdAt: input.now,
+        updatedAt: input.now,
+      });
+      const task = orchestrationTaskFixture({
+        id: input.taskId ?? deviceTaskId,
+        orchestrationRequestId: durableRequest.id,
+        agentId: input.agentId,
+        instruction: input.instruction,
+        createdAt: input.now,
+        deadlineAt: input.deadlineAt,
+      });
+      tasks.set(task.id, task);
+      return { request: durableRequest, task };
+    },
+    async createNextTask(input: CreateNextTaskInput) {
+      nextInput = input;
+      const task = orchestrationTaskFixture({
+        id: input.taskId ?? googleTaskId,
+        orchestrationRequestId: input.requestId,
+        agentId: input.agentId,
+        instruction: input.instruction,
+        createdFromResponseId: input.createdFromResponseId,
+        createdAt: input.now,
+        deadlineAt: input.deadlineAt,
+      });
+      tasks.set(task.id, task);
+      return task;
+    },
+    async markTaskPublished(taskId: string, redisMessageId: string, publishedAt: Date) {
+      const task = tasks.get(taskId);
+      assert.ok(task);
+      const published = {
+        ...task,
+        publishedAt,
+        redisMessageId,
+        deliveryAttempts: task.deliveryAttempts + 1,
+      };
+      tasks.set(task.id, published);
+      return published;
+    },
+    async getRequest(requestId: string) {
+      return durableRequest?.id === requestId ? durableRequest : undefined;
+    },
+  } as unknown as OrchestrationRepositoryPort;
+  const published: AgentTask[] = [];
+  const publisher: AgentTaskPublisher = {
+    async publishTask(task) {
+      published.push(task);
+      return `${task.id}-stream`;
+    },
+    async isAgentOnline() {
+      return true;
+    },
+  };
+  const agents = new AgentRegistry();
+  agents.register({
+    id: "device-agent",
+    name: "Device Agent",
+    description: "Handles connected-device actions.",
+    capabilities: ["make phone calls"],
+  });
+  agents.register({
+    id: "google-agent",
+    name: "Google Agent",
+    description: "Handles Google account actions.",
+    capabilities: ["update Google Sheets"],
+  });
+  const ids = [deviceTaskId, durableRequestId, googleTaskId];
+  const dispatcher = new AgentTaskDispatcher(agents, repository, publisher, {
+    taskTimeoutMs: 30_000,
+    requireHeartbeat: false,
+    createId: () => {
+      const id = ids.shift();
+      assert.ok(id);
+      return id;
+    },
+  });
+  const registry = new SkillRegistry();
+  registry.register(createDelegateToAgentSkill(dispatcher, agents));
+  const confirmationStore = new InMemoryConfirmationStore();
+  const confirmations = new ConfirmationService(
+    confirmationStore,
+    300_000,
+    () => confirmationId,
+  );
+  const executor = new SkillExecutor(
+    registry,
+    new ExecutionPolicyEngine(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    confirmations,
+  );
+  const firstArguments = {
+    agent: "device-agent",
+    instruction: "Call Mom at +910000000000 and report whether she answered.",
+    executionContext,
+    userMessage: "I've asked Device Agent to call Mom.",
+  };
+  const initialDecisions: AgentDecision[] = [
+    {
+      type: "skill_call",
+      skill: "delegate_to_agent",
+      selectedSkills: ["delegate_to_agent"],
+      arguments: firstArguments,
+      authorization: "user_authorized",
+    },
+    {
+      type: "respond",
+      message: "Please confirm this delegated action.",
+    },
+  ];
+  const initialLoop = new AgentLoop(
+    decisionQueue(initialDecisions),
+    executor,
+    registry,
+    8,
+    now,
+  );
+  const pending = await initialLoop.run({
+    ...request,
+    userMessage: originalRequest,
+    sourceMessageId,
+  });
+  assert.equal(pending.kind, "response");
+  assert.equal(initialInputs.length, 0);
+
+  const approvalLoop = new AgentLoop(
+    decisionQueue([
+      {
+        type: "approve_confirmation",
+        confirmationId,
+        skill: "delegate_to_agent",
+        arguments: firstArguments,
+      },
+    ]),
+    executor,
+    registry,
+    8,
+    now,
+  );
+  const approved = await approvalLoop.run({
+    ...request,
+    userMessage: "Yes, approve that exact delegation.",
+    sourceMessageId: "42000000-0000-4000-8000-000000000099",
+  });
+  assert.equal(approved.kind, "delegated");
+  const [initialInput] = initialInputs;
+  assert.ok(initialInput);
+  assert.equal(initialInput.originalUserRequest, originalRequest);
+  assert.equal(initialInput.sourceMessageId, sourceMessageId);
+  assert.equal(initialInput.executionContext, executionContext);
+  assert.equal((await confirmationStore.findById(confirmationId))?.status, "EXECUTED");
+
+  const continuationLoop = new AgentLoop(
+    decisionQueue([
+      {
+        type: "skill_call",
+        skill: "delegate_to_agent",
+        selectedSkills: ["delegate_to_agent"],
+        arguments: {
+          agent: "google-agent",
+          instruction: "Add ₹500 to the expense sheet and report the result.",
+          userMessage: "Mom didn't answer. I've asked Google Agent to add ₹500.",
+        },
+        authorization: "user_authorized",
+      },
+    ]),
+    executor,
+    registry,
+    8,
+    now,
+  );
+  const continued = await continuationLoop.run({
+    ...request,
+    userMessage: originalRequest,
+    delegationContinuation: {
+      requestId: durableRequestId,
+      responseId: deviceResponseId,
+      originalUserRequest: originalRequest,
+      executionContext,
+      latestAgentResponse: "Mom did not answer the call.",
+    },
+  });
+
+  assert.equal(continued.kind, "delegated");
+  assert.equal(nextInput?.requestId, durableRequestId);
+  assert.equal(nextInput?.createdFromResponseId, deviceResponseId);
+  assert.equal(nextInput?.agentId, "google-agent");
+  assert.equal(published.length, 2);
+  assert.equal(await executor.getPendingConfirmation(request.userId, request.conversationId, now()), undefined);
+});
+
 test("agent loop denies a pending confirmation without executing its action", async () => {
   const confirmationId = "50000000-0000-4000-8000-000000000005";
   const confirmationStore = new InMemoryConfirmationStore();
@@ -309,6 +679,346 @@ test("agent loop denies a pending confirmation without executing its action", as
   assert.equal(
     (await confirmationStore.findById(confirmationId))?.status,
     "DENIED",
+  );
+});
+
+test("confirmation lifecycle observes denials and passive expiry but not replayed executed approvals", async () => {
+  const events: {
+    readonly outcome: string;
+    readonly requestId?: string;
+    readonly responseId?: string;
+  }[] = [];
+  const store = new InMemoryConfirmationStore();
+  const ids = [
+    "51000000-0000-4000-8000-000000000001",
+    "51000000-0000-4000-8000-000000000002",
+    "51000000-0000-4000-8000-000000000003",
+  ];
+  const confirmations = new ConfirmationService(
+    store,
+    1_000,
+    () => {
+      const id = ids.shift();
+      assert.ok(id);
+      return id;
+    },
+    async ({ confirmation, outcome }) => {
+      events.push({
+        outcome,
+        ...(confirmation.originContext.orchestrationRequestId
+          ? {
+              requestId:
+                confirmation.originContext.orchestrationRequestId,
+            }
+          : {}),
+        ...(confirmation.originContext.agentResponseId
+          ? { responseId: confirmation.originContext.agentResponseId }
+          : {}),
+      });
+    },
+  );
+  const requestedAt = new Date("2026-08-20T00:00:00Z");
+  const common = {
+    agentRunId: "51000000-0000-4000-8000-000000000010",
+    userId: request.userId,
+    conversationId: request.conversationId,
+    skill: "delegate_to_agent",
+    arguments: { agent: "google-agent", instruction: "Add ₹500." },
+    reason: "Delegate the continuation?",
+    executionMode: "FULL_ACCESS" as const,
+    mutability: "write" as const,
+    impact: "sensitive" as const,
+    settingsRevision: 0,
+    now: requestedAt,
+  };
+
+  const denied = await confirmations.request({
+    ...common,
+    originContext: {
+      orchestrationRequestId: "request-denied",
+      agentResponseId: "response-denied",
+    },
+  });
+  await confirmations.resolve({
+    id: denied.id,
+    userId: request.userId,
+    conversationId: request.conversationId,
+    approved: false,
+    now: requestedAt,
+  });
+
+  await confirmations.request({
+    ...common,
+    originContext: {
+      orchestrationRequestId: "request-expired",
+      agentResponseId: "response-expired",
+    },
+  });
+  assert.equal(
+    await confirmations.findPending(
+      request.userId,
+      request.conversationId,
+      new Date(requestedAt.getTime() + 1_001),
+    ),
+    undefined,
+  );
+
+  const executed = await confirmations.request({
+    ...common,
+    now: new Date(requestedAt.getTime() + 2_000),
+    originContext: {
+      orchestrationRequestId: "request-with-child",
+      agentResponseId: "response-with-child",
+    },
+  });
+  await confirmations.resolve({
+    id: executed.id,
+    userId: request.userId,
+    conversationId: request.conversationId,
+    approved: true,
+    skill: common.skill,
+    arguments: common.arguments,
+    now: new Date(requestedAt.getTime() + 2_000),
+  });
+  assert.ok(
+    await confirmations.claim(
+      executed.id,
+      request.userId,
+      0,
+      new Date(requestedAt.getTime() + 2_000),
+    ),
+  );
+  assert.ok(
+    await confirmations.complete(
+      executed.id,
+      request.userId,
+      new Date(requestedAt.getTime() + 2_000),
+      true,
+    ),
+  );
+  await confirmations.resolve({
+    id: executed.id,
+    userId: request.userId,
+    conversationId: request.conversationId,
+    approved: true,
+    skill: common.skill,
+    arguments: common.arguments,
+    now: new Date(requestedAt.getTime() + 2_001),
+  });
+
+  assert.deepEqual(events, [
+    {
+      outcome: "denied",
+      requestId: "request-denied",
+      responseId: "response-denied",
+    },
+    {
+      outcome: "expired",
+      requestId: "request-expired",
+      responseId: "response-expired",
+    },
+  ]);
+});
+
+test("an approved legacy continuation that fails without queuing closes its durable request", async () => {
+  const confirmationId = "52000000-0000-4000-8000-000000000001";
+  const confirmations = new ConfirmationService(
+    new InMemoryConfirmationStore(),
+    300_000,
+    () => confirmationId,
+  );
+  const registry = new SkillRegistry();
+  registry.register({
+    name: "legacy_continuation_fixture",
+    description: "Represents an in-flight sensitive continuation.",
+    inputDescription: '{ "target": string }',
+    inputSchema: z.object({ target: z.string() }).strict(),
+    pack: "test",
+    execution: { mutability: "write", impact: "sensitive" },
+    async execute() {
+      return {
+        success: false,
+        error: { code: "DOWNSTREAM_UNAVAILABLE", message: "Unavailable." },
+      };
+    },
+  });
+  const requestedAt = new Date("2026-08-20T00:00:00Z");
+  await confirmations.request({
+    agentRunId: "52000000-0000-4000-8000-000000000002",
+    userId: request.userId,
+    conversationId: request.conversationId,
+    skill: "legacy_continuation_fixture",
+    arguments: { target: "google-agent" },
+    originContext: {
+      originalUserRequest: "Continue the compound delegated request.",
+      orchestrationRequestId: "durable-request-failed",
+      agentResponseId: "source-response-failed",
+    },
+    reason: "Confirm this legacy continuation.",
+    executionMode: "FULL_ACCESS",
+    mutability: "write",
+    impact: "sensitive",
+    settingsRevision: 0,
+    now: requestedAt,
+  });
+  const completions: unknown[] = [];
+  const loop = new AgentLoop(
+    decisionQueue([
+      {
+        type: "approve_confirmation",
+        confirmationId,
+        skill: "legacy_continuation_fixture",
+        arguments: { target: "google-agent" },
+      },
+      { type: "respond", message: "The continuation could not be completed." },
+    ]),
+    new SkillExecutor(
+      registry,
+      new ExecutionPolicyEngine(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      confirmations,
+    ),
+    registry,
+    8,
+    () => requestedAt,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async (event) => {
+      completions.push(event);
+    },
+  );
+
+  const result = await loop.run({
+    ...request,
+    userMessage: "Yes, approve it.",
+  });
+
+  assert.equal(result.kind, "response");
+  assert.deepEqual(completions, [
+    {
+      requestId: "durable-request-failed",
+      responseId: "source-response-failed",
+      outcome: "approved",
+      succeeded: false,
+      now: requestedAt,
+    },
+  ]);
+});
+
+test("a successful approved non-delegation continuation completes after Core responds", async () => {
+  const confirmationId = "53000000-0000-4000-8000-000000000001";
+  const confirmationStore = new InMemoryConfirmationStore();
+  const confirmations = new ConfirmationService(
+    confirmationStore,
+    300_000,
+    () => confirmationId,
+  );
+  const registry = new SkillRegistry();
+  registry.register({
+    name: "successful_continuation_fixture",
+    description: "Completes one sensitive Core-owned continuation action.",
+    inputDescription: '{ "value": string }',
+    inputSchema: z.object({ value: z.string() }).strict(),
+    pack: "test",
+    execution: { mutability: "write", impact: "sensitive" },
+    async execute(input) {
+      return { success: true, data: { saved: input.value } };
+    },
+  });
+  const requestedAt = new Date("2026-08-20T00:00:00Z");
+  await confirmations.request({
+    agentRunId: "53000000-0000-4000-8000-000000000002",
+    userId: request.userId,
+    conversationId: request.conversationId,
+    skill: "successful_continuation_fixture",
+    arguments: { value: "done" },
+    originContext: {
+      originalUserRequest: "Finish the compound delegated request.",
+      orchestrationRequestId: "durable-request-succeeded",
+      agentResponseId: "source-response-succeeded",
+    },
+    reason: "Confirm this legacy continuation.",
+    executionMode: "FULL_ACCESS",
+    mutability: "write",
+    impact: "sensitive",
+    settingsRevision: 0,
+    now: requestedAt,
+  });
+  const completions: unknown[] = [];
+  let plannerCall = 0;
+  const planner: AgentPlanner = {
+    async decide() {
+      plannerCall += 1;
+      if (plannerCall === 1) {
+        return {
+          type: "approve_confirmation",
+          confirmationId,
+          skill: "successful_continuation_fixture",
+          arguments: { value: "done" },
+        };
+      }
+      assert.equal(
+        completions.length,
+        0,
+        "successful approval must wait for Core's terminal response",
+      );
+      return {
+        type: "respond",
+        message: "The continuation completed successfully.",
+      };
+    },
+  };
+  const loop = new AgentLoop(
+    planner,
+    new SkillExecutor(
+      registry,
+      new ExecutionPolicyEngine(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      confirmations,
+    ),
+    registry,
+    8,
+    () => requestedAt,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async (event) => {
+      completions.push(event);
+    },
+  );
+
+  const result = await loop.run({
+    ...request,
+    userMessage: "Yes, approve it.",
+  });
+
+  assert.equal(result.kind, "response");
+  assert.equal(result.response, "The continuation completed successfully.");
+  assert.deepEqual(completions, [
+    {
+      requestId: "durable-request-succeeded",
+      responseId: "source-response-succeeded",
+      outcome: "approved",
+      succeeded: true,
+      now: requestedAt,
+    },
+  ]);
+  assert.equal(
+    (await confirmationStore.findById(confirmationId))?.status,
+    "EXECUTED",
   );
 });
 
@@ -1897,3 +2607,53 @@ test("the current corrective task follows reference history in planner input", a
   assert.match(String(parsed.taskRule), /supersedes conflicting names/i);
   assert.ok(iteration.indexOf("Expense 2026 sorry") > iteration.indexOf("Expenses 2026"));
 });
+
+function decisionQueue(decisions: AgentDecision[]): AgentPlanner {
+  const remaining = [...decisions];
+  return {
+    async decide() {
+      const decision = remaining.shift();
+      if (!decision) throw new Error("No fake decision available.");
+      return decision;
+    },
+  };
+}
+
+function orchestrationRequestFixture(
+  overrides: Partial<OrchestrationRequestRecord> = {},
+): OrchestrationRequestRecord {
+  const fixtureNow = new Date("2026-08-20T00:00:00Z");
+  return {
+    id: "43000000-0000-4000-8000-000000000001",
+    userId: request.userId,
+    conversationId: request.conversationId,
+    sourceMessageId: "43000000-0000-4000-8000-000000000002",
+    originalUserRequest: request.userMessage,
+    executionContext: "Delegate the requested work and reason over its reply.",
+    createdAt: fixtureNow,
+    updatedAt: fixtureNow,
+    completedAt: null,
+    ...overrides,
+  };
+}
+
+function orchestrationTaskFixture(
+  overrides: Partial<AgentTaskRecord> = {},
+): AgentTaskRecord {
+  const fixtureNow = new Date("2026-08-20T00:00:00Z");
+  return {
+    id: "43000000-0000-4000-8000-000000000003",
+    orchestrationRequestId: "43000000-0000-4000-8000-000000000001",
+    agentId: "device-agent",
+    instruction: "Perform the narrow delegated task and report the outcome.",
+    createdFromResponseId: null,
+    createdAt: fixtureNow,
+    deadlineAt: new Date("2026-08-20T00:05:00Z"),
+    publishedAt: null,
+    redisMessageId: null,
+    deliveryAttempts: 0,
+    lastDeliveryError: null,
+    abandonedAt: null,
+    ...overrides,
+  };
+}

@@ -63,6 +63,22 @@ export interface AgentRequest {
   /** Base64 images attached to this chat turn (no data: URI prefix). */
   readonly images?: readonly string[];
   readonly allowedSkills?: readonly string[];
+  /**
+   * Database id of the authoritative user message. Present on real chat turns
+   * and used when a delegation becomes a durable asynchronous request.
+   */
+  readonly sourceMessageId?: string;
+  /**
+   * Present only while Core is resuming a delegated request. These are plain
+   * text facts for the planner, not a serialized workflow or state machine.
+   */
+  readonly delegationContinuation?: {
+    readonly requestId: string;
+    readonly responseId: string;
+    readonly originalUserRequest: string;
+    readonly executionContext: string;
+    readonly latestAgentResponse: string;
+  };
   readonly signal?: AbortSignal;
 }
 
@@ -113,6 +129,16 @@ export type AgentRunResult =
       readonly steps: number;
       readonly observations: readonly AgentObservation[];
       readonly plannerFallback?: "INVALID_OUTPUT" | "INVALID_SCOPE";
+    }
+  | {
+      /** Core has durably queued work and is returning a short acknowledgement. */
+      readonly kind: "delegated";
+      readonly runId: string;
+      readonly response: string;
+      readonly orchestrationRequestId: string;
+      readonly taskId: string;
+      readonly steps: number;
+      readonly observations: readonly AgentObservation[];
     };
 
 export interface AgentPlanner {

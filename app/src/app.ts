@@ -19,6 +19,11 @@ import type { EmbeddingProvider } from "./brain/embedding-provider";
 import { OllamaEmbeddingProvider } from "./brain/ollama-embedding-provider";
 import { OllamaProvider } from "./brain/ollama-provider";
 import type { AppConfig } from "./config/environment";
+import {
+  CoreUpdateHub,
+  registerCoreUpdateSocketRoute,
+} from "./core/core-update-hub";
+import type { CoreUpdateReplaySource } from "./core/core-update-replay";
 import { createDatabase } from "./database/pool";
 import {
   FaceRecognitionService,
@@ -81,6 +86,8 @@ export interface AppOverrides {
   readonly voicePlaybackCoordinator?: VoicePlaybackCoordinator;
   readonly agentOrchestrator?: AgentOrchestratorPort;
   readonly executionStatus?: ExecutionStatusPort;
+  readonly coreUpdateHub?: CoreUpdateHub;
+  readonly coreUpdateReplaySource?: CoreUpdateReplaySource;
 }
 
 export function createApp(config: AppConfig, overrides: AppOverrides = {}): FastifyInstance {
@@ -180,11 +187,21 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     embeddingProvider,
     extractionEngine,
   );
+  const coreUpdateHub =
+    overrides.coreUpdateHub ??
+    new CoreUpdateHub((error) => {
+      app.log.warn(
+        { err: error },
+        "A chat update client failed without affecting Core processing",
+      );
+    });
   const agentRuntime = database
     ? createAgentRuntime(
         database.db,
         provider,
         config,
+        repository,
+        coreUpdateHub,
         (error) => {
           app.log.error({ err: error }, "Agent audit finalization failed");
         },
@@ -223,6 +240,10 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
 
   app.addHook("preClose", async () => {
     voicePlaybackCoordinator.close();
+    await agentRuntime?.close();
+  });
+  app.addHook("onReady", async () => {
+    await agentRuntime?.start();
   });
   app.addHook("onClose", async () => {
     await chatService.drainBackgroundMemory();
@@ -256,14 +277,23 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
   app.register(fastifyWebsocket, {
     options: { maxPayload: VOICE_SOCKET_MAX_FRAME_BYTES },
   });
+  const coreUpdateReplaySource =
+    overrides.coreUpdateReplaySource ?? agentRuntime?.updateReplay;
   app.register(async (instance) => {
     registerVoiceSocketRoute(instance, {
       chatService,
       asrProvider,
       ttsProvider,
       playbackCoordinator: voicePlaybackCoordinator,
+      coreUpdateHub,
+      ...(coreUpdateReplaySource ? { coreUpdateReplaySource } : {}),
       ...(voicePerformance ? { performance: voicePerformance } : {}),
     });
+    registerCoreUpdateSocketRoute(
+      instance,
+      coreUpdateHub,
+      coreUpdateReplaySource,
+    );
     registerDeviceSocketRelayRoute(instance, {
       deviceAgentUrl: config.deviceAgentUrl,
     });

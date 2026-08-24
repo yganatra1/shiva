@@ -1,4 +1,16 @@
 services:
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    volumes:
+      - shiva-redis-data:/data
+
   postgres:
     image: pgvector/pgvector:pg17
     restart: unless-stopped
@@ -22,6 +34,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       asr:
         condition: service_started
       tts:
@@ -30,6 +44,8 @@ services:
         condition: service_started
       device-agent:
         condition: service_started
+      google-agent:
+        condition: service_started
     env_file:
       - path: ../../.env
         required: false
@@ -37,6 +53,7 @@ services:
       HOST: 0.0.0.0
       NODE_ENV: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-shiva}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-shiva}
+      REDIS_URL: redis://redis:6379
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       ASR_SERVICE_URL: http://asr:8101
       TTS_SERVICE_URL: http://tts:8102
@@ -57,18 +74,61 @@ services:
       dockerfile: infra/docker/app.Dockerfile
     command: ["node", "dist/agents/device/device-agent-runner.js"]
     restart: unless-stopped
-    env_file:
-      - path: ../../.env
-        required: false
+    depends_on:
+      redis:
+        condition: service_healthy
     environment:
       DEVICE_AGENT_HOST: 0.0.0.0
       DEVICE_AGENT_PORT: 3002
+      DEVICE_AGENT_MAX_STEPS: ${DEVICE_AGENT_MAX_STEPS:-15}
+      DEVICE_WS_TOKEN: ${DEVICE_WS_TOKEN:-}
+      DEVICE_AGENT_MOCK_CALL_OUTCOME: ${DEVICE_AGENT_MOCK_CALL_OUTCOME:-}
+      REDIS_URL: redis://redis:6379
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      SHIVA_MODEL: ${SHIVA_MODEL:-gemma4:26b-a4b-it-q4_K_M}
+      SHIVA_CONTEXT_LENGTH: ${SHIVA_CONTEXT_LENGTH:-16384}
+      SHIVA_KEEP_ALIVE: ${SHIVA_KEEP_ALIVE:-30m}
+      OLLAMA_REQUEST_TIMEOUT_MS: ${OLLAMA_REQUEST_TIMEOUT_MS:-300000}
+      AGENT_RECLAIM_IDLE_MS: ${AGENT_RECLAIM_IDLE_MS:-30000}
+      AGENT_MAX_DELIVERY_ATTEMPTS: ${AGENT_MAX_DELIVERY_ATTEMPTS:-3}
+      AGENT_HEARTBEAT_TTL_SECONDS: ${AGENT_HEARTBEAT_TTL_SECONDS:-15}
       NODE_ENV: production
     extra_hosts:
       - host.docker.internal:host-gateway
     expose:
       - "3002"
+
+  google-agent:
+    build:
+      context: ../..
+      dockerfile: infra/docker/app.Dockerfile
+    command: ["node", "dist/agents/google/google-agent-runner.js"]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      REDIS_URL: redis://redis:6379
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      SHIVA_MODEL: ${SHIVA_MODEL:-gemma4:26b-a4b-it-q4_K_M}
+      SHIVA_CONTEXT_LENGTH: ${SHIVA_CONTEXT_LENGTH:-16384}
+      SHIVA_KEEP_ALIVE: ${SHIVA_KEEP_ALIVE:-30m}
+      OLLAMA_REQUEST_TIMEOUT_MS: ${OLLAMA_REQUEST_TIMEOUT_MS:-300000}
+      SHIVA_USER_ID: ${SHIVA_USER_ID:-00000000-0000-4000-8000-000000000001}
+      SHIVA_USER_NAME: ${SHIVA_USER_NAME:-Yash}
+      SHIVA_TIME_ZONE: ${SHIVA_TIME_ZONE:-Asia/Kolkata}
+      AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-12}
+      AGENT_REQUEST_TIMEOUT_MS: ${AGENT_REQUEST_TIMEOUT_MS:-300000}
+      AGENT_RECLAIM_IDLE_MS: ${AGENT_RECLAIM_IDLE_MS:-30000}
+      AGENT_MAX_DELIVERY_ATTEMPTS: ${AGENT_MAX_DELIVERY_ATTEMPTS:-3}
+      AGENT_HEARTBEAT_TTL_SECONDS: ${AGENT_HEARTBEAT_TTL_SECONDS:-15}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REFRESH_TOKEN: ${GOOGLE_OAUTH_REFRESH_TOKEN:-}
+      EXPENSE_SHEET_REQUEST_TIMEOUT_MS: ${EXPENSE_SHEET_REQUEST_TIMEOUT_MS:-15000}
+    extra_hosts:
+      - host.docker.internal:host-gateway
 
   asr:
     build:
@@ -139,6 +199,7 @@ services:
       - shiva-face-models:/models
 
 volumes:
+  shiva-redis-data:
   shiva-postgres-data:
   shiva-voice-models:
   shiva-face-models:

@@ -16,6 +16,14 @@ export interface SkillContext {
   readonly userId: string;
   readonly userName: string;
   readonly timeZone: string;
+  /** Authoritative current user request; never supplied by model arguments. */
+  readonly originalUserRequest?: string;
+  /** Authoritative persisted chat message that originated this request. */
+  readonly sourceMessageId?: string;
+  /** Existing durable request when Core is continuing after an agent reply. */
+  readonly orchestrationRequestId?: string;
+  /** Agent response that caused the current continuation reasoning pass. */
+  readonly agentResponseId?: string;
   readonly allowedSkills?: readonly string[];
   readonly signal?: AbortSignal;
   /** Runtime-owned policy snapshot used for atomic control transitions. */

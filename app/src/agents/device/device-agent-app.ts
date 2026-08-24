@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import type { AIProvider } from "../../brain/ai-provider";
 import { OllamaProvider } from "../../brain/ollama-provider";
-import type { AppConfig } from "../../config/environment";
+import type { DeviceAgentConfig } from "../../config/environment";
 import { DeviceCommandDispatcher } from "./device-command-dispatcher";
 import { registerDeviceSocketRoute } from "./device-socket-route";
 import { registerDispatchRoute } from "./dispatch-route";
@@ -29,7 +29,7 @@ export interface DeviceAgentAppOverrides {
 }
 
 export function createDeviceAgentApp(
-  config: AppConfig,
+  config: DeviceAgentConfig,
   overrides: DeviceAgentAppOverrides = {},
 ): FastifyInstance {
   const app = Fastify({

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { AIProviderError } from "../src/brain/ai-provider.js";
+import type { CoreUpdate } from "../src/core/core-update-hub.js";
+import type { CoreUpdateReplaySource } from "../src/core/core-update-replay.js";
 import { VoicePlaybackCoordinator } from "../src/voice/playback-coordinator.js";
 import { VoiceProviderError } from "../src/voice/provider.js";
 import {
@@ -10,7 +12,10 @@ import {
   type VoicePerformanceEntry,
   type VoiceTtsChunkPerformanceLog,
 } from "../src/voice/voice-performance.js";
-import { VoiceSession } from "../src/voice/voice-session.js";
+import {
+  VoiceSession,
+  type VoiceCoreUpdateSource,
+} from "../src/voice/voice-session.js";
 import {
   ControlledChatProvider,
   createChatService,
@@ -46,6 +51,7 @@ function createSession(
     readonly playbackCoordinator?: VoicePlaybackCoordinator;
     readonly performance?: VoicePerformanceTracker;
     readonly extractionEngine?: FakeExtractionEngine;
+    readonly coreUpdates?: VoiceCoreUpdateSource;
   } = {},
 ): SessionHarness {
   const transport = new RecordingTransport();
@@ -74,6 +80,7 @@ function createSession(
       ? { playbackCoordinator: options.playbackCoordinator }
       : {}),
     ...(options.performance ? { performance: options.performance } : {}),
+    ...(options.coreUpdates ? { coreUpdates: options.coreUpdates } : {}),
   });
   return { session, transport, asr, tts };
 }
@@ -86,6 +93,146 @@ function startSession(harness: SessionHarness, conversationId?: string): void {
         : { type: "session_start" },
     ),
   );
+}
+
+class TestCoreUpdateSource implements VoiceCoreUpdateSource {
+  private readonly listeners = new Set<(update: CoreUpdate) => void>();
+  readonly replay?: CoreUpdateReplaySource;
+
+  constructor(replay?: CoreUpdateReplaySource) {
+    if (replay) this.replay = replay;
+  }
+
+  subscribe(listener: (update: CoreUpdate) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  publish(update: CoreUpdate): void {
+    for (const listener of this.listeners) listener(update);
+  }
+}
+
+const VOICE_CONVERSATION_ID = "10000000-0000-4000-8000-000000000101";
+
+test("live Core agent outcomes reach only their active voice conversation once", () => {
+  const updates = new TestCoreUpdateSource();
+  const harness = createSession({ coreUpdates: updates });
+  startSession(harness, VOICE_CONVERSATION_ID);
+  const matching = coreUpdate(
+    "20000000-0000-4000-8000-000000000101",
+    VOICE_CONVERSATION_ID,
+    "Mom did not answer, so I added ₹500 to the expense sheet.",
+    "2026-08-24T10:00:00.000Z",
+  );
+
+  updates.publish(
+    coreUpdate(
+      "20000000-0000-4000-8000-000000000102",
+      "10000000-0000-4000-8000-000000000102",
+      "This belongs to another conversation.",
+      "2026-08-24T10:00:00.000Z",
+    ),
+  );
+  updates.publish(matching);
+  updates.publish(matching);
+
+  assert.deepEqual(harness.transport.controlsOfType("core_update"), [
+    { type: "core_update", ...matching },
+  ]);
+  harness.session.close();
+  updates.publish(
+    coreUpdate(
+      "20000000-0000-4000-8000-000000000103",
+      VOICE_CONVERSATION_ID,
+      "Must not arrive after close.",
+      "2026-08-24T10:00:01.000Z",
+    ),
+  );
+  assert.equal(harness.transport.controlsOfType("core_update").length, 1);
+});
+
+test("voice replay buffers live outcomes and deduplicates them against PostgreSQL", async () => {
+  let resolveReplay!: (updates: readonly CoreUpdate[]) => void;
+  let replayCursor: string | undefined;
+  const live = coreUpdate(
+    "20000000-0000-4000-8000-000000000105",
+    VOICE_CONVERSATION_ID,
+    "The live outcome.",
+    "2026-08-24T10:00:02.000Z",
+  );
+  const persisted = coreUpdate(
+    "20000000-0000-4000-8000-000000000104",
+    VOICE_CONVERSATION_ID,
+    "The persisted outcome.",
+    "2026-08-24T10:00:01.000Z",
+  );
+  const replay: CoreUpdateReplaySource = {
+    async listAfter(_conversationId, afterMessageId) {
+      replayCursor = afterMessageId;
+      return new Promise((resolve) => {
+        resolveReplay = resolve;
+      });
+    },
+  };
+  const updates = new TestCoreUpdateSource(replay);
+  const harness = createSession({ coreUpdates: updates });
+  const cursor = "20000000-0000-4000-8000-000000000100";
+  harness.session.handleTextMessage(
+    JSON.stringify({
+      type: "session_start",
+      conversationId: VOICE_CONVERSATION_ID,
+      afterMessageId: cursor,
+    }),
+  );
+  updates.publish(live);
+  resolveReplay([persisted, live]);
+  await harness.session.whenSettled();
+
+  assert.equal(replayCursor, cursor);
+  assert.deepEqual(
+    harness.transport.controlsOfType("core_update").map((update) =>
+      update.messageId,
+    ),
+    [persisted.messageId, live.messageId],
+  );
+});
+
+test("a newly created voice conversation starts receiving later Core outcomes", async () => {
+  const updates = new TestCoreUpdateSource();
+  const harness = createSession({ coreUpdates: updates });
+  startSession(harness);
+  harness.session.handleTextMessage(
+    JSON.stringify({ type: "user_text", text: "Call Mom." }),
+  );
+  await harness.session.whenSettled();
+  await waitFor(
+    () => harness.transport.controlsOfType("turn_done").length === 1,
+  );
+  const conversationId =
+    harness.transport.controlsOfType("turn_done")[0]?.conversationId;
+  assert.ok(conversationId);
+
+  const outcome = coreUpdate(
+    "20000000-0000-4000-8000-000000000106",
+    conversationId,
+    "Mom did not answer.",
+    "2026-08-24T10:00:03.000Z",
+  );
+  updates.publish(outcome);
+
+  assert.deepEqual(harness.transport.controlsOfType("core_update"), [
+    { type: "core_update", ...outcome },
+  ]);
+});
+
+function coreUpdate(
+  messageId: string,
+  conversationId: string,
+  message: string,
+  timestamp: string,
+): CoreUpdate {
+  return { messageId, conversationId, message, timestamp };
 }
 
 test("a typed turn streams text, then ordered binary audio, on one session", async () => {

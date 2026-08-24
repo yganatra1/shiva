@@ -1,8 +1,18 @@
-import { AgentClient } from "../agents/agent-client";
+import { AgentTaskDispatcher } from "../agents/agent-task-dispatcher";
 import { AgentRegistry } from "../agents/agent-registry";
+import { DrizzleOrchestrationRepository } from "../agents/orchestration-repository";
+import { RedisAgentTransport } from "../agents/shared/redis-agent-transport";
 import type { AIProvider } from "../brain/ai-provider";
 import type { AppConfig } from "../config/environment";
 import type { ShivaDatabase } from "../database/pool";
+import type { MemoryRepositoryPort } from "../memory/types";
+import { CoreAgentResponseProcessor } from "../core/agent-response-processor";
+import { AgentReliabilitySupervisor } from "../core/agent-reliability-supervisor";
+import type { CoreUpdatePublisher } from "../core/core-update-hub";
+import {
+  DrizzleCoreUpdateReplaySource,
+  type CoreUpdateReplaySource,
+} from "../core/core-update-replay";
 import { DrizzlePeopleRepository } from "../people/people-repository";
 import {
   ConfirmationService,
@@ -19,7 +29,6 @@ import { registerExecutionControlSkills } from "../skills/execution-control/regi
 import { registerAgentSkills } from "../skills/agents/register";
 import { registerCoreSkills } from "../skills/core/register";
 import { registerSystemSkills } from "../skills/system/register";
-import { registerGoogleSkills } from "../skills/google/register";
 import { registerPeopleSkills } from "../skills/people/register";
 import { registerWebSkills } from "../skills/web/register";
 import { createPackRegistry } from "../skills/packs";
@@ -33,46 +42,99 @@ import type { AgentOrchestratorPort } from "./types";
 export interface AgentRuntime {
   readonly orchestrator: AgentOrchestratorPort;
   readonly executionStatus: ExecutionStatusService;
+  readonly updateReplay: CoreUpdateReplaySource;
+  start(): Promise<void>;
+  close(): Promise<void>;
 }
 
 export function createAgentRuntime(
   database: ShivaDatabase,
   provider: AIProvider,
   config: AppConfig,
+  conversationRepository: Pick<MemoryRepositoryPort, "getRecentMessages">,
+  updates: CoreUpdatePublisher,
   onAuditError: (error: unknown) => void = () => {},
   onTrace?: AgentTraceLogger,
 ): AgentRuntime {
-  const registry = new SkillRegistry(createPackRegistry());
+  // Google tools and their OAuth credentials live only in google-agent. Core
+  // advertises that worker through the agents pack and never executes an
+  // account operation in-process.
+  const registry = new SkillRegistry(
+    createPackRegistry({ includeGoogle: false }),
+  );
   const executionState = new ExecutionStateService(
     new DrizzleExecutionStateStore(database),
     config.maxExecutionMode,
   );
+  const orchestrationRepository = new DrizzleOrchestrationRepository(database);
   const confirmations = new ConfirmationService(
     new DrizzleConfirmationStore(database),
     config.confirmationTtlMs,
+    undefined,
+    async ({ confirmation, now }) => {
+      const origin = confirmation.originContext;
+      if (!origin.orchestrationRequestId || !origin.agentResponseId) return;
+      await orchestrationRepository.completeRequestAfterConfirmation({
+        requestId: origin.orchestrationRequestId,
+        responseId: origin.agentResponseId,
+        now,
+      });
+    },
   );
   registerExecutionControlSkills(registry, executionState, confirmations);
   registerCoreSkills(registry);
   registerSystemSkills(registry);
-  // record_expense/expense_report are intentionally not registered: the user
-  // chose to manage expenses (and any other sheet) through the free-form
-  // google pack (sheets_create/sheets_read/sheets_update) instead of the
-  // fixed-schema expense ledger. Their code, tools, and tests are untouched
-  // and registerFinanceSkills still works, in case this is ever reverted.
-  registerGoogleSkills(registry, config);
+  // record_expense/expense_report remain intentionally unregistered. The
+  // google-agent owns free-form Sheets work (including expenses) and Core
+  // coordinates it through delegate_to_agent.
   registerPeopleSkills(registry, new DrizzlePeopleRepository(database));
   registerWebSkills(registry, config);
   const agentRegistry = new AgentRegistry();
   agentRegistry.register({
-    name: "device",
+    id: "device-agent",
+    name: "Device Agent",
     description:
-      "Owns all work on the connected Android phone, including contacts, calls, notifications, camera capture, app launching, and multi-step UI interaction. Every phone task, including a single direct lookup, must be delegated to this agent.",
-    baseUrl: config.deviceAgentUrl,
+      "Handles actions involving the user's connected Android device.",
+    capabilities: [
+      "make phone calls",
+      "search device contacts",
+      "read device notifications",
+      "access the camera",
+      "read device status",
+      "open applications",
+      "interact with on-screen applications",
+    ],
   });
-  const agentClient = new AgentClient(agentRegistry, {
-    ...(onTrace ? { onTrace } : {}),
+  agentRegistry.register({
+    id: "google-agent",
+    name: "Google Agent",
+    description: "Handles operations in the configured Google account.",
+    capabilities: [
+      "search Google Drive",
+      "read and update Google Sheets",
+      "manage expense data stored in Google Sheets",
+    ],
   });
-  registerAgentSkills(registry, agentClient, agentRegistry);
+  const transport = new RedisAgentTransport({
+    redisUrl: config.redisUrl,
+    onRedisError: onAuditError,
+  });
+  const dispatcher = new AgentTaskDispatcher(
+    agentRegistry,
+    orchestrationRepository,
+    transport,
+    {
+      taskTimeoutMs: config.agentTaskTimeoutMs,
+      onPublishError: (error, task) => {
+        onAuditError(
+          new Error(`Agent task ${task.id} could not be published yet.`, {
+            cause: error,
+          }),
+        );
+      },
+    },
+  );
+  registerAgentSkills(registry, dispatcher, agentRegistry);
 
   const audit = new AgentAuditRepository(database);
   const executor = new SkillExecutor(
@@ -96,13 +158,85 @@ export function createAgentRuntime(
     onAuditError,
     config.agentRequestTimeoutMs,
     onTrace,
+    async ({ requestId, responseId, now }) => {
+      await orchestrationRepository.completeRequestAfterConfirmation({
+        requestId,
+        responseId,
+        now,
+      });
+    },
   );
+  const orchestrator = new ShivaOrchestrator(loop);
+  const responseProcessor = new CoreAgentResponseProcessor({
+    transport,
+    repository: orchestrationRepository,
+    conversationRepository,
+    orchestrator,
+    updates,
+    userName: config.userName,
+    timeZone: config.timeZone,
+    workingMemoryMessageLimit: config.workingMemoryMessageLimit,
+    reclaimIdleMs: config.agentReclaimIdleMs,
+    processingLeaseMs:
+      config.agentRequestTimeoutMs + config.agentReclaimIdleMs,
+    maxProcessingAttempts: config.agentMaxDeliveryAttempts,
+    onError: onAuditError,
+  });
+  const reliability = new AgentReliabilitySupervisor({
+    dispatcher,
+    repository: orchestrationRepository,
+    responses: responseProcessor,
+    onError: onAuditError,
+  });
+  let started = false;
+  let transportConnected = false;
+  let responseProcessorStarted = false;
+
   return {
-    orchestrator: new ShivaOrchestrator(loop),
+    orchestrator,
+    updateReplay: new DrizzleCoreUpdateReplaySource(database),
     executionStatus: new ExecutionStatusService(
       executionState,
       confirmations,
       config.userId,
     ),
+    async start() {
+      if (started) return;
+      try {
+        await transport.connect();
+        transportConnected = true;
+        for (const agent of agentRegistry.list()) {
+          await transport.ensureTaskConsumerGroup(agent.id);
+        }
+        await responseProcessor.start();
+        responseProcessorStarted = true;
+        await dispatcher.flushUnpublished();
+        reliability.start();
+        started = true;
+      } catch (error: unknown) {
+        await reliability.stop().catch(onAuditError);
+        if (responseProcessorStarted) {
+          await responseProcessor.stop().catch(onAuditError);
+          responseProcessorStarted = false;
+        }
+        if (transportConnected) {
+          await transport.close().catch(onAuditError);
+          transportConnected = false;
+        }
+        throw error;
+      }
+    },
+    async close() {
+      started = false;
+      await reliability.stop();
+      if (responseProcessorStarted) {
+        await responseProcessor.stop();
+        responseProcessorStarted = false;
+      }
+      if (transportConnected) {
+        await transport.close();
+        transportConnected = false;
+      }
+    },
   };
 }

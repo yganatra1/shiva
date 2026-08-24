@@ -196,7 +196,7 @@ test("diagnostic voice chat reuses the shared pipeline and conversation ID", asy
   );
 });
 
-test("browser conversation state remembers and clears the conversation ID", () => {
+test("browser conversation state persists a conversation-scoped Core update cursor", () => {
   const values = new Map<string, string>();
   const storage = {
     getItem: (key: string) => values.get(key) ?? null,
@@ -207,12 +207,29 @@ test("browser conversation state remembers and clears the conversation ID", () =
   const turnId = "10000000-0000-4000-8000-000000000001";
 
   assert.equal(state.current(), null);
+  assert.equal(state.updateCursor(), null);
   state.remember(turnId);
   assert.equal(state.current(), turnId);
+  state.rememberCoreUpdate(turnId, "20000000-0000-4000-8000-000000000001");
+  assert.equal(
+    state.updateCursor(),
+    "20000000-0000-4000-8000-000000000001",
+  );
+  state.rememberCoreUpdate(
+    "10000000-0000-4000-8000-000000000002",
+    "20000000-0000-4000-8000-000000000002",
+  );
+  assert.equal(
+    state.updateCursor(),
+    "20000000-0000-4000-8000-000000000001",
+  );
   state.remember(turnId);
   assert.equal(state.current(), turnId);
+  state.remember("10000000-0000-4000-8000-000000000002");
+  assert.equal(state.updateCursor(), null);
   state.clear();
   assert.equal(state.current(), null);
+  assert.equal(state.updateCursor(), null);
 });
 
 test("served voice client is valid framework-free JavaScript", () => {

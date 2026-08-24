@@ -15,6 +15,8 @@ import {
   ConfirmationService,
   InMemoryConfirmationStore,
   type ActionConfirmation,
+  type ConfirmationOriginContext,
+  type ConfirmationResolution,
 } from "../security/confirmation";
 import { ExecutionPolicyEngine } from "../security/policy-engine";
 import {
@@ -53,6 +55,11 @@ export interface ResolvedConfirmationExecution {
   readonly skill: string;
   readonly arguments: unknown;
   readonly result: SkillResult<unknown>;
+  /** Runtime-owned correlation for cleaning up a resumed durable request. */
+  readonly resolution: {
+    readonly outcome: ConfirmationResolution["outcome"];
+    readonly originContext: ConfirmationOriginContext;
+  };
 }
 
 export class SkillExecutor {
@@ -182,6 +189,20 @@ export class SkillExecutor {
         conversationId: context.conversationId,
         skill: skill.name,
         arguments: parsed.data,
+        originContext: {
+          ...(context.originalUserRequest
+            ? { originalUserRequest: context.originalUserRequest }
+            : {}),
+          ...(context.sourceMessageId
+            ? { sourceMessageId: context.sourceMessageId }
+            : {}),
+          ...(context.orchestrationRequestId
+            ? { orchestrationRequestId: context.orchestrationRequestId }
+            : {}),
+          ...(context.agentResponseId
+            ? { agentResponseId: context.agentResponseId }
+            : {}),
+        },
         reason:
           decision.confirmationReason ??
           "This action requires confirmation.",
@@ -386,12 +407,17 @@ export class SkillExecutor {
     });
     const resolvedSkill =
       resolution.confirmation?.skill ?? input.skill ?? "confirmation";
+    const resolutionContext = {
+      outcome: resolution.outcome,
+      originContext: resolution.confirmation?.originContext ?? {},
+    };
 
     if (resolution.outcome !== "approved") {
       return {
         skill: resolvedSkill,
         arguments: parsedArguments ?? {},
         result: confirmationResolutionFailure(resolution.outcome),
+        resolution: resolutionContext,
       };
     }
     if (!input.skill) {
@@ -402,6 +428,7 @@ export class SkillExecutor {
           "CONFIRMATION_MISMATCH",
           "The approved action was missing its exact skill invocation.",
         ),
+        resolution: resolutionContext,
       };
     }
     const approvedConfirmation = resolution.confirmation;
@@ -413,6 +440,7 @@ export class SkillExecutor {
           "CONFIRMATION_NOT_FOUND",
           "The approved confirmation record is unavailable.",
         ),
+        resolution: resolutionContext,
       };
     }
 
@@ -421,7 +449,10 @@ export class SkillExecutor {
       result = await this.executeInternal(
         input.skill,
         parsedArguments,
-        input.context,
+        contextWithConfirmationOrigin(
+          input.context,
+          approvedConfirmation,
+        ),
         {
           userAuthorized: true,
           confirmation: approvedConfirmation,
@@ -438,7 +469,12 @@ export class SkillExecutor {
         this.reportAuditError(error);
       }
     }
-    return { skill: input.skill, arguments: parsedArguments, result };
+    return {
+      skill: input.skill,
+      arguments: parsedArguments,
+      result,
+      resolution: resolutionContext,
+    };
   }
 
   private async completeConfirmationSafely(
@@ -612,6 +648,28 @@ export class SkillExecutor {
       // Observability must not change an already-determined action outcome.
     }
   }
+}
+
+function contextWithConfirmationOrigin(
+  context: SkillContext,
+  confirmation: ActionConfirmation,
+): SkillContext {
+  const origin = confirmation.originContext;
+  return {
+    ...context,
+    ...(origin.originalUserRequest
+      ? { originalUserRequest: origin.originalUserRequest }
+      : {}),
+    ...(origin.sourceMessageId
+      ? { sourceMessageId: origin.sourceMessageId }
+      : {}),
+    ...(origin.orchestrationRequestId
+      ? { orchestrationRequestId: origin.orchestrationRequestId }
+      : {}),
+    ...(origin.agentResponseId
+      ? { agentResponseId: origin.agentResponseId }
+      : {}),
+  };
 }
 
 interface SkillAuditDiagnostics {

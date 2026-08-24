@@ -1,14 +1,72 @@
 import type { FastifyInstance } from "fastify";
 
-import { ConfigurationError, loadConfig } from "../../config/environment";
+import { OllamaProvider } from "../../brain/ollama-provider";
+import {
+  ConfigurationError,
+  loadDeviceAgentConfig,
+} from "../../config/environment";
+import { AgentWorker } from "../shared/agent-worker";
+import { RedisAgentTransport } from "../shared/redis-agent-transport";
 import { createDeviceAgentApp } from "./device-agent-app";
+import { ShivaDeviceAgentPlanner } from "./device-agent-planner";
+import { createDeviceAgentTaskHandler } from "./device-agent-task-handler";
+import { DeviceCommandDispatcher } from "./device-command-dispatcher";
 
 async function start(): Promise<void> {
   let app: FastifyInstance | undefined;
 
   try {
-    const config = loadConfig();
-    app = createDeviceAgentApp(config);
+    const config = loadDeviceAgentConfig();
+    const dispatcher = new DeviceCommandDispatcher();
+    const provider = new OllamaProvider({
+      baseUrl: config.ollamaUrl,
+      model: config.model,
+      contextLength: config.contextLength,
+      keepAlive: config.keepAlive,
+      requestTimeoutMs: config.ollamaRequestTimeoutMs,
+    });
+    const planner = new ShivaDeviceAgentPlanner(provider);
+    const transport = new RedisAgentTransport({ redisUrl: config.redisUrl });
+    const worker = new AgentWorker({
+      agentId: "device-agent",
+      transport,
+      maxAttempts: config.agentMaxDeliveryAttempts,
+      reclaimIdleMs: config.agentReclaimIdleMs,
+      heartbeatTtlMs: config.agentHeartbeatTtlSeconds * 1_000,
+      heartbeatIntervalMs: Math.floor(
+        (config.agentHeartbeatTtlSeconds * 1_000) / 3,
+      ),
+      onError: (error) => {
+        app?.log.error({ err: error }, "Device agent worker failed");
+      },
+      handler: createDeviceAgentTaskHandler({
+        dispatcher,
+        planner,
+        maxSteps: config.deviceAgentMaxSteps,
+        ...(config.deviceAgentMockCallOutcome
+          ? { mockCallOutcome: config.deviceAgentMockCallOutcome }
+          : {}),
+      }),
+    });
+    app = createDeviceAgentApp(config, { dispatcher, provider, planner });
+    if (config.deviceAgentMockCallOutcome) {
+      app.log.warn(
+        { simulatedCallOutcome: config.deviceAgentMockCallOutcome },
+        "Device Agent phone-call mock mode is enabled; no calls will be placed",
+      );
+    }
+    app.addHook("onReady", async () => {
+      await transport.connect();
+      void worker.start().catch((error: unknown) => {
+        app?.log.error({ err: error }, "Device agent worker stopped");
+        process.exitCode = 1;
+        void app?.close();
+      });
+    });
+    app.addHook("preClose", async () => {
+      await worker.stop();
+      await transport.close();
+    });
     registerShutdownHandlers(app);
 
     await app.listen({ port: config.deviceAgentPort, host: config.deviceAgentHost });

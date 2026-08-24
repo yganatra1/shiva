@@ -11,6 +11,8 @@ __pycache__/
 .env
 .env.*
 !.env.example
+!.env.device-agent.example
+!.env.google-agent.example
 
 # Runtime data
 data/
