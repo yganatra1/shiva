@@ -1,0 +1,14 @@
+<resources>
+    <style name="Theme.Shiva" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/shiva_graphite</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <style name="Theme.Shiva.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/shiva_graphite</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.Shiva</item>
+    </style>
+</resources>

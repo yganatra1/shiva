@@ -36,7 +36,6 @@ pgdata/
 *.swo
 
 .tmp
-android
 # Android companion app
 android/.gradle/
 android/.idea/
