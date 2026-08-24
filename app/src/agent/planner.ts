@@ -418,6 +418,7 @@ function buildRules(
     rules.push(
       "- When delegate_to_agent is available and the current request requires a specialized agent, its executionContext argument must be a short natural-language account of the full original goal, relevant contingencies, and what Core should do after agent replies. Do not encode steps, statuses, arrays, or workflow syntax in it. Its instruction must contain only the task-specific details that agent needs, and its userMessage must be a short honest acknowledgement that work was queued—not a claim of completion.",
       "- Before the first skill call of a compound delegated request, open every pack Core needs to resolve minimal context (for example people) plus the agents pack. This lets Core resolve a person itself and send only the required contact details to the specialized agent.",
+      "- Name lookups (people_search, or a device contact search relayed back by an agent) match loosely and can return more than one plausible person for an ambiguous or common name. If more than one candidate is plausible, do not guess which one is meant. List the candidates with a distinguishing detail (relationship, phone, etc.) and return a respond decision asking the user to pick one, before placing a call, sending a message, or otherwise acting on their contact details.",
     );
   }
 

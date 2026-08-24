@@ -89,10 +89,17 @@ export class GoogleDriveClient {
     return this.withDeadline(input.signal, async (signal) => {
       const token = await this.getAccessToken(signal);
       const url = new URL("/drive/v3/files", this.apiBaseUrl);
-      const escaped = input.query.replace(/[\\']/g, (match) => `\\${match}`);
+      // Drive's `contains` only prefix-matches whole words, so "Expense 2026"
+      // wouldn't find a file named "Expense2026" (and vice versa). Splitting
+      // the query into tokens and OR-ing them widens that to a loose, casing-
+      // and spacing-insensitive match, matching either direction.
+      const tokens = looseQueryTokens(input.query);
+      const nameClauses = (tokens.length > 0 ? tokens : [input.query])
+        .map((token) => `name contains '${escapeDriveQueryLiteral(token)}'`)
+        .join(" or ");
       url.searchParams.set(
         "q",
-        `mimeType='application/vnd.google-apps.spreadsheet' and trashed=false and name contains '${escaped}'`,
+        `mimeType='application/vnd.google-apps.spreadsheet' and trashed=false and (${nameClauses})`,
       );
       url.searchParams.set("fields", "files(id,name,webViewLink,modifiedTime)");
       url.searchParams.set("orderBy", "modifiedTime desc");
@@ -254,6 +261,25 @@ function readDriveFiles(payload: unknown): readonly DriveFile[] {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+
+/**
+ * Splits a query into words, also breaking at letter/digit boundaries (so
+ * "Expense2026" tokenizes the same as "Expense 2026"), for a loose,
+ * spacing-insensitive Drive search. Each token still gets its own `contains`
+ * clause, so casing is handled by Drive's own case-insensitive matching.
+ */
+function looseQueryTokens(query: string): string[] {
+  return query
+    .split(
+      /[^\p{L}\p{N}]+|(?<=\p{L})(?=\p{N})|(?<=\p{N})(?=\p{L})/gu,
+    )
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+}
+
+function escapeDriveQueryLiteral(value: string): string {
+  return value.replace(/[\\']/g, (match) => `\\${match}`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -197,6 +197,10 @@ export class DrizzlePeopleRepository implements PeopleRepositoryPort {
     const normalizedQuery = normalizeAlias(query);
     if (!normalizedQuery) return [];
     assertLimit(limit);
+    // Spacing/casing shouldn't matter for a name lookup ("miralididi" should
+    // find "Mirali Didi" and vice versa), so also compare fully
+    // whitespace-stripped forms alongside the exact/collapsed-whitespace ones.
+    const looseQuery = normalizedQuery.replace(/\s+/g, "");
 
     const matches = await this.database
       .selectDistinct({
@@ -214,6 +218,8 @@ export class DrizzlePeopleRepository implements PeopleRepositoryPort {
             containsNormalized(people.notes, normalizedQuery),
             sql`position(${normalizedQuery} in lower(${people.details}::text)) > 0`,
             sql`position(${normalizedQuery} in ${personAliases.normalizedAlias}) > 0`,
+            sql`position(${looseQuery} in regexp_replace(lower(coalesce(${people.displayName}, '')), '\\s+', '', 'g')) > 0`,
+            sql`position(${looseQuery} in regexp_replace(${personAliases.normalizedAlias}, '\\s+', '', 'g')) > 0`,
           ),
         ),
       )

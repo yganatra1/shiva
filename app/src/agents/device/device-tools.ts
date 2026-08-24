@@ -17,7 +17,8 @@ const SELECTOR_NOTE =
 export const DEVICE_TOOLS: readonly DeviceTool[] = [
   {
     name: "device.contacts.search",
-    description: 'Search the phone\'s local contacts. Args: query (name to search for).',
+    description:
+      'Search the phone\'s local contacts, matched loosely (casing/spacing-insensitive). Args: query (name to search for). Result: count, plus up to 5 candidates as name_1/phone_1/id_1, name_2/phone_2/id_2, etc, ordered by relevance.',
   },
   {
     name: "device.phone.call",
