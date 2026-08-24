@@ -179,8 +179,7 @@ export class ShivaAgentPlanner implements AgentPlanner {
               ...messages,
               {
                 role: "user",
-                content:
-                  "Your previous decision was rejected because it was not one exact valid JSON object matching the supplied decision schema. Retry once. Return JSON only; do not add markdown or commentary.",
+                content: buildRetryCorrection(firstFailure),
               },
             ];
       this.onTrace?.(
@@ -335,6 +334,7 @@ function buildRules(
 
   rules.push(
     '- Every skill you can call is listed below under "Skill definitions available to call now." Never invent a skill name that isn\'t shown there.',
+    '- A registered skill\'s name is never itself a decision `type` — it is only ever the `skill` value inside a skill_call decision, and every one of that skill\'s own parameters belongs inside that decision\'s `arguments` object, never as sibling top-level fields. Correct shape: {"type":"skill_call","skill":"<registered_skill_name>","arguments":{...its parameters...},"authorization":"user_authorized|unrequested"}. Incorrect: {"type":"<registered_skill_name>","<parameter>":...}.',
   );
 
   if (role === "core") {
@@ -367,6 +367,7 @@ function buildRules(
   if (role === "core") {
     rules.push(
       "- When delegate_to_agent is available and the current request requires a specialized agent, its executionContext argument must be a short natural-language account of the full original goal, relevant contingencies, and what Core should do after agent replies. Do not encode steps, statuses, arrays, or workflow syntax in it. Its instruction must contain only the task-specific details that agent needs, and its userMessage must be a short honest acknowledgement that work was queued—not a claim of completion.",
+      '- delegate_to_agent is a registered skill like any other, called with its name as `skill` and its own fields nested under `arguments`, e.g. {"type":"skill_call","skill":"delegate_to_agent","arguments":{"agent":"google-agent","instruction":"...","executionContext":"...","userMessage":"..."},"authorization":"user_authorized"} — never {"type":"delegate_to_agent","agent":"...",...}.',
       "- Before the first skill call of a compound delegated request, resolve any minimal context Core needs itself (for example a person via people_search), so it can send only the required contact details to the specialized agent.",
       "- Name lookups (people_search, or a device contact search relayed back by an agent) match loosely and can return more than one plausible person for an ambiguous or common name. If more than one candidate is plausible, do not guess which one is meant. List the candidates with a distinguishing detail (relationship, phone, etc.) and return a respond decision asking the user to pick one, before placing a call, sending a message, or otherwise acting on their contact details.",
     );
@@ -483,6 +484,37 @@ function buildIterationInput(context: AgentPlanningContext): string {
   });
 }
 
+/**
+ * A generic "that wasn't valid JSON, try again" nudge repeats whatever
+ * mistake the model just made. When the rejection was a schema mismatch
+ * (not malformed JSON), naming the exact rejected paths gives the one retry
+ * a concrete target instead of a blind second guess.
+ */
+function buildRetryCorrection(firstFailure: AgentPlannerError | undefined): string {
+  const issues = zodIssuesOf(firstFailure?.cause);
+  if (!issues) {
+    return "Your previous decision was rejected because it was not one exact valid JSON object matching the supplied decision schema. Retry once. Return JSON only; do not add markdown or commentary.";
+  }
+  const detail = issues
+    .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "(root)"}: ${issue.message}`)
+    .join("; ");
+  return `Your previous decision was rejected: ${detail}. Every skill is called as one skill_call decision with the skill name in "skill" and its own parameters nested inside "arguments" — never as a top-level decision type or top-level parameter fields. Retry once with the corrected exact shape. Return JSON only; do not add markdown or commentary.`;
+}
+
+function zodIssuesOf(
+  cause: unknown,
+): ReadonlyArray<{ readonly path: readonly PropertyKey[]; readonly message: string }> | undefined {
+  if (
+    typeof cause !== "object" ||
+    cause === null ||
+    !("issues" in cause) ||
+    !Array.isArray((cause as { issues: unknown }).issues)
+  ) {
+    return undefined;
+  }
+  return (cause as { issues: ReadonlyArray<{ path: readonly PropertyKey[]; message: string }> }).issues;
+}
+
 function parseDecision(
   content: string,
   visibleSkillNames: ReadonlySet<string>,
@@ -543,9 +575,12 @@ function normalizeGroundedResponseAlias(
  * Gemma occasionally emits a registered skill name as the decision `type`
  * while otherwise providing the complete skill_call envelope. In that form,
  * `type` already identifies the skill, so it may also omit the redundant
- * `skill` field. Repair those two envelope fields only when the named skill is
- * currently visible; strict schema validation still rejects every other
- * malformed or missing field.
+ * `skill` field. It also sometimes flattens the skill's own parameters
+ * directly onto the decision object instead of nesting them under
+ * `arguments` (e.g. `{"type":"delegate_to_agent","agent":"...","instruction":"..."}`).
+ * Repair both envelope issues only when the named skill is currently
+ * visible; strict schema validation still rejects every other malformed or
+ * missing field.
  */
 function normalizeSkillCallDiscriminator(
   payload: unknown,
@@ -560,7 +595,19 @@ function normalizeSkillCallDiscriminator(
   ) {
     return payload;
   }
-  return { ...payload, type: "skill_call", skill: type };
+  const {
+    type: _type,
+    skill: _skill,
+    authorization,
+    arguments: declaredArguments,
+    ...rest
+  } = payload;
+  return {
+    type: "skill_call",
+    skill: type,
+    arguments: isRecord(declaredArguments) ? declaredArguments : rest,
+    ...(authorization !== undefined ? { authorization } : {}),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1872,6 +1872,59 @@ test("planner repairs a visible skill discriminator when the redundant skill fie
   assert.equal(providerCalls, 1);
 });
 
+test("planner folds parameters flattened onto a skill-name-as-type decision into arguments", async () => {
+  let providerCalls = 0;
+  const planner = new ShivaAgentPlanner({
+    async chat() {
+      providerCalls += 1;
+      return {
+        content: JSON.stringify({
+          type: "delegate_to_agent",
+          agent: "google-agent",
+          instruction: "Provide a summary of the 'Life of Purpose' sheet.",
+          executionContext: "The user wants a sheet summary.",
+          userMessage: "Pulling up the sheet now.",
+          authorization: "user_authorized",
+        }),
+      };
+    },
+    async *streamChat() {
+      throw new Error("Planner decisions must use structured chat().");
+    },
+  });
+
+  const decision = await planner.decide({
+    request: { ...request, userMessage: "Summarize the sheet." },
+    skills: [
+      {
+        name: "delegate_to_agent",
+        description: "Delegates a task to a specialized agent.",
+        inputDescription:
+          '{ "agent": string, "instruction": string, "executionContext": string, "userMessage": string }',
+        configured: true,
+        execution: { mutability: "write", impact: "sensitive" },
+      },
+    ],
+    observations: [],
+    step: 1,
+    maxSteps: 12,
+    now: new Date("2026-08-20T00:00:00Z"),
+  });
+
+  assert.deepEqual(decision, {
+    type: "skill_call",
+    skill: "delegate_to_agent",
+    arguments: {
+      agent: "google-agent",
+      instruction: "Provide a summary of the 'Life of Purpose' sheet.",
+      executionContext: "The user wants a sheet summary.",
+      userMessage: "Pulling up the sheet now.",
+    },
+    authorization: "user_authorized",
+  });
+  assert.equal(providerCalls, 1);
+});
+
 test("planner repairs direct_chat plus message to a grounded response after tool evidence", async () => {
   let providerCalls = 0;
   const planner = new ShivaAgentPlanner({
