@@ -46,8 +46,11 @@ export class OllamaProvider implements AIProvider {
     let thinking = "";
 
     for await (const chunk of this.streamChat(input)) {
+      if (chunk.thinking) {
+        thinking += chunk.thinking;
+        continue;
+      }
       content += chunk.content;
-      if (chunk.thinking) thinking += chunk.thinking;
     }
 
     if (content.trim().length === 0) {

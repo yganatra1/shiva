@@ -5,7 +5,9 @@ import type {
   MemoryRecord,
   MemoryRelationshipResult,
   MemoryRepositoryPort,
+  MemoryType,
   RememberInteractionInput,
+  SemanticMemoryType,
 } from "./types";
 
 const SEMANTIC_SIMILARITY_THRESHOLD = 0.72;
@@ -42,6 +44,26 @@ export interface ExplicitMemoryResult {
   readonly extractedCount: number;
 }
 
+export interface RememberFactInput {
+  readonly userId: string;
+  readonly content: string;
+  readonly memoryType: MemoryType;
+  readonly semanticType: SemanticMemoryType | null;
+  readonly importance: number;
+  readonly confidence: number;
+  readonly sourceConversationId: string | null;
+  readonly sourceMessageId: string | null;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly signal?: AbortSignal;
+}
+
+export type RememberFactOutcome = "stored" | "duplicate" | "rejected";
+
+export interface RememberFactResult {
+  readonly outcome: RememberFactOutcome;
+  readonly memory?: MemoryRecord;
+}
+
 export class MemoryService {
   constructor(
     private readonly repository: MemoryRepositoryPort,
@@ -64,6 +86,68 @@ export class MemoryService {
     input: RememberInteractionInput,
   ): Promise<ExplicitMemoryResult> {
     return this.processInteraction(input, true);
+  }
+
+  /**
+   * Persists a single caller-supplied fact directly, bypassing extraction.
+   * Used by the memory_remember skill, where the content is already the
+   * atomic statement to store rather than raw conversation text to mine.
+   */
+  async rememberFact(input: RememberFactInput): Promise<RememberFactResult> {
+    if (containsSecret(input.content)) {
+      return { outcome: "rejected" };
+    }
+
+    const embedding = await this.embeddingProvider.embed(
+      input.signal
+        ? { text: input.content, signal: input.signal }
+        : { text: input.content },
+    );
+    const candidate: ExtractedMemory = {
+      memoryType: input.memoryType,
+      semanticType: input.semanticType,
+      content: input.content,
+      importance: input.importance,
+      confidence: input.confidence,
+      occurredAt: null,
+      validFrom: null,
+      validUntil: null,
+      metadata: input.metadata ?? {},
+    };
+    const reconciliation =
+      candidate.memoryType === "semantic" && candidate.semanticType
+        ? await this.reconcileSemanticMemory(
+            input.userId,
+            candidate,
+            embedding,
+            input.signal,
+          )
+        : undefined;
+
+    if (reconciliation === "duplicate") {
+      return { outcome: "duplicate" };
+    }
+
+    const memory = await this.repository.saveMemory(
+      {
+        userId: input.userId,
+        memoryType: candidate.memoryType,
+        semanticType: candidate.semanticType,
+        content: candidate.content,
+        importance: candidate.importance,
+        confidence: candidate.confidence,
+        occurredAt: candidate.occurredAt,
+        validFrom: candidate.validFrom,
+        validUntil: candidate.validUntil,
+        sourceConversationId: input.sourceConversationId,
+        sourceMessageId: input.sourceMessageId,
+        embedding,
+        metadata: candidate.metadata,
+      },
+      reconciliation,
+    );
+
+    return { outcome: "stored", memory };
   }
 
   private async processInteraction(

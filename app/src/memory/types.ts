@@ -86,8 +86,8 @@ export interface NewMemoryInput {
   readonly occurredAt: Date | null;
   readonly validFrom: Date | null;
   readonly validUntil: Date | null;
-  readonly sourceConversationId: string;
-  readonly sourceMessageId: string;
+  readonly sourceConversationId: string | null;
+  readonly sourceMessageId: string | null;
   readonly embedding: readonly number[];
   readonly metadata: Readonly<Record<string, unknown>>;
 }
@@ -190,6 +190,8 @@ export interface MemoryRepositoryPort {
     supersedesIds?: readonly string[],
   ): Promise<MemoryRecord>;
   touchMemories(memoryIds: readonly string[]): Promise<void>;
+  /** Soft-deletes an active memory. Returns false if it was already inactive or not found. */
+  archiveMemory(userId: string, memoryId: string): Promise<boolean>;
 }
 
 export interface RelevantMemoryContext {

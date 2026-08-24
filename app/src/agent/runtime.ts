@@ -3,8 +3,10 @@ import { AgentRegistry } from "../agents/agent-registry";
 import { DrizzleOrchestrationRepository } from "../agents/orchestration-repository";
 import { RedisAgentTransport } from "../agents/shared/redis-agent-transport";
 import type { AIProvider } from "../brain/ai-provider";
+import type { EmbeddingProvider } from "../brain/embedding-provider";
 import type { AppConfig } from "../config/environment";
 import type { ShivaDatabase } from "../database/pool";
+import type { MemoryService } from "../memory/memory-service";
 import type { MemoryRepositoryPort } from "../memory/types";
 import { CoreAgentResponseProcessor } from "../core/agent-response-processor";
 import { AgentReliabilitySupervisor } from "../core/agent-reliability-supervisor";
@@ -28,6 +30,7 @@ import { SkillExecutor } from "../skills/executor";
 import { registerExecutionControlSkills } from "../skills/execution-control/register";
 import { registerAgentSkills } from "../skills/agents/register";
 import { registerCoreSkills } from "../skills/core/register";
+import { registerMemorySkills } from "../skills/memory/register";
 import { registerSystemSkills } from "../skills/system/register";
 import { registerPeopleSkills } from "../skills/people/register";
 import { registerWebSkills } from "../skills/web/register";
@@ -49,8 +52,10 @@ export interface AgentRuntime {
 export function createAgentRuntime(
   database: ShivaDatabase,
   provider: AIProvider,
+  embeddingProvider: EmbeddingProvider,
   config: AppConfig,
-  conversationRepository: Pick<MemoryRepositoryPort, "getRecentMessages">,
+  repository: MemoryRepositoryPort,
+  memoryService: MemoryService,
   updates: CoreUpdatePublisher,
   onAuditError: (error: unknown) => void = () => {},
   onTrace?: AgentTraceLogger,
@@ -86,6 +91,7 @@ export function createAgentRuntime(
   // coordinates it through delegate_to_agent.
   registerPeopleSkills(registry, new DrizzlePeopleRepository(database));
   registerWebSkills(registry, config);
+  registerMemorySkills(registry, repository, embeddingProvider, memoryService);
   const agentRegistry = new AgentRegistry();
   agentRegistry.register({
     id: "device-agent",
@@ -167,7 +173,7 @@ export function createAgentRuntime(
   const responseProcessor = new CoreAgentResponseProcessor({
     transport,
     repository: orchestrationRepository,
-    conversationRepository,
+    conversationRepository: repository,
     orchestrator,
     updates,
     userName: config.userName,

@@ -370,6 +370,21 @@ export class MemoryRepository implements MemoryRepositoryPort {
       })
       .where(inArray(memories.id, [...memoryIds]));
   }
+
+  async archiveMemory(userId: string, memoryId: string): Promise<boolean> {
+    const archived = await this.db
+      .update(memories)
+      .set({ status: "archived", updatedAt: new Date() })
+      .where(
+        and(
+          eq(memories.id, memoryId),
+          eq(memories.userId, userId),
+          eq(memories.status, "active"),
+        ),
+      )
+      .returning({ id: memories.id });
+    return archived.length > 0;
+  }
 }
 
 function validatedEmbedding(embedding: readonly number[]): number[] {

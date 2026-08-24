@@ -345,6 +345,20 @@ export class InMemoryRepository implements MemoryRepositoryPort {
     this.touchedMemoryIds.push(...memoryIds);
   }
 
+  async archiveMemory(userId: string, memoryId: string): Promise<boolean> {
+    const index = this.memories.findIndex(
+      (memory) =>
+        memory.id === memoryId &&
+        memory.userId === userId &&
+        memory.status === "active",
+    );
+    if (index < 0) return false;
+    const existing = this.memories[index];
+    if (!existing) return false;
+    this.memories[index] = { ...existing, status: "archived" };
+    return true;
+  }
+
   private nextUuid(): string {
     const suffix = String(this.sequence++).padStart(12, "0");
     return `00000000-0000-4000-8000-${suffix}`;

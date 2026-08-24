@@ -200,8 +200,10 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     ? createAgentRuntime(
         database.db,
         provider,
+        embeddingProvider,
         config,
         repository,
+        memoryService,
         coreUpdateHub,
         (error) => {
           app.log.error({ err: error }, "Agent audit finalization failed");
