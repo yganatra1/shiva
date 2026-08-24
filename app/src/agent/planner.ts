@@ -517,9 +517,10 @@ function parseDecision(
       visibleSkillNames,
     ),
   );
+  console.log('PARSED', parsed);
   if (!parsed.success) {
     throw new AgentPlannerError(
-      "The planner returned a decision with an invalid shape.",
+      "The planner returned a decision with an invalid shape." + JSON.stringify(parsed),
     );
   }
   return parsed.data;
