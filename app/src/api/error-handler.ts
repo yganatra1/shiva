@@ -37,6 +37,11 @@ export function registerErrorHandling(app: FastifyInstance): void {
           apiErrorCode: publicError.code,
           providerFailure:
             error instanceof AIProviderError ? error.failure : undefined,
+          // Safe to log unlike the generic error message (see
+          // safeErrorLogMetadata's doc comment): this is only ever Ollama's
+          // own local server response text, never DB/face-derived content.
+          providerMessage:
+            error instanceof AIProviderError ? error.message : undefined,
         },
         "Request failed",
       );

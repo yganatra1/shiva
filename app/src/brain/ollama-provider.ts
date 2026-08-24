@@ -122,10 +122,10 @@ export class OllamaProvider implements AIProvider {
       }
 
       if (!response.ok) {
-        await discardResponseBody(response);
+        const detail = await readErrorBody(response);
         throw new AIProviderError(
           "UPSTREAM_ERROR",
-          `Ollama returned HTTP status ${response.status}.`,
+          `Ollama returned HTTP status ${response.status}.${detail ? ` ${detail}` : ""}`,
         );
       }
 
@@ -281,5 +281,20 @@ async function discardResponseBody(response: Response): Promise<void> {
     await response.body?.cancel();
   } catch {
     // The original non-success status is the actionable provider failure.
+  }
+}
+
+const MAX_ERROR_BODY_CHARS = 500;
+
+/** Best-effort capture of Ollama's own error text (e.g. an unsupported option) for diagnosis. */
+async function readErrorBody(response: Response): Promise<string | undefined> {
+  try {
+    const text = (await response.text()).trim();
+    if (!text) return undefined;
+    return text.length > MAX_ERROR_BODY_CHARS
+      ? `${text.slice(0, MAX_ERROR_BODY_CHARS)}...`
+      : text;
+  } catch {
+    return undefined;
   }
 }

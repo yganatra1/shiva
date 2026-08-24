@@ -53,7 +53,7 @@ test("the provider streams NDJSON chunks and chat() collects them", async (conte
   ]);
   for (const requestBody of requestBodies) {
     assert.equal(isRecord(requestBody) && requestBody.stream, true);
-    assert.equal(isRecord(requestBody) && requestBody.think, false);
+    assert.equal(isRecord(requestBody) && requestBody.think, true);
   }
 });
 
