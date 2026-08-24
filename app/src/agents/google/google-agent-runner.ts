@@ -7,7 +7,6 @@ import {
 } from "../../config/environment";
 import { SkillExecutor } from "../../skills/executor";
 import { registerGoogleSkills } from "../../skills/google/register";
-import { createPackRegistry } from "../../skills/packs";
 import { SkillRegistry } from "../../skills/registry";
 import { AgentWorker } from "../shared/agent-worker";
 import { RedisAgentTransport } from "../shared/redis-agent-transport";
@@ -26,7 +25,7 @@ async function start(): Promise<void> {
       keepAlive: config.keepAlive,
       requestTimeoutMs: config.ollamaRequestTimeoutMs,
     });
-    const registry = new SkillRegistry(createPackRegistry());
+    const registry = new SkillRegistry();
     registerGoogleSkills(registry, config);
     const reportError = (error: unknown): void => {
       console.error("Google Agent error", error);

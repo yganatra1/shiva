@@ -84,7 +84,6 @@ test("skill failure codes are sanitized before audit persistence without changin
     description: "Returns a malformed provider error code fixture.",
     inputDescription: "{}",
     inputSchema: z.object({}).strict(),
-    pack: "test",
     execution: { mutability: "read", impact: "normal" },
     async execute() {
       return {
@@ -122,7 +121,6 @@ test("confirmation reasons are sanitized before persistence and user-visible sta
     description: "Requests one sensitive fixture action.",
     inputDescription: "{}",
     inputSchema: z.object({}).strict(),
-    pack: "test",
     execution: {
       mutability: "write",
       impact: "sensitive",

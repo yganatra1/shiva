@@ -49,7 +49,6 @@ export function createSheetsCreateSkill(client?: GoogleSheetsClient) {
       'Creates a brand-new Google Sheet. The only thing that ever matters is getting something created — every field is optional and defaulted, so the simplest valid call is just {"title":"My Sheet"}. Optionally add tabs (one per month, etc.), each with a name, headers, starting rows, and dropdown-restricted columns (columnOptions: header -> allowed values). If you are not confident about headers/rows/columnOptions, leave them out and call sheets_update afterward to add them — that two-step path is more reliable than trying to get the full nested shape right in one call. Applies a bold colored header row automatically when headers are given.',
     inputDescription:
       '{ "title"?: string, "tabs"?: [{ "name"?: string, "headers"?: string[], "rows"?: (string|number|boolean|null)[][], "columnOptions"?: { [header]: string[] } }] } — everything is optional',
-    pack: "google",
     inputSchema,
     execution: { mutability: "write", impact: "normal" },
     configured: client !== undefined,

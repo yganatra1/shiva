@@ -120,7 +120,6 @@ export function createDelegateToAgentSkill(
       `Durably queues one minimal natural-language instruction for a specialized agent process. The agent replies later in plain text; Shiva Core keeps the conversation and uses its saved natural-language execution context to decide what happens next. Available agents:\n${catalog || "  (none registered)"}\nResolve personal memory, people/contact details, permissions, and cross-agent coordination in Core. Send the chosen agent only the details its narrow task requires.${hasDeviceAgent ? " Every Android-phone task, including single-step contact searches, belongs to the registered device agent." : ""}`,
     inputDescription:
       `{ "agent": ${agentIds.map((id) => `"${id}"`).join(" | ") || "string"}, "instruction": string (minimal self-contained task for that agent), "executionContext": string (required on the first delegation: a short natural-language account of the full original request and contingencies; never a flow array or status syntax), "userMessage": string (short acknowledgement to show the user while the task runs) }`,
-    pack: "agents",
     inputSchema,
     execution: {
       mutability: "write",

@@ -15,7 +15,6 @@ import { createDeviceCameraCaptureSkill } from "../src/skills/device-camera-capt
 import { createDeviceContactsSearchSkill } from "../src/skills/device-contacts-search/skill.js";
 import { createDeviceNotificationsListSkill } from "../src/skills/device-notifications-list/skill.js";
 import { createDeviceNotificationsReadSkill } from "../src/skills/device-notifications-read/skill.js";
-import { PackRegistry } from "../src/skills/pack-registry.js";
 import { SkillRegistry } from "../src/skills/registry.js";
 import type { SkillContext } from "../src/skills/types.js";
 
@@ -68,13 +67,11 @@ class FakeDeviceDispatcher implements DeviceDispatcher {
   }
 }
 
-function registryWithDevicePack(
+function registryWithDeviceSkills(
   dispatcher?: DeviceDispatcher,
   provider?: AIProvider,
 ): SkillRegistry {
-  const packs = new PackRegistry();
-  packs.register({ name: "device", description: "Android device." });
-  const registry = new SkillRegistry(packs);
+  const registry = new SkillRegistry();
   registry.register(createDeviceContactsSearchSkill(dispatcher));
   registry.register(createDeviceCallSkill(dispatcher));
   registry.register(createDeviceNotificationsListSkill(dispatcher));
@@ -106,7 +103,7 @@ test("device_contacts_search dispatches and returns whatever the phone reports",
     status: "COMPLETED",
     result: { name: "Charmi", phone: "+911234567890" },
   });
-  const registry = registryWithDevicePack(dispatcher);
+  const registry = registryWithDeviceSkills(dispatcher);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   const result = await executor.execute(
@@ -124,7 +121,6 @@ test("device_contacts_search dispatches and returns whatever the phone reports",
     { type: "device.contacts.search", arguments: { query: "Charmi" } },
   ]);
   const summary = registry.list().find((skill) => skill.name === "device_contacts_search");
-  assert.equal(summary?.pack, "device");
   assert.equal(summary?.configured, true);
   assert.deepEqual(summary?.execution, { mutability: "read", impact: "normal" });
 });
@@ -136,7 +132,7 @@ test("device_call sends direct as a string and maps a non-COMPLETED status to fa
     status: "DENIED",
     error: "User declined the call permission.",
   });
-  const registry = registryWithDevicePack(dispatcher);
+  const registry = registryWithDeviceSkills(dispatcher);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   const result = await executor.execute(
@@ -163,7 +159,7 @@ test("device_call sends direct as a string and maps a non-COMPLETED status to fa
 
 test("both device skills fail closed with DEVICE_NOT_CONNECTED when nothing is connected", async () => {
   const dispatcher = new FakeDeviceDispatcher();
-  const registry = registryWithDevicePack(dispatcher);
+  const registry = registryWithDeviceSkills(dispatcher);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   const result = await executor.execute(
@@ -180,22 +176,16 @@ test("both device skills fail closed with DEVICE_NOT_CONNECTED when nothing is c
 });
 
 test("every device skill reports configured=true even with no dispatcher (registered, unavailable)", () => {
-  const registry = registryWithDevicePack(undefined);
+  const registry = registryWithDeviceSkills(undefined);
   for (const name of DEVICE_SKILL_NAMES) {
     const summary = registry.list().find((skill) => skill.name === name);
     assert.equal(summary?.configured, true, name);
   }
 });
 
-test("the device pack groups all five skills", () => {
-  const registry = registryWithDevicePack(new FakeDeviceDispatcher());
-  const pack = registry.listPacks().find((entry) => entry.name === "device");
-  assert.equal(pack?.skillCount, 5);
-});
-
 test("device_notifications_list and device_notifications_read pass through whatever the phone reports", async () => {
   const dispatcher = new FakeDeviceDispatcher();
-  const registry = registryWithDevicePack(dispatcher);
+  const registry = registryWithDeviceSkills(dispatcher);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   dispatcher.respondWith({
@@ -243,7 +233,7 @@ test("device_camera_capture finds the image field, calls the model to describe i
     result: { imageBase64: "ZmFrZS1qcGVnLWJ5dGVz", mimeType: "image/jpeg" },
   });
   const provider = new FakeVisionProvider();
-  const registry = registryWithDevicePack(dispatcher, provider);
+  const registry = registryWithDeviceSkills(dispatcher, provider);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   const result = await executor.execute("device_camera_capture", {}, context, {
@@ -270,7 +260,7 @@ test("device_camera_capture reports the seen field names when it can't recognize
     result: { someUnexpectedField: "x" },
   });
   const provider = new FakeVisionProvider();
-  const registry = registryWithDevicePack(dispatcher, provider);
+  const registry = registryWithDeviceSkills(dispatcher, provider);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   const result = await executor.execute("device_camera_capture", {}, context, {
@@ -293,7 +283,7 @@ test("device_camera_capture still reports success with a note when the model can
   });
   const provider = new FakeVisionProvider();
   provider.failure = new Error("model does not support vision");
-  const registry = registryWithDevicePack(dispatcher, provider);
+  const registry = registryWithDeviceSkills(dispatcher, provider);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   const result = await executor.execute("device_camera_capture", {}, context, {

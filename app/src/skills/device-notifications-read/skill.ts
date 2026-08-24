@@ -25,7 +25,6 @@ export function createDeviceNotificationsReadSkill(
     description:
       "Reads the full content of one notification on the connected phone, identified by the key returned from device_notifications_list. Requires the phone to be connected right now.",
     inputDescription: '{ "key": string (from device_notifications_list) }',
-    pack: "device",
     inputSchema,
     execution: { mutability: "read", impact: "normal" },
     configured: true,

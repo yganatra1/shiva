@@ -17,7 +17,6 @@ export function createPeopleSearchSkill(repository: PeopleRepositoryPort) {
       "Looks up people Shiva has been explicitly taught, including aliases, relationship, structured details, notes, and face-enrollment readiness. Use this for durable person facts; it does not run face recognition.",
     inputDescription:
       '{"query":"optional name, alias, relationship, or detail text","limit":1..25}',
-    pack: "people",
     inputSchema,
     execution: { mutability: "read", impact: "normal" },
     configured: true,

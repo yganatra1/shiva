@@ -3,7 +3,6 @@ import { test } from "node:test";
 
 import { ExecutionPolicyEngine } from "../src/security/policy-engine.js";
 import { SkillExecutor } from "../src/skills/executor.js";
-import { PackRegistry } from "../src/skills/pack-registry.js";
 import { SkillRegistry } from "../src/skills/registry.js";
 import { createSheetsAddTabSkill } from "../src/skills/sheets-add-tab/skill.js";
 import { createSheetsCreateSkill } from "../src/skills/sheets-create/skill.js";
@@ -116,13 +115,11 @@ class FakeDriveClient extends GoogleDriveClient {
   }
 }
 
-function registryWithGooglePack(
+function registryWithGoogleSkills(
   sheetsClient?: GoogleSheetsClient,
   driveClient?: GoogleDriveClient,
 ): SkillRegistry {
-  const packs = new PackRegistry();
-  packs.register({ name: "google", description: "Google Sheets." });
-  const registry = new SkillRegistry(packs);
+  const registry = new SkillRegistry();
   registry.register(createSheetsCreateSkill(sheetsClient));
   registry.register(createSheetsReadSkill(sheetsClient));
   registry.register(createSheetsUpdateSkill(sheetsClient));
@@ -131,9 +128,9 @@ function registryWithGooglePack(
   return registry;
 }
 
-test("sheets_create builds a multi-tab spreadsheet and reports it as configured, pack google, normal write", async () => {
+test("sheets_create builds a multi-tab spreadsheet and reports it as configured, normal write", async () => {
   const client = new FakeSheetsClient();
-  const registry = registryWithGooglePack(client, new FakeDriveClient());
+  const registry = registryWithGoogleSkills(client, new FakeDriveClient());
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   const result = await executor.execute(
@@ -156,14 +153,13 @@ test("sheets_create builds a multi-tab spreadsheet and reports it as configured,
   assert.deepEqual(result, { success: true, data: client.createResult });
   assert.equal(client.created.length, 1);
   const summary = registry.list().find((skill) => skill.name === "sheets_create");
-  assert.equal(summary?.pack, "google");
   assert.equal(summary?.configured, true);
   assert.deepEqual(summary?.execution, { mutability: "write", impact: "normal" });
 });
 
 test("sheets_create defaults everything and never fails on unrecognized or malformed structure", async () => {
   const client = new FakeSheetsClient();
-  const registry = registryWithGooglePack(client, new FakeDriveClient());
+  const registry = registryWithGoogleSkills(client, new FakeDriveClient());
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   // No title, no tabs at all: the simplest possible call a struggling model
@@ -211,7 +207,7 @@ test("sheets_create defaults everything and never fails on unrecognized or malfo
 
 test("sheets_read, sheets_update, and sheets_add_tab reach the client and return its result", async () => {
   const client = new FakeSheetsClient();
-  const registry = registryWithGooglePack(client, new FakeDriveClient());
+  const registry = registryWithGoogleSkills(client, new FakeDriveClient());
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   const read = await executor.execute(
@@ -324,7 +320,7 @@ test("sheets_read, sheets_update, and sheets_add_tab reach the client and return
 
 test("sheets_add_tab defaults name and drops columnOptions with no matching header", async () => {
   const client = new FakeSheetsClient();
-  const registry = registryWithGooglePack(client, new FakeDriveClient());
+  const registry = registryWithGoogleSkills(client, new FakeDriveClient());
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   const result = await executor.execute(
@@ -343,7 +339,7 @@ test("sheets_add_tab defaults name and drops columnOptions with no matching head
 
 test("sheets_find searches Drive and returns ranked matches", async () => {
   const driveClient = new FakeDriveClient();
-  const registry = registryWithGooglePack(new FakeSheetsClient(), driveClient);
+  const registry = registryWithGoogleSkills(new FakeSheetsClient(), driveClient);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   const result = await executor.execute(
@@ -360,7 +356,7 @@ test("sheets_find searches Drive and returns ranked matches", async () => {
 });
 
 test("all sheets skills report unavailable and configured=false when their client isn't set up", async () => {
-  const registry = registryWithGooglePack(undefined, undefined);
+  const registry = registryWithGoogleSkills(undefined, undefined);
   const executor = new SkillExecutor(registry, new ExecutionPolicyEngine());
 
   for (const skill of [
@@ -397,10 +393,18 @@ test("all sheets skills report unavailable and configured=false when their clien
   }
 });
 
-test("the google pack groups all five sheets skills", () => {
-  const registry = registryWithGooglePack(new FakeSheetsClient(), new FakeDriveClient());
-  const packs = registry.listPacks();
-  const google = packs.find((pack) => pack.name === "google");
-  assert.equal(google?.skillCount, 5);
-  assert.equal(google?.configured, true);
+test("the registry lists all five sheets skills as configured", () => {
+  const registry = registryWithGoogleSkills(new FakeSheetsClient(), new FakeDriveClient());
+  const names = registry.list().map((skill) => skill.name);
+  assert.deepEqual(
+    [...names].sort(),
+    [
+      "sheets_add_tab",
+      "sheets_create",
+      "sheets_find",
+      "sheets_read",
+      "sheets_update",
+    ].sort(),
+  );
+  assert.ok(registry.list().every((skill) => skill.configured));
 });

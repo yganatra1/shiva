@@ -1,5 +1,5 @@
 import type { ChatMessage } from "../brain/ai-provider";
-import type { PackSummary, SkillResult, SkillSummary } from "../skills/types";
+import type { SkillResult, SkillSummary } from "../skills/types";
 
 export type AgentDecision =
   | {
@@ -13,23 +13,13 @@ export type AgentDecision =
       readonly message: string;
     }
   | {
-      /**
-       * Prompting-only narrowing step, never a security boundary: reveals the
-       * full definitions of the skills inside one or more packs without yet
-       * committing to a specific skill_call. Additive across repeated calls
-       * (see agent-loop.ts); only valid before the run's skill scope freezes.
-       */
-      readonly type: "open_packs";
-      readonly packs: readonly string[];
-    }
-  | {
       readonly type: "respond";
       readonly message: string;
     }
   | {
       readonly type: "skill_call";
       readonly skill: string;
-      /** Skills the current plan relies on; pack scope remains authoritative. */
+      /** Skills the current plan relies on; the registered skill set remains authoritative. */
       readonly selectedSkills: readonly string[];
       readonly arguments: Readonly<Record<string, unknown>>;
       /** Planner interpretation only; runtime metadata remains authoritative. */
@@ -84,19 +74,7 @@ export interface AgentRequest {
 
 export interface AgentPlanningContext {
   readonly request: AgentRequest;
-  /**
-   * Complete pack catalog (Level 1), always present regardless of scope
-   * state. Cheap enough (~15-25 short entries) to show on every planner call
-   * so the model never has to guess at a pack it can't see.
-   */
-  readonly packs: readonly PackSummary[];
-  /** Packs already opened this run via open_packs, for the prompt display only. */
-  readonly openPacks: readonly string[];
-  /**
-   * Full skill definitions (Level 2/3): empty until at least one pack is
-   * opened or the scope is frozen, then narrowed to the opened packs' or
-   * frozen scope's skills — never the complete registry on an unscoped turn.
-   */
+  /** Every skill this run may call — the full registry, or the request's fixed scope. */
   readonly skills: readonly SkillSummary[];
   readonly observations: readonly AgentObservation[];
   readonly step: number;

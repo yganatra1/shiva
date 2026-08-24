@@ -31,7 +31,6 @@ import { registerCoreSkills } from "../skills/core/register";
 import { registerSystemSkills } from "../skills/system/register";
 import { registerPeopleSkills } from "../skills/people/register";
 import { registerWebSkills } from "../skills/web/register";
-import { createPackRegistry } from "../skills/packs";
 import { SkillRegistry } from "../skills/registry";
 import { AgentLoop } from "./agent-loop";
 import { AgentAuditRepository } from "./audit";
@@ -57,11 +56,9 @@ export function createAgentRuntime(
   onTrace?: AgentTraceLogger,
 ): AgentRuntime {
   // Google tools and their OAuth credentials live only in google-agent. Core
-  // advertises that worker through the agents pack and never executes an
+  // advertises that worker through delegate_to_agent and never executes an
   // account operation in-process.
-  const registry = new SkillRegistry(
-    createPackRegistry({ includeGoogle: false }),
-  );
+  const registry = new SkillRegistry();
   const executionState = new ExecutionStateService(
     new DrizzleExecutionStateStore(database),
     config.maxExecutionMode,

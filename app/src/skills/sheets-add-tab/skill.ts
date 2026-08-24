@@ -36,7 +36,6 @@ export function createSheetsAddTabSkill(client?: GoogleSheetsClient) {
       'Adds a new tab to an existing Google Sheet (found via sheets_find or a previously known spreadsheetId). Only spreadsheetId is truly required — name/headers/rows/columnOptions are optional and defaulted, so if you are not confident about the full shape, add a bare tab first ({"spreadsheetId":"..."}) and populate it with a follow-up sheets_update. Use this for e.g. adding next month\'s tab to an existing tracker rather than creating a whole new spreadsheet.',
     inputDescription:
       '{ "spreadsheetId": string, "name"?: string, "headers"?: string[], "rows"?: (string|number|boolean|null)[][], "columnOptions"?: { [header]: string[] } }',
-    pack: "google",
     inputSchema,
     execution: { mutability: "write", impact: "normal" },
     configured: client !== undefined,

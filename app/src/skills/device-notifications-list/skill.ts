@@ -23,7 +23,6 @@ export function createDeviceNotificationsListSkill(
     description:
       "Lists recent notifications on the connected phone through the Android companion app. Returns whatever notification fields the device reports (each one likely has a key you can pass to device_notifications_read for the full content). Requires the phone to be connected right now.",
     inputDescription: "{}",
-    pack: "device",
     inputSchema,
     execution: { mutability: "read", impact: "normal" },
     configured: true,

@@ -24,7 +24,6 @@ export function createSheetsFindSkill(client?: GoogleDriveClient) {
     description:
       "Searches the user's Google Drive by name for spreadsheets matching a query (e.g. \"expenses 2026\"), returning each match's spreadsheetId, name, URL, and last-modified time, most recently modified first. Use this before sheets_read/sheets_update/sheets_add_tab when you don't already know a sheet's exact spreadsheetId — never guess one.",
     inputDescription: '{ "query": string, "maxResults"?: 1-25 (default 10) }',
-    pack: "google",
     inputSchema,
     execution: { mutability: "read", impact: "normal" },
     configured: client !== undefined,

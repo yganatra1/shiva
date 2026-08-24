@@ -31,7 +31,6 @@ export class GetExecutionModeSkill
     "Reads Shiva's stored, configured maximum, and effective execution modes plus lockdown state.";
   readonly inputDescription = "{}";
   readonly inputSchema: z.ZodType<EmptyInput> = emptyInputSchema;
-  readonly pack = "execution_control";
   readonly execution = { mutability: "read", impact: "normal" } as const;
   readonly configured = true;
 
@@ -50,7 +49,6 @@ export class SetExecutionModeSkill
     "Changes Shiva's durable execution mode. Lowering authority is immediate; raising it is confirmed by the runtime and the host ceiling cannot be exceeded.";
   readonly inputDescription = '{ "mode": "SAFE|AUTO|FULL_ACCESS" }';
   readonly inputSchema: z.ZodType<SetModeInput> = setModeInputSchema;
-  readonly pack = "execution_control";
   readonly execution = {
     mutability: "write",
     impact: "normal",
@@ -85,7 +83,6 @@ export class SetLockdownSkill
   readonly inputDescription =
     '{ "enabled": true } or { "enabled": false, "executionMode"?: "SAFE|AUTO|FULL_ACCESS" }';
   readonly inputSchema: z.ZodType<LockdownInput> = lockdownInputSchema;
-  readonly pack = "execution_control";
   readonly execution = {
     mutability: "write",
     impact: "normal",

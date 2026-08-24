@@ -34,7 +34,6 @@ export function createSheetsUpdateSkill(client?: GoogleSheetsClient) {
       "Writes values into an existing Google Sheet at the given spreadsheetId + A1-notation range. mode is required: mode=\"update\" overwrites exactly the requested cells (use this for edits or backfills such as C2:C6); mode=\"append\" adds complete new rows to the logical table, and Google may begin the result at that table's first column, so anchor the range to the whole table rather than a bounded existing column. Before writing, use sheets_read in the same run to discover the exact tab name and inspect its live header/current structure, then align the values and write to that exact tab; never guess Sheet1 unless it was returned, unless sheets_create just returned that structure in this run.",
     inputDescription:
       '{ "spreadsheetId": string, "range": "A1 notation", "values": (string|number|boolean|null)[][], "mode": "update"|"append" (required; update writes the exact range, append adds complete rows to a table) }',
-    pack: "google",
     inputSchema,
     execution: { mutability: "write", impact: "normal" },
     configured: client !== undefined,

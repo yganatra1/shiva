@@ -33,7 +33,6 @@ export function createSheetsReadSkill(client?: GoogleSheetsClient) {
       "Inspects an existing Google Sheet. When its tab names are unknown, call with only spreadsheetId to list the exact tabs first; never guess a tab such as Sheet1. Then call again with spreadsheetId + an A1-notation range using an exact returned tab name (e.g. 'August 2026'!A1:F50) to read its live headers and values before updating it.",
     inputDescription:
       '{ "spreadsheetId": string, "range"?: "A1 notation using an exact known tab name; omit to list tabs" }',
-    pack: "google",
     inputSchema,
     execution: { mutability: "read", impact: "normal" },
     configured: client !== undefined,

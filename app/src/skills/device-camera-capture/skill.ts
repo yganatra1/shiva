@@ -56,7 +56,6 @@ export function createDeviceCameraCaptureSkill(
     description:
       "Takes a photo through the connected phone's camera, describes it, and locally recognizes any enrolled people. Requires the phone to be connected right now.",
     inputDescription: "{}",
-    pack: "device",
     inputSchema,
     execution: { mutability: "read", impact: "normal" },
     configured: true,

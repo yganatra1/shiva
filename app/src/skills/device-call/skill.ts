@@ -28,7 +28,6 @@ export function createDeviceCallSkill(dispatcher?: DeviceDispatcher) {
       "Calls a phone number through the connected Android companion app. With direct=true it starts the call immediately; with direct=false (default) it only opens the phone's dialer pre-filled with the number, without actually calling. Requires the phone to be connected right now.",
     inputDescription:
       '{ "number": string, "direct"?: boolean (default false; true actually places the call) }',
-    pack: "device",
     inputSchema,
     execution: { mutability: "write", impact: "normal" },
     configured: true,

@@ -27,7 +27,6 @@ export function createDeviceContactsSearchSkill(
     description:
       "Searches the phone's local contacts by name via the connected Android companion app and returns whatever contact fields the device reports (name, phone, etc.). Requires the phone to be connected right now.",
     inputDescription: '{ "query": string (name to search for) }',
-    pack: "device",
     inputSchema,
     execution: { mutability: "read", impact: "normal" },
     configured: true,

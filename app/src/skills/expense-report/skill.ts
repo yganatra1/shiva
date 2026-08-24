@@ -33,7 +33,6 @@ export class ExpenseReportSkill
     '{ "from"?: inclusive RFC3339 timestamp, "until"?: exclusive RFC3339 timestamp, "limit"?: number of detail rows, 1-25 }';
   readonly inputSchema: z.ZodType<ExpenseReportInput> =
     expenseReportInputSchema;
-  readonly pack = "finance";
   readonly execution = { mutability: "read", impact: "normal" } as const;
   readonly configured: boolean;
 
