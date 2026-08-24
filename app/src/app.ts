@@ -7,6 +7,7 @@ import {
   registerChatRoute,
   registerVoiceChatDiagnosticRoute,
 } from "./api/chat-route";
+import { registerConversationsRoutes } from "./api/conversations-route";
 import { registerErrorHandling } from "./api/error-handler";
 import { registerExecutionSettingsRoute } from "./api/execution-settings-route";
 import { registerDeviceSocketRelayRoute } from "./api/device-socket-relay-route";
@@ -263,6 +264,10 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
   };
   registerChatRoute(app, chatService, chatRouteOptions);
   registerVoiceChatDiagnosticRoute(app, chatService, chatRouteOptions);
+  registerConversationsRoutes(app, {
+    repository,
+    userId: config.userId,
+  });
   registerVoiceRoutes(app, { asrProvider, ttsProvider });
   if (peopleRepository && faceRecognition) {
     registerPeopleRoutes(app, {

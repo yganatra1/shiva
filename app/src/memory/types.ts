@@ -18,9 +18,24 @@ export type MemoryRelationship =
 export interface Conversation {
   readonly id: string;
   readonly userId: string;
+  readonly title: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
   readonly lastMessageAt: Date;
+}
+
+export interface ConversationSummary extends Conversation {
+  readonly messageCount: number;
+}
+
+export interface ConversationCursor {
+  readonly lastMessageAt: Date;
+  readonly id: string;
+}
+
+export interface MessageCursor {
+  readonly createdAt: Date;
+  readonly id: string;
 }
 
 export interface StoredMessage {
@@ -126,6 +141,28 @@ export interface MemoryRepositoryPort {
     userId: string,
     conversationId?: string,
   ): Promise<Conversation>;
+  listConversations(
+    userId: string,
+    limit: number,
+    before?: ConversationCursor,
+  ): Promise<readonly ConversationSummary[]>;
+  listConversationMessages(
+    userId: string,
+    conversationId: string,
+    limit: number,
+    before?: MessageCursor,
+  ): Promise<readonly StoredMessage[]>;
+  updateConversationTitle(
+    userId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<Conversation | null>;
+  setConversationTitleIfEmpty(
+    userId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<void>;
+  deleteConversation(userId: string, conversationId: string): Promise<boolean>;
   addMessage(
     conversationId: string,
     role: StoredMessageRole,

@@ -5,6 +5,8 @@ import type { AppConfig } from "../src/config/environment.js";
 import { ConversationNotFoundError } from "../src/memory/memory-repository.js";
 import type {
   Conversation,
+  ConversationCursor,
+  ConversationSummary,
   ExtractedMemory,
   MemoryExtractionEngine,
   MemoryExtractionInput,
@@ -13,6 +15,7 @@ import type {
   MemoryRepositoryPort,
   MemorySearchResult,
   MemoryType,
+  MessageCursor,
   NewMemoryInput,
   SemanticMemoryType,
   StoredMessage,
@@ -143,12 +146,101 @@ export class InMemoryRepository implements MemoryRepositoryPort {
     const conversation: Conversation = {
       id: this.nextUuid(),
       userId,
+      title: null,
       createdAt: now,
       updatedAt: now,
       lastMessageAt: now,
     };
     this.conversations.set(conversation.id, conversation);
     return conversation;
+  }
+
+  async listConversations(
+    userId: string,
+    limit: number,
+    before?: ConversationCursor,
+  ): Promise<readonly ConversationSummary[]> {
+    return [...this.conversations.values()]
+      .filter((conversation) => conversation.userId === userId)
+      .filter((conversation) => {
+        if (!before) return true;
+        const difference =
+          conversation.lastMessageAt.getTime() - before.lastMessageAt.getTime();
+        return difference < 0 || (difference === 0 && conversation.id < before.id);
+      })
+      .sort(
+        (left, right) =>
+          right.lastMessageAt.getTime() - left.lastMessageAt.getTime() ||
+          right.id.localeCompare(left.id),
+      )
+      .slice(0, limit)
+      .map((conversation) => ({
+        ...conversation,
+        messageCount: this.messages.filter(
+          (message) => message.conversationId === conversation.id,
+        ).length,
+      }));
+  }
+
+  async listConversationMessages(
+    userId: string,
+    conversationId: string,
+    limit: number,
+    before?: MessageCursor,
+  ): Promise<readonly StoredMessage[]> {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation || conversation.userId !== userId) return [];
+    return this.messages
+      .filter((message) => message.conversationId === conversationId)
+      .filter((message) => {
+        if (!before) return true;
+        const difference = message.createdAt.getTime() - before.createdAt.getTime();
+        return difference < 0 || (difference === 0 && message.id < before.id);
+      })
+      .sort(
+        (left, right) =>
+          right.createdAt.getTime() - left.createdAt.getTime() ||
+          right.id.localeCompare(left.id),
+      )
+      .slice(0, limit);
+  }
+
+  async updateConversationTitle(
+    userId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<Conversation | null> {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation || conversation.userId !== userId) return null;
+    const updated = { ...conversation, title, updatedAt: new Date() };
+    this.conversations.set(conversationId, updated);
+    return updated;
+  }
+
+  async setConversationTitleIfEmpty(
+    userId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<void> {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation || conversation.userId !== userId || conversation.title) return;
+    this.conversations.set(conversationId, {
+      ...conversation,
+      title,
+      updatedAt: new Date(),
+    });
+  }
+
+  async deleteConversation(userId: string, conversationId: string): Promise<boolean> {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation || conversation.userId !== userId) return false;
+    this.conversations.delete(conversationId);
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      if (this.messages[index]?.conversationId === conversationId) {
+        this.messages.splice(index, 1);
+      }
+    }
+    return true;
   }
 
   async addMessage(
@@ -164,6 +256,14 @@ export class InMemoryRepository implements MemoryRepositoryPort {
       createdAt: new Date(Date.now() + this.sequence),
     };
     this.messages.push(message);
+    const conversation = this.conversations.get(conversationId);
+    if (conversation) {
+      this.conversations.set(conversationId, {
+        ...conversation,
+        updatedAt: message.createdAt,
+        lastMessageAt: message.createdAt,
+      });
+    }
     return message;
   }
 

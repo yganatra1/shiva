@@ -117,6 +117,13 @@ export class ShivaChatService {
         ),
     );
     performance?.setConversationId(conversation.id);
+    if (conversation.title === null) {
+      await this.options.repository.setConversationTitleIfEmpty(
+        this.options.userId,
+        conversation.id,
+        defaultConversationTitle(message, attachedImages.length),
+      );
+    }
     const userMessage = await measureChatPerformance(
       performance,
       "save-message",
@@ -385,6 +392,24 @@ export class ShivaChatService {
       }
     }
   }
+}
+
+const MAX_CONVERSATION_TITLE_LENGTH = 80;
+
+export function defaultConversationTitle(
+  message: string,
+  attachedImageCount = 0,
+): string {
+  const normalized = message.replace(/\s+/gu, " ").trim();
+  const fallback =
+    attachedImageCount === 1
+      ? "Photo"
+      : attachedImageCount > 1
+        ? `${attachedImageCount} photos`
+        : "New conversation";
+  const candidate = normalized || fallback;
+  if (candidate.length <= MAX_CONVERSATION_TITLE_LENGTH) return candidate;
+  return `${candidate.slice(0, MAX_CONVERSATION_TITLE_LENGTH - 1).trimEnd()}…`;
 }
 
 function buildMessages(

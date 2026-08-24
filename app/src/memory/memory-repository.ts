@@ -7,6 +7,7 @@ import {
   gte,
   inArray,
   isNull,
+  lt,
   lte,
   or,
   sql,
@@ -22,10 +23,13 @@ import {
 import { EMBEDDING_DIMENSIONS } from "../types/embedding";
 import type {
   Conversation,
+  ConversationCursor,
+  ConversationSummary,
   MemoryRecord,
   MemoryRepositoryPort,
   MemorySearchResult,
   MemoryType,
+  MessageCursor,
   NewMemoryInput,
   SemanticMemoryType,
   StoredMessage,
@@ -80,6 +84,124 @@ export class MemoryRepository implements MemoryRepositoryPort {
       .values({ userId })
       .returning();
     return requiredRow(created, "conversation");
+  }
+
+  async listConversations(
+    userId: string,
+    limit: number,
+    before?: ConversationCursor,
+  ): Promise<readonly ConversationSummary[]> {
+    const cursorCondition = before
+      ? or(
+          lt(conversations.lastMessageAt, before.lastMessageAt),
+          and(
+            eq(conversations.lastMessageAt, before.lastMessageAt),
+            lt(conversations.id, before.id),
+          ),
+        )
+      : undefined;
+    const rows = await this.db
+      .select({
+        conversation: conversations,
+        messageCount: sql<number>`(
+          select count(*)::int
+          from ${messages}
+          where ${messages.conversationId} = ${conversations.id}
+        )`,
+      })
+      .from(conversations)
+      .where(
+        cursorCondition
+          ? and(eq(conversations.userId, userId), cursorCondition)
+          : eq(conversations.userId, userId),
+      )
+      .orderBy(desc(conversations.lastMessageAt), desc(conversations.id))
+      .limit(limit);
+
+    return rows.map(({ conversation, messageCount }) => ({
+      ...conversation,
+      messageCount: Number(messageCount),
+    }));
+  }
+
+  async listConversationMessages(
+    userId: string,
+    conversationId: string,
+    limit: number,
+    before?: MessageCursor,
+  ): Promise<readonly StoredMessage[]> {
+    const cursorCondition = before
+      ? or(
+          lt(messages.createdAt, before.createdAt),
+          and(eq(messages.createdAt, before.createdAt), lt(messages.id, before.id)),
+        )
+      : undefined;
+    const rows = await this.db
+      .select({ message: messages })
+      .from(messages)
+      .innerJoin(conversations, eq(messages.conversationId, conversations.id))
+      .where(
+        and(
+          eq(conversations.userId, userId),
+          eq(messages.conversationId, conversationId),
+          ...(cursorCondition ? [cursorCondition] : []),
+        ),
+      )
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(limit);
+
+    return rows.map(({ message }) => message);
+  }
+
+  async updateConversationTitle(
+    userId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<Conversation | null> {
+    const [updated] = await this.db
+      .update(conversations)
+      .set({ title, updatedAt: new Date() })
+      .where(
+        and(
+          eq(conversations.id, conversationId),
+          eq(conversations.userId, userId),
+        ),
+      )
+      .returning();
+    return updated ?? null;
+  }
+
+  async setConversationTitleIfEmpty(
+    userId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<void> {
+    await this.db
+      .update(conversations)
+      .set({ title, updatedAt: new Date() })
+      .where(
+        and(
+          eq(conversations.id, conversationId),
+          eq(conversations.userId, userId),
+          isNull(conversations.title),
+        ),
+      );
+  }
+
+  async deleteConversation(
+    userId: string,
+    conversationId: string,
+  ): Promise<boolean> {
+    const deleted = await this.db
+      .delete(conversations)
+      .where(
+        and(
+          eq(conversations.id, conversationId),
+          eq(conversations.userId, userId),
+        ),
+      )
+      .returning({ id: conversations.id });
+    return deleted.length > 0;
   }
 
   async addMessage(
