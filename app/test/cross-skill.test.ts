@@ -86,7 +86,6 @@ test("agent chains web research into an authorized ordinary expense write before
         return {
           type: "skill_call",
           skill: "web_research",
-          selectedSkills: ["record_expense", "web_research"],
           arguments: { query: "latest RTX 3090 rental pricing in INR" },
           authorization: "user_authorized",
         };
@@ -98,7 +97,6 @@ test("agent chains web research into an authorized ordinary expense write before
         return {
           type: "skill_call",
           skill: "record_expense",
-          selectedSkills: ["record_expense", "web_research"],
           arguments: {
             amount: 45,
             currency: "INR",
@@ -162,7 +160,6 @@ test("a planner cannot claim a failed sheet write was confirmed by the executor"
     {
       type: "skill_call",
       skill: "record_expense",
-      selectedSkills: ["record_expense"],
       arguments: { amount: 45, description: "GPU" },
       authorization: "user_authorized",
     },

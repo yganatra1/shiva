@@ -75,7 +75,6 @@ test("agent and skill success are auditable around actual execution", async () =
         ? {
             type: "skill_call" as const,
             skill: "record_expense",
-            selectedSkills: ["record_expense"],
             arguments: { amount: 10 },
             authorization: "user_authorized" as const,
           }
@@ -164,14 +163,12 @@ test("expense agent and skill audit payloads are redacted without changing obser
     {
       type: "skill_call" as const,
       skill: "record_expense",
-      selectedSkills: ["expense_report", "record_expense"],
       arguments: privateRecordInput,
       authorization: "user_authorized" as const,
     },
     {
       type: "skill_call" as const,
       skill: "expense_report",
-      selectedSkills: ["expense_report", "record_expense"],
       arguments: privateReportInput,
       authorization: "user_authorized" as const,
     },
@@ -335,7 +332,6 @@ test("agent requests are redacted while non-expense skill payloads remain intact
     {
       type: "skill_call" as const,
       skill: "web_research",
-      selectedSkills: ["web_research"],
       arguments: webInput,
       authorization: "user_authorized" as const,
     },
@@ -502,7 +498,6 @@ test("max-step termination is finalized without leaking error text", async () =>
       return {
         type: "skill_call",
         skill: "missing",
-        selectedSkills: ["missing"],
         arguments: {},
         authorization: "user_authorized",
       };

@@ -120,13 +120,8 @@ export class AgentLoop {
     // selectedSkills is set only when the *incoming request itself* was
     // pre-scoped to exact skill names (an external caller's hard cap, e.g.
     // tests); otherwise every registered skill is allowed from step one —
-    // there is no discovery/freeze step. declaredSkills is just the most
-    // recent skill_call's own bookkeeping, used only to check at respond time
-    // that whatever the planner says it relied on was actually attempted —
-    // it does not gate execution and never has to be repeated verbatim
-    // across calls.
+    // there is no discovery/freeze step.
     let selectedSkills: readonly string[] | undefined;
-    let declaredSkills: readonly string[] | undefined;
     let pendingConfirmation:
       | Awaited<ReturnType<SkillExecutor["getPendingConfirmation"]>>
       | undefined;
@@ -323,7 +318,6 @@ export class AgentLoop {
             continue;
           }
           selectedSkills = [resolved.skill];
-          declaredSkills = [resolved.skill];
           pendingConfirmation = undefined;
           observations.push({
             step,
@@ -354,51 +348,23 @@ export class AgentLoop {
         }
 
         if (decision.type === "skill_call") {
-          if (selectedSkills) {
-            const fixedSkills = selectedSkills;
-            // Externally pre-scoped request: preserve the original hard,
-            // exact-name cap unchanged — this path is for callers (tests,
-            // future restricted integrations) that deliberately want a
-            // narrower boundary than the whole registry, not for a normal task.
-            try {
-              const proposedSkills = validateDeclaredSkills(
-                decision.selectedSkills,
-                decision.skill,
-                this.registry,
-              );
-              if (
-                proposedSkills.some(
-                  (skill) => !fixedSkills.includes(skill),
-                )
-              ) {
-                throw new AgentEvidenceError(
-                  "The planner selected a skill outside the request's fixed scope.",
-                );
-              }
-              declaredSkills = proposedSkills;
-            } catch (error: unknown) {
-              if (!(error instanceof AgentEvidenceError)) throw error;
-              plannerFallbackReason = "INVALID_SCOPE";
-              plannerFeedback = `Your previous skill_call was rejected because this request is fixed to exactly these skills: ${fixedSkills.join(", ")}. Call one of those, or return a grounded response.`;
-              continue;
-            }
-          } else {
-            try {
-              declaredSkills = validateDeclaredSkills(
-                decision.selectedSkills,
-                decision.skill,
-                this.registry,
-              );
-            } catch (error: unknown) {
-              if (!(error instanceof AgentEvidenceError)) throw error;
-              plannerFallbackReason = "INVALID_SCOPE";
-              const validNames = this.registry
-                .list()
-                .map((skill) => skill.name)
-                .join(", ");
-              plannerFeedback = `Your previous skill_call used an invalid or unregistered skill/selectedSkills value. Choose a called skill only from this exact registered list: ${validNames}. selectedSkills must contain unique registered names and include the called skill.`;
-              continue;
-            }
+          if (!this.registry.has(decision.skill)) {
+            plannerFallbackReason = "INVALID_SCOPE";
+            const validNames = this.registry
+              .list()
+              .map((skill) => skill.name)
+              .join(", ");
+            plannerFeedback = `Your previous skill_call used an unregistered skill. Choose a skill only from this exact registered list: ${validNames}.`;
+            continue;
+          }
+          // Externally pre-scoped request: preserve the original hard,
+          // exact-name cap unchanged — this path is for callers (tests,
+          // future restricted integrations) that deliberately want a
+          // narrower boundary than the whole registry, not for a normal task.
+          if (selectedSkills && !selectedSkills.includes(decision.skill)) {
+            plannerFallbackReason = "INVALID_SCOPE";
+            plannerFeedback = `Your previous skill_call was rejected because this request is fixed to exactly these skills: ${selectedSkills.join(", ")}. Call one of those, or return a grounded response.`;
+            continue;
           }
         }
 
@@ -482,16 +448,12 @@ export class AgentLoop {
         if (decision.type === "respond") {
           try {
             assertResponseEvidence(
-              declaredSkills,
               observations,
               scopedRequest.delegationContinuation !== undefined,
             );
           } catch (error: unknown) {
             if (!(error instanceof AgentEvidenceError)) throw error;
-            plannerFeedback = buildResponseEvidenceFeedback(
-              declaredSkills,
-              observations,
-            );
+            plannerFeedback = buildResponseEvidenceFeedback();
             continue;
           }
           const result = {
@@ -513,7 +475,7 @@ export class AgentLoop {
           return result;
         }
 
-        if (decision.type !== "skill_call" || !declaredSkills) {
+        if (decision.type !== "skill_call") {
           throw new AgentEvidenceError(
             "The planner did not establish a valid skill scope.",
           );
@@ -769,36 +731,6 @@ function initialSkillScope(
   return declared ? normalizeSkillScope(declared, registry) : undefined;
 }
 
-/**
- * Format-only validation of a skill_call's declared selectedSkills: real
- * registered names, unique, bounded, and including the called skill. This
- * never compares against a previous value — a task's declared plan is
- * allowed to grow or change across steps as the planner discovers what it
- * actually needs, as long as every skill it names is registered (or, for a
- * pre-scoped request, inside its fixed scope — checked separately).
- */
-function validateDeclaredSkills(
-  skills: readonly string[],
-  calledSkill: string,
-  registry: SkillRegistry,
-): readonly string[] {
-  if (!registry.has(calledSkill)) {
-    throw new AgentEvidenceError("The planner selected an unknown skill.");
-  }
-  if (skills.length === 0 || skills.length > 16) {
-    throw new AgentEvidenceError("The planner selected an invalid skill scope.");
-  }
-  const normalized = [...new Set(skills)].sort();
-  if (
-    normalized.length !== skills.length ||
-    normalized.some((skill) => !registry.has(skill)) ||
-    !normalized.includes(calledSkill)
-  ) {
-    throw new AgentEvidenceError("The planner selected an invalid skill scope.");
-  }
-  return normalized;
-}
-
 function normalizeSkillScope(
   skills: readonly string[],
   registry: SkillRegistry,
@@ -817,20 +749,11 @@ function normalizeSkillScope(
 }
 
 function assertResponseEvidence(
-  declaredSkills: readonly string[] | undefined,
   observations: readonly AgentObservation[],
   hasAgentResponseEvidence = false,
 ): void {
   if (hasAgentResponseEvidence) return;
-  if (!declaredSkills) {
-    throw new AgentEvidenceError(
-      "The planner attempted to respond without a skill plan or tool evidence.",
-    );
-  }
-  const attempted = declaredSkills.some((skill) =>
-    observations.some((observation) => observation.skill === skill),
-  );
-  if (!attempted) {
+  if (observations.length === 0) {
     throw new AgentEvidenceError(
       "The planner attempted to respond without required tool evidence.",
     );
@@ -865,22 +788,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function buildResponseEvidenceFeedback(
-  declaredSkills: readonly string[] | undefined,
-  observations: readonly AgentObservation[],
-): string {
-  if (!declaredSkills) {
-    return "Your respond decision was rejected because no skill plan or tool evidence exists. Choose direct_chat for an ordinary tool-free answer, or call the required skill before claiming live information or completed work.";
-  }
-  const status = declaredSkills.map((skill) => {
-    const results = observations
-      .filter((observation) => observation.skill === skill)
-      .map((observation) =>
-        observation.result.success ? "success" : "failure",
-      );
-    return `${skill}=${results.length > 0 ? results.join("|") : "not-called"}`;
-  });
-  return `Your respond decision was rejected because none of the skills in selectedSkills were actually called this run. Evidence status: ${status.join(", ")}. Call at least one of them, or return a response grounded in a skill you already attempted.`;
+function buildResponseEvidenceFeedback(): string {
+  return "Your respond decision was rejected because no skill has been called yet this run. Choose direct_chat for an ordinary tool-free answer, or call the required skill before claiming live information or completed work.";
 }
 
 function buildPlannerFailureResponse(

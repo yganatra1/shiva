@@ -19,8 +19,6 @@ export type AgentDecision =
   | {
       readonly type: "skill_call";
       readonly skill: string;
-      /** Skills the current plan relies on; the registered skill set remains authoritative. */
-      readonly selectedSkills: readonly string[];
       readonly arguments: Readonly<Record<string, unknown>>;
       /** Planner interpretation only; runtime metadata remains authoritative. */
       readonly authorization?: "user_authorized" | "unrequested" | undefined;

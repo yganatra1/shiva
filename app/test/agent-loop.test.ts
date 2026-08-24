@@ -76,7 +76,6 @@ test("agent loop executes a skill, observes confirmed output, then responds", as
     {
       type: "skill_call",
       skill: "record_expense",
-      selectedSkills: ["record_expense"],
       arguments: { amount: 450 },
       authorization: "user_authorized",
     },
@@ -155,7 +154,6 @@ test("agent loop resumes only the exact action approved by a pending confirmatio
     {
       type: "skill_call",
       skill: "sensitive_fixture",
-      selectedSkills: ["sensitive_fixture"],
       arguments: { target: "shiva", force: true },
       authorization: "user_authorized",
     },
@@ -298,7 +296,6 @@ test("approved continuation delegation keeps its original Core context and retur
     {
       type: "skill_call",
       skill: "sensitive_delegation_fixture",
-      selectedSkills: ["sensitive_delegation_fixture"],
       arguments: { instruction: "Add ₹500 to the expense sheet." },
       authorization: "user_authorized",
     },
@@ -500,7 +497,6 @@ test("real policy and dispatcher preserve initial approval identity and queue a 
     {
       type: "skill_call",
       skill: "delegate_to_agent",
-      selectedSkills: ["delegate_to_agent"],
       arguments: firstArguments,
       authorization: "user_authorized",
     },
@@ -556,7 +552,6 @@ test("real policy and dispatcher preserve initial approval identity and queue a 
       {
         type: "skill_call",
         skill: "delegate_to_agent",
-        selectedSkills: ["delegate_to_agent"],
         arguments: {
           agent: "google-agent",
           instruction: "Add ₹500 to the expense sheet and report the result.",
@@ -1037,14 +1032,12 @@ test("agent loop executes an identical skill call only once per run", async () =
     {
       type: "skill_call",
       skill: "record_expense",
-      selectedSkills: ["record_expense"],
       arguments: { amount: 450, description: "Pizza" },
       authorization: "user_authorized",
     },
     {
       type: "skill_call",
       skill: "record_expense",
-      selectedSkills: ["record_expense"],
       arguments: { description: "Pizza", amount: 450 },
       authorization: "user_authorized",
     },
@@ -1098,7 +1091,6 @@ test("agent loop does not re-execute an identical unavailable skill", async () =
   const failedCall: AgentDecision = {
     type: "skill_call",
     skill: "web_research",
-    selectedSkills: ["web_research"],
     arguments: { query: "Ahmedabad weather" },
     authorization: "user_authorized",
   };
@@ -1148,14 +1140,12 @@ test("agent loop preserves distinct record_expense calls in one run", async () =
     {
       type: "skill_call",
       skill: "record_expense",
-      selectedSkills: ["record_expense"],
       arguments: { amount: 450 },
       authorization: "user_authorized",
     },
     {
       type: "skill_call",
       skill: "record_expense",
-      selectedSkills: ["record_expense"],
       arguments: { amount: 200 },
       authorization: "user_authorized",
     },
@@ -1205,7 +1195,6 @@ test("agent loop corrects a response that is missing required skill evidence", a
     {
       type: "skill_call",
       skill: "record_expense",
-      selectedSkills: ["record_expense"],
       arguments: { amount: 450 },
       authorization: "user_authorized",
     },
@@ -1230,7 +1219,7 @@ test("agent loop corrects a response that is missing required skill evidence", a
   const result = await loop.run(request);
   assert.equal(executions, 1);
   assert.equal(result.response, "The expense was added.");
-  assert.match(contexts[1]?.plannerFeedback ?? "", /no skill plan or tool evidence/i);
+  assert.match(contexts[1]?.plannerFeedback ?? "", /no skill has been called/i);
 });
 
 test("agent loop accepts an early failure from a selected prerequisite skill", async () => {
@@ -1264,7 +1253,6 @@ test("agent loop accepts an early failure from a selected prerequisite skill", a
     {
       type: "skill_call",
       skill: "web_research",
-      selectedSkills: ["record_expense", "web_research"],
       arguments: { query: "current price" },
       authorization: "user_authorized",
     },
@@ -1325,14 +1313,12 @@ test("agent loop feeds an out-of-scope call back to the planner for correction",
     {
       type: "skill_call",
       skill: "record_expense",
-      selectedSkills: ["record_expense"],
       arguments: { amount: 999 },
       authorization: "user_authorized",
     },
     {
       type: "skill_call",
       skill: "web_research",
-      selectedSkills: ["web_research"],
       arguments: { query: "latest TTS models" },
       authorization: "user_authorized",
     },
@@ -1391,7 +1377,6 @@ test("agent loop never executes or chat-falls-back from a repeated adversarial c
   const invalidDecision: AgentDecision = {
     type: "skill_call",
     skill: "record_expense",
-    selectedSkills: ["record_expense"],
     arguments: { amount: 999 },
     authorization: "user_authorized",
   };
@@ -1438,7 +1423,6 @@ test("agent loop corrects clarification attempted after tool execution", async (
     {
       type: "skill_call",
       skill: "web_research",
-      selectedSkills: ["web_research"],
       arguments: { query: "Ahmedabad weather" },
       authorization: "user_authorized",
     },
@@ -1476,7 +1460,6 @@ test("agent loop retries an unknown skill scope then falls back to core chat", a
       return {
         type: "skill_call",
         skill: "missing",
-        selectedSkills: ["missing"],
         arguments: {},
         authorization: "user_authorized",
       };
@@ -1570,7 +1553,7 @@ test("provider-neutral planner requests strict JSON and validates the decision",
       inputs.push(input);
       return {
         content:
-          '```json\n{"type":"skill_call","skill":"record_expense","selectedSkills":["record_expense"],"arguments":{"amount":450},"authorization":"user_authorized"}\n```',
+          '```json\n{"type":"skill_call","skill":"record_expense","arguments":{"amount":450},"authorization":"user_authorized"}\n```',
       };
     },
     async *streamChat() {
@@ -1598,7 +1581,6 @@ test("provider-neutral planner requests strict JSON and validates the decision",
   assert.deepEqual(decision, {
     type: "skill_call",
     skill: "record_expense",
-    selectedSkills: ["record_expense"],
     arguments: { amount: 450 },
     authorization: "user_authorized",
   });
@@ -1702,7 +1684,7 @@ test("planner skill calls fail closed when authorization is omitted", async () =
       attempts += 1;
       return {
         content:
-          '{"type":"skill_call","skill":"record_expense","selectedSkills":["record_expense"],"arguments":{"amount":450}}',
+          '{"type":"skill_call","skill":"record_expense","arguments":{"amount":450}}',
       };
     },
     async *streamChat() {
@@ -1856,7 +1838,7 @@ test("planner repairs a visible skill discriminator when the redundant skill fie
       providerCalls += 1;
       return {
         content:
-          '{"type":"sheets_find","selectedSkills":["sheets_find"],"arguments":{"query":"Expense 2026"},"authorization":"user_authorized"}',
+          '{"type":"sheets_find","arguments":{"query":"Expense 2026"},"authorization":"user_authorized"}',
       };
     },
     async *streamChat() {
@@ -1884,7 +1866,6 @@ test("planner repairs a visible skill discriminator when the redundant skill fie
   assert.deepEqual(decision, {
     type: "skill_call",
     skill: "sheets_find",
-    selectedSkills: ["sheets_find"],
     arguments: { query: "Expense 2026" },
     authorization: "user_authorized",
   });
@@ -1946,7 +1927,7 @@ test("two invalid planner outputs after execution stop without consuming twelve 
     },
   });
   const replies = [
-    '{"type":"skill_call","skill":"alpha_skill","selectedSkills":["alpha_skill"],"arguments":{},"authorization":"user_authorized"}',
+    '{"type":"skill_call","skill":"alpha_skill","arguments":{},"authorization":"user_authorized"}',
     '{"type":"not_a_decision"}',
     '{"type":"not_a_decision"}',
   ];
@@ -1993,7 +1974,7 @@ test("the captured sheets_find discriminator error repairs on its one retry", as
   });
   const replies = [
     '{"type":"sheets_find","query":"Expense 2026"}',
-    '{"type":"sheets_find","selectedSkills":["sheets_find"],"skill":"sheets_find","arguments":{"query":"Expense 2026"},"authorization":"user_authorized"}',
+    '{"type":"sheets_find","skill":"sheets_find","arguments":{"query":"Expense 2026"},"authorization":"user_authorized"}',
     '{"type":"respond","message":"I found the sheet."}',
   ];
   let providerCalls = 0;
@@ -2046,7 +2027,7 @@ test("planner format failure preserves an exact pending confirmation question", 
     },
   });
   const replies = [
-    '{"type":"skill_call","skill":"sensitive_fixture","selectedSkills":["sensitive_fixture"],"arguments":{},"authorization":"user_authorized"}',
+    '{"type":"skill_call","skill":"sensitive_fixture","arguments":{},"authorization":"user_authorized"}',
     '{"type":"not_a_decision"}',
     '{"type":"not_a_decision"}',
   ];
@@ -2104,7 +2085,6 @@ test("a successful empty search can produce an honest no-match response", async 
     {
       type: "skill_call",
       skill: "sheets_find",
-      selectedSkills: ["sheets_find"],
       arguments: {},
       authorization: "user_authorized",
     },
