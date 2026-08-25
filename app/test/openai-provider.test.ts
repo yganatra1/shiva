@@ -176,6 +176,84 @@ test("the provider wraps a JSON Schema responseFormat as an OpenAI json_schema r
   });
 });
 
+test("the provider retries once without temperature when the model rejects it, and still fails other 400s", async (context) => {
+  const requestBodies: unknown[] = [];
+  let requestCount = 0;
+  const upstream = createServer((request, response) => {
+    const bodyParts: Buffer[] = [];
+    request.on("data", (part: Buffer) => bodyParts.push(part));
+    request.on("end", () => {
+      requestCount += 1;
+      requestBodies.push(
+        JSON.parse(Buffer.concat(bodyParts).toString("utf8")) as unknown,
+      );
+      if (requestCount === 1) {
+        response.statusCode = 400;
+        response.end(
+          JSON.stringify({
+            error: {
+              message:
+                "Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported.",
+              type: "invalid_request_error",
+              param: "temperature",
+              code: "unsupported_value",
+            },
+          }),
+        );
+        return;
+      }
+      response.setHeader("content-type", "text/event-stream");
+      response.end(
+        sseEvent({
+          choices: [{ delta: { content: "Ready" }, finish_reason: "stop" }],
+        }) + "data: [DONE]\n\n",
+      );
+    });
+  });
+  context.after(() => closeServer(upstream));
+
+  const result = await createProvider(await listenOnRandomPort(upstream), 1_000).chat({
+    messages: [{ role: "user", content: "Decide." }],
+    temperature: 0,
+  });
+
+  assert.deepEqual(result, { content: "Ready" });
+  assert.equal(requestBodies.length, 2);
+  assert.ok(isRecord(requestBodies[0]));
+  assert.equal(requestBodies[0].temperature, 0);
+  assert.ok(isRecord(requestBodies[1]));
+  assert.equal("temperature" in requestBodies[1], false);
+});
+
+test("a 400 unrelated to temperature is not retried", async (context) => {
+  let requestCount = 0;
+  const upstream = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      requestCount += 1;
+      response.statusCode = 400;
+      response.end(
+        JSON.stringify({
+          error: { message: "Invalid model.", type: "invalid_request_error" },
+        }),
+      );
+    });
+  });
+  context.after(() => closeServer(upstream));
+
+  await assert.rejects(
+    createProvider(await listenOnRandomPort(upstream), 1_000).chat({
+      messages: [{ role: "user", content: "Decide." }],
+      temperature: 0,
+    }),
+    (error: unknown) =>
+      error instanceof AIProviderError &&
+      error.failure === "UPSTREAM_ERROR" &&
+      error.message.includes("Invalid model."),
+  );
+  assert.equal(requestCount, 1);
+});
+
 test("a plain 'json' responseFormat becomes json_object mode", async (context) => {
   let requestBody: unknown;
   const upstream = createServer((request, response) => {

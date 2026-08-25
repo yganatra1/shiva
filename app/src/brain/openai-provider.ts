@@ -91,10 +91,18 @@ export class OpenAiProvider implements AIProvider {
         signal: requestSignal,
       });
 
+      // The body stream can only be read once, so a 400 is read here — the
+      // one place that decides whether to retry — rather than a second time
+      // by the generic error handler below.
+      let errorDetail: string | undefined;
+      if (!response.ok) {
+        errorDetail = await readErrorBody(response);
+      }
+
       if (
         response.status === 400 &&
         input.temperature !== undefined &&
-        (await rejectsTemperature(response))
+        rejectsTemperature(errorDetail)
       ) {
         const { temperature: _temperature, ...inputWithoutTemperature } = input;
         response = await fetch(endpoint, {
@@ -105,13 +113,13 @@ export class OpenAiProvider implements AIProvider {
           ),
           signal: requestSignal,
         });
+        errorDetail = response.ok ? undefined : await readErrorBody(response);
       }
 
       if (!response.ok) {
-        const detail = await readErrorBody(response);
         throw new AIProviderError(
           "UPSTREAM_ERROR",
-          `OpenAI returned HTTP status ${response.status}.${detail ? ` ${detail}` : ""}`,
+          `OpenAI returned HTTP status ${response.status}.${errorDetail ? ` ${errorDetail}` : ""}`,
         );
       }
 
@@ -348,10 +356,11 @@ const openAiErrorParamSchema = z
  * 400 lets the caller retry once without the field instead of failing every
  * request outright — mirrors OllamaProvider's retry-on-400 for `format`.
  */
-async function rejectsTemperature(response: Response): Promise<boolean> {
+function rejectsTemperature(errorDetail: string | undefined): boolean {
+  if (!errorDetail) return false;
   let body: unknown;
   try {
-    body = JSON.parse(await response.text()) as unknown;
+    body = JSON.parse(errorDetail) as unknown;
   } catch {
     return false;
   }
