@@ -51,8 +51,8 @@ The official Android companion lives in [`android/`](android/README.md). It is a
 - ffmpeg for browser-audio normalization
 - PostgreSQL with the pgvector extension available
 - Redis 7+ (the supplied deployments enable optional AOF persistence)
-- Ollama reachable at `OLLAMA_URL`
-- the configured Gemma model and `embeddinggemma` installed for real `/chat` requests
+- Ollama reachable at `OLLAMA_URL`, for `embeddinggemma` always, and for chat too when `SHIVA_BRAIN_PROVIDER=ollama`
+- a Gemini API key in `GEMINI_API_KEY` for real `/chat` requests when `SHIVA_BRAIN_PROVIDER=gemini` (the default)
 - for real face recognition: InsightFace `buffalo_l` and CPU ONNX Runtime; a GPU is not required for Shiva's personal enrollment and occasional identification workload
 - for Google/expense work: Google user OAuth credentials supplied only to `google-agent`
 - for web research: a Brave Search API key
@@ -86,8 +86,10 @@ The shared deployment/Compose template's available settings include:
 ```text
 PORT=3000
 HOST=127.0.0.1
+SHIVA_BRAIN_PROVIDER=gemini
 OLLAMA_URL=http://127.0.0.1:11434
-SHIVA_MODEL=gemma4:26b-a4b-it-q4_K_M
+SHIVA_MODEL=gemma-4-26b-a4b-it
+GEMINI_API_KEY=
 SHIVA_CONTEXT_LENGTH=16384
 SHIVA_KEEP_ALIVE=30m
 OLLAMA_REQUEST_TIMEOUT_MS=300000

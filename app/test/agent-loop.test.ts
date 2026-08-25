@@ -1679,9 +1679,11 @@ test("the planner prompt gives a worked example for resolving a CONFIRMATION_REQ
 
 test("planner skill calls fail closed when authorization is omitted", async () => {
   let attempts = 0;
+  const inputs: ChatInput[] = [];
   const planner = new ShivaAgentPlanner({
-    async chat() {
+    async chat(input) {
       attempts += 1;
+      inputs.push(input);
       return {
         content:
           '{"type":"skill_call","skill":"record_expense","arguments":{"amount":450}}',
@@ -1712,6 +1714,12 @@ test("planner skill calls fail closed when authorization is omitted", async () =
     AgentPlannerError,
   );
   assert.equal(attempts, 2);
+  // The retry correction should name the actual rejected field instead of a
+  // generic "invalid JSON" nudge, so the one retry has a concrete target.
+  assert.match(
+    inputs[1]?.messages.at(-1)?.content ?? "",
+    /authorization: Invalid option/,
+  );
 });
 
 test("the planner's onTrace logs the request, the raw response, thinking when present, and a parse rejection", async () => {

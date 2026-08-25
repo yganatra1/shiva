@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 
-import { OllamaProvider } from "../../brain/ollama-provider";
+import { createChatProvider } from "../../brain/chat-provider-factory";
 import {
   ConfigurationError,
   loadDeviceAgentConfig,
@@ -18,13 +18,7 @@ async function start(): Promise<void> {
   try {
     const config = loadDeviceAgentConfig();
     const dispatcher = new DeviceCommandDispatcher();
-    const provider = new OllamaProvider({
-      baseUrl: config.ollamaUrl,
-      model: config.model,
-      contextLength: config.contextLength,
-      keepAlive: config.keepAlive,
-      requestTimeoutMs: config.ollamaRequestTimeoutMs,
-    });
+    const provider = createChatProvider(config);
     const planner = new ShivaDeviceAgentPlanner(provider);
     const transport = new RedisAgentTransport({ redisUrl: config.redisUrl });
     const worker = new AgentWorker({

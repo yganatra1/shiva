@@ -1,6 +1,6 @@
 import { AgentLoop } from "../../agent/agent-loop";
 import { ShivaAgentPlanner } from "../../agent/planner";
-import { OllamaProvider } from "../../brain/ollama-provider";
+import { createChatProvider } from "../../brain/chat-provider-factory";
 import {
   ConfigurationError,
   loadGoogleAgentConfig,
@@ -18,13 +18,7 @@ async function start(): Promise<void> {
   let closeTransport: (() => Promise<void>) | undefined;
   try {
     const config = loadGoogleAgentConfig();
-    const provider = new OllamaProvider({
-      baseUrl: config.ollamaUrl,
-      model: config.model,
-      contextLength: config.contextLength,
-      keepAlive: config.keepAlive,
-      requestTimeoutMs: config.ollamaRequestTimeoutMs,
-    });
+    const provider = createChatProvider(config);
     const registry = new SkillRegistry();
     registerGoogleSkills(registry, config);
     const reportError = (error: unknown): void => {

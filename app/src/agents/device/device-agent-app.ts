@@ -3,7 +3,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AIProvider } from "../../brain/ai-provider";
-import { OllamaProvider } from "../../brain/ollama-provider";
+import { createChatProvider } from "../../brain/chat-provider-factory";
 import type { DeviceAgentConfig } from "../../config/environment";
 import { DeviceCommandDispatcher } from "./device-command-dispatcher";
 import { registerDeviceSocketRoute } from "./device-socket-route";
@@ -41,15 +41,7 @@ export function createDeviceAgentApp(
   });
 
   const dispatcher = overrides.dispatcher ?? new DeviceCommandDispatcher();
-  const provider =
-    overrides.provider ??
-    new OllamaProvider({
-      baseUrl: config.ollamaUrl,
-      model: config.model,
-      contextLength: config.contextLength,
-      keepAlive: config.keepAlive,
-      requestTimeoutMs: config.ollamaRequestTimeoutMs,
-    });
+  const provider = overrides.provider ?? createChatProvider(config);
   const planner = overrides.planner ?? new ShivaDeviceAgentPlanner(provider);
 
   app.get("/health", () => ({ status: "ok", name: "shiva-device-agent" }));

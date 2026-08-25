@@ -17,8 +17,8 @@ import { registerVoiceRoutes } from "./api/voice-route";
 import { registerVoiceSocketRoute } from "./api/voice-socket-route";
 import type { AIProvider } from "./brain/ai-provider";
 import type { EmbeddingProvider } from "./brain/embedding-provider";
+import { createChatProvider } from "./brain/chat-provider-factory";
 import { OllamaEmbeddingProvider } from "./brain/ollama-embedding-provider";
-import { OllamaProvider } from "./brain/ollama-provider";
 import type { AppConfig } from "./config/environment";
 import {
   CoreUpdateHub,
@@ -108,15 +108,7 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     },
   });
 
-  const provider =
-    overrides.provider ??
-    new OllamaProvider({
-      baseUrl: config.ollamaUrl,
-      model: config.model,
-      contextLength: config.contextLength,
-      keepAlive: config.keepAlive,
-      requestTimeoutMs: config.ollamaRequestTimeoutMs,
-    });
+  const provider = overrides.provider ?? createChatProvider(config);
   const database = overrides.repository ? undefined : createDatabase(config);
   const repository =
     overrides.repository ?? new MemoryRepository(requiredDatabase(database));

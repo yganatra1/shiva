@@ -49,6 +49,8 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
           input: input.text,
           dimensions: EMBEDDING_DIMENSIONS,
           truncate: true,
+          // Embeddings run on CPU so the GPU stays free for other work.
+          options: { num_gpu: 0 },
         }),
         signal: requestSignal,
       });

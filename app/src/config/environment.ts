@@ -136,13 +136,15 @@ const environmentSchema = z
   .object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   HOST: z.string().trim().min(1).max(255).default("127.0.0.1"),
+  SHIVA_BRAIN_PROVIDER: z.enum(["ollama", "gemini"]).default("gemini"),
   OLLAMA_URL: httpBaseUrlSchema.default("http://127.0.0.1:11434"),
   SHIVA_MODEL: z
     .string()
     .trim()
     .min(1)
     .max(255)
-    .default("gemma4:26b-a4b-it-q4_K_M"),
+    .default("gemma-4-26b-a4b-it"),
+  GEMINI_API_KEY: optionalSecretSchema,
   SHIVA_CONTEXT_LENGTH: z.coerce
     .number()
     .int()
@@ -307,6 +309,14 @@ const environmentSchema = z
     .default("development"),
   })
   .superRefine((environment, context) => {
+    if (environment.SHIVA_BRAIN_PROVIDER === "gemini" && !environment.GEMINI_API_KEY) {
+      context.addIssue({
+        code: "custom",
+        path: ["GEMINI_API_KEY"],
+        message: "is required when SHIVA_BRAIN_PROVIDER=gemini",
+      });
+    }
+
     const oauth = [
       environment.GOOGLE_OAUTH_CLIENT_ID,
       environment.GOOGLE_OAUTH_CLIENT_SECRET,
@@ -332,8 +342,10 @@ const environmentSchema = z
 export interface AppConfig {
   readonly port: number;
   readonly host: string;
+  readonly brainProvider: "ollama" | "gemini";
   readonly ollamaUrl: string;
   readonly model: string;
+  readonly geminiApiKey?: string;
   readonly contextLength: number;
   readonly keepAlive: string | number;
   readonly ollamaRequestTimeoutMs: number;
@@ -403,8 +415,10 @@ export interface AppConfig {
  */
 export type DeviceAgentConfig = Pick<
   AppConfig,
+  | "brainProvider"
   | "ollamaUrl"
   | "model"
+  | "geminiApiKey"
   | "contextLength"
   | "keepAlive"
   | "ollamaRequestTimeoutMs"
@@ -423,8 +437,10 @@ export type DeviceAgentConfig = Pick<
 /** Google workers need no Core database, device bridge, web, or voice config. */
 export type GoogleAgentConfig = Pick<
   AppConfig,
+  | "brainProvider"
   | "ollamaUrl"
   | "model"
+  | "geminiApiKey"
   | "contextLength"
   | "keepAlive"
   | "ollamaRequestTimeoutMs"
@@ -465,8 +481,10 @@ export function loadConfig(): AppConfig {
 }
 
 const DEVICE_AGENT_ENVIRONMENT_KEYS = [
+  "SHIVA_BRAIN_PROVIDER",
   "OLLAMA_URL",
   "SHIVA_MODEL",
+  "GEMINI_API_KEY",
   "SHIVA_CONTEXT_LENGTH",
   "SHIVA_KEEP_ALIVE",
   "OLLAMA_REQUEST_TIMEOUT_MS",
@@ -483,8 +501,10 @@ const DEVICE_AGENT_ENVIRONMENT_KEYS = [
 ] as const;
 
 const GOOGLE_AGENT_ENVIRONMENT_KEYS = [
+  "SHIVA_BRAIN_PROVIDER",
   "OLLAMA_URL",
   "SHIVA_MODEL",
+  "GEMINI_API_KEY",
   "SHIVA_CONTEXT_LENGTH",
   "SHIVA_KEEP_ALIVE",
   "OLLAMA_REQUEST_TIMEOUT_MS",
@@ -549,8 +569,10 @@ export function loadDeviceAgentConfig(
     options,
   );
   return {
+    brainProvider: config.brainProvider,
     ollamaUrl: config.ollamaUrl,
     model: config.model,
+    ...(config.geminiApiKey ? { geminiApiKey: config.geminiApiKey } : {}),
     contextLength: config.contextLength,
     keepAlive: config.keepAlive,
     ollamaRequestTimeoutMs: config.ollamaRequestTimeoutMs,
@@ -579,8 +601,10 @@ export function loadGoogleAgentConfig(
     options,
   );
   return {
+    brainProvider: config.brainProvider,
     ollamaUrl: config.ollamaUrl,
     model: config.model,
+    ...(config.geminiApiKey ? { geminiApiKey: config.geminiApiKey } : {}),
     contextLength: config.contextLength,
     keepAlive: config.keepAlive,
     ollamaRequestTimeoutMs: config.ollamaRequestTimeoutMs,
@@ -667,8 +691,12 @@ function parseConfig(environment: NodeJS.ProcessEnv | Record<string, string>): A
   return {
     port: result.data.PORT,
     host: result.data.HOST,
+    brainProvider: result.data.SHIVA_BRAIN_PROVIDER,
     ollamaUrl: result.data.OLLAMA_URL,
     model: result.data.SHIVA_MODEL,
+    ...(result.data.GEMINI_API_KEY
+      ? { geminiApiKey: result.data.GEMINI_API_KEY }
+      : {}),
     contextLength: result.data.SHIVA_CONTEXT_LENGTH,
     keepAlive: result.data.SHIVA_KEEP_ALIVE,
     ollamaRequestTimeoutMs: result.data.OLLAMA_REQUEST_TIMEOUT_MS,

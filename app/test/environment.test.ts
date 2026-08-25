@@ -9,9 +9,12 @@ import {
 } from "../src/config/environment.js";
 
 test("numeric SHIVA_KEEP_ALIVE values are normalized for the Ollama API", () => {
-  const previousValue = process.env.SHIVA_KEEP_ALIVE;
+  const previousKeepAlive = process.env.SHIVA_KEEP_ALIVE;
+  const previousApiKey = process.env.GEMINI_API_KEY;
 
   try {
+    process.env.GEMINI_API_KEY = "test-gemini-api-key";
+
     process.env.SHIVA_KEEP_ALIVE = "-1";
     assert.equal(loadConfig().keepAlive, -1);
 
@@ -24,12 +27,52 @@ test("numeric SHIVA_KEEP_ALIVE values are normalized for the Ollama API", () => 
     process.env.SHIVA_KEEP_ALIVE = "30m";
     assert.equal(loadConfig().keepAlive, "30m");
   } finally {
-    if (previousValue === undefined) {
+    if (previousKeepAlive === undefined) {
       delete process.env.SHIVA_KEEP_ALIVE;
     } else {
-      process.env.SHIVA_KEEP_ALIVE = previousValue;
+      process.env.SHIVA_KEEP_ALIVE = previousKeepAlive;
+    }
+    if (previousApiKey === undefined) {
+      delete process.env.GEMINI_API_KEY;
+    } else {
+      process.env.GEMINI_API_KEY = previousApiKey;
     }
   }
+});
+
+test("SHIVA_BRAIN_PROVIDER selects the chat brain and gates GEMINI_API_KEY accordingly", () => {
+  withEnvironment({ GEMINI_API_KEY: "" }, () => {
+    assert.throws(
+      () => loadConfig(),
+      (error: unknown) =>
+        error instanceof ConfigurationError &&
+        /GEMINI_API_KEY/.test(error.message),
+    );
+  });
+
+  withEnvironment(
+    { SHIVA_BRAIN_PROVIDER: "ollama", GEMINI_API_KEY: "" },
+    () => {
+      const config = loadConfig();
+      assert.equal(config.brainProvider, "ollama");
+      assert.equal(config.geminiApiKey, undefined);
+    },
+  );
+
+  withEnvironment({ GEMINI_API_KEY: "real-key" }, () => {
+    const config = loadConfig();
+    assert.equal(config.brainProvider, "gemini");
+    assert.equal(config.geminiApiKey, "real-key");
+  });
+
+  withEnvironment({ SHIVA_BRAIN_PROVIDER: "not-a-provider" }, () => {
+    assert.throws(
+      () => loadConfig(),
+      (error: unknown) =>
+        error instanceof ConfigurationError &&
+        /SHIVA_BRAIN_PROVIDER/.test(error.message),
+    );
+  });
 });
 
 test("Core normalizes orchestration config and discards inherited Google secrets", () => {
@@ -394,6 +437,7 @@ function withEnvironment(
   run: () => void,
 ): void {
   const previous = { ...process.env };
+  process.env.GEMINI_API_KEY = "test-gemini-api-key";
   for (const [key, value] of Object.entries(values)) {
     process.env[key] = value;
   }

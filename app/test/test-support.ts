@@ -26,8 +26,10 @@ import { EMBEDDING_DIMENSIONS } from "../src/types/embedding.js";
 export const testConfig: AppConfig = {
   port: 3000,
   host: "127.0.0.1",
+  brainProvider: "gemini",
   ollamaUrl: "http://127.0.0.1:11434",
   model: "test-model",
+  geminiApiKey: "test-gemini-api-key",
   contextLength: 16_384,
   keepAlive: "30m",
   ollamaRequestTimeoutMs: 1_000,

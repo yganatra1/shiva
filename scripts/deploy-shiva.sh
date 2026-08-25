@@ -15,6 +15,11 @@ STATE_DIR="$RUNTIME/state"
 ASR_VENV="$RUNTIME/venvs/asr"
 TTS_VENV="$RUNTIME/venvs/tts"
 
+# Voice (ASR/TTS) is paused for now to keep the GPU free. Re-enable with
+# SHIVA_ENABLE_VOICE=true once voice work resumes.
+ENABLE_VOICE="${SHIVA_ENABLE_VOICE:-false}"
+BRAIN_PROVIDER="${SHIVA_BRAIN_PROVIDER:-gemini}"
+
 LOG_DIR="$ROOT/logs"
 PM2_LOG_DIR="$LOG_DIR/pm2"
 
@@ -256,10 +261,14 @@ install_python_service() {
 echo
 echo "[6/9] Preparing ASR..."
 
-install_python_service \
-  "asr" \
-  "$ASR_VENV" \
-  "$REPO/voice/asr/requirements.txt"
+if [[ "$ENABLE_VOICE" == "true" ]]; then
+  install_python_service \
+    "asr" \
+    "$ASR_VENV" \
+    "$REPO/voice/asr/requirements.txt"
+else
+  echo "Voice is paused (SHIVA_ENABLE_VOICE=false). Skipping ASR."
+fi
 
 # ------------------------------------------------------------
 # TTS
@@ -268,10 +277,14 @@ install_python_service \
 echo
 echo "[7/9] Preparing TTS..."
 
-install_python_service \
-  "tts" \
-  "$TTS_VENV" \
-  "$REPO/voice/tts/requirements.txt"
+if [[ "$ENABLE_VOICE" == "true" ]]; then
+  install_python_service \
+    "tts" \
+    "$TTS_VENV" \
+    "$REPO/voice/tts/requirements.txt"
+else
+  echo "Voice is paused (SHIVA_ENABLE_VOICE=false). Skipping TTS."
+fi
 
 # ------------------------------------------------------------
 # Database migrations
@@ -289,6 +302,59 @@ npm run db:migrate
 
 echo
 echo "[9/9] Starting Shiva services with PM2..."
+
+VOICE_APPS=""
+if [[ "$ENABLE_VOICE" == "true" ]]; then
+  VOICE_APPS=$(cat <<VOICEEOF
+
+    {
+      name: "shiva-asr",
+      cwd: "$REPO",
+      script: "/bin/bash",
+      args: [
+        "-lc",
+        "exec $ASR_VENV/bin/python -m voice.asr.server"
+      ],
+      interpreter: "none",
+
+      autorestart: true,
+      restart_delay: 3000,
+      max_restarts: 20,
+
+      out_file: "$PM2_LOG_DIR/asr-out.log",
+      error_file: "$PM2_LOG_DIR/asr-error.log",
+
+      // Google credentials belong exclusively to google-agent, including
+      // when PM2 starts auxiliary voice services from the same shell.
+      filter_env: [
+        "GOOGLE_"
+      ]
+    },
+
+    {
+      name: "shiva-tts",
+      cwd: "$REPO",
+      script: "/bin/bash",
+      args: [
+        "-lc",
+        "exec $TTS_VENV/bin/python -m voice.tts.server"
+      ],
+      interpreter: "none",
+
+      autorestart: true,
+      restart_delay: 3000,
+      max_restarts: 20,
+
+      out_file: "$PM2_LOG_DIR/tts-out.log",
+      error_file: "$PM2_LOG_DIR/tts-error.log",
+
+      filter_env: [
+        "GOOGLE_"
+      ]
+    },
+VOICEEOF
+)
+fi
 
 cat > "$ECOSYSTEM" <<PMEOF
 module.exports = {
@@ -402,52 +468,7 @@ module.exports = {
         NODE_ENV: "production"
       }
     },
-
-    {
-      name: "shiva-asr",
-      cwd: "$REPO",
-      script: "/bin/bash",
-      args: [
-        "-lc",
-        "exec $ASR_VENV/bin/python -m voice.asr.server"
-      ],
-      interpreter: "none",
-
-      autorestart: true,
-      restart_delay: 3000,
-      max_restarts: 20,
-
-      out_file: "$PM2_LOG_DIR/asr-out.log",
-      error_file: "$PM2_LOG_DIR/asr-error.log",
-
-      // Google credentials belong exclusively to google-agent, including
-      // when PM2 starts auxiliary voice services from the same shell.
-      filter_env: [
-        "GOOGLE_"
-      ]
-    },
-
-    {
-      name: "shiva-tts",
-      cwd: "$REPO",
-      script: "/bin/bash",
-      args: [
-        "-lc",
-        "exec $TTS_VENV/bin/python -m voice.tts.server"
-      ],
-      interpreter: "none",
-
-      autorestart: true,
-      restart_delay: 3000,
-      max_restarts: 20,
-
-      out_file: "$PM2_LOG_DIR/tts-out.log",
-      error_file: "$PM2_LOG_DIR/tts-error.log",
-
-      filter_env: [
-        "GOOGLE_"
-      ]
-    }
+${VOICE_APPS}
   ]
 };
 PMEOF
@@ -492,13 +513,17 @@ wait_for_health() {
 echo
 echo "Checking Shiva services..."
 
-wait_for_health \
-  "ASR" \
-  "http://127.0.0.1:8101/health"
+if [[ "$ENABLE_VOICE" == "true" ]]; then
+  wait_for_health \
+    "ASR" \
+    "http://127.0.0.1:8101/health"
 
-wait_for_health \
-  "TTS" \
-  "http://127.0.0.1:8102/health"
+  wait_for_health \
+    "TTS" \
+    "http://127.0.0.1:8102/health"
+else
+  echo "Voice is paused (SHIVA_ENABLE_VOICE=false). Skipping ASR/TTS health checks."
+fi
 
 wait_for_health \
   "Shiva API" \
@@ -541,23 +566,28 @@ curl -fsS http://127.0.0.1:11434/api/embed \
   -d "{
     \"model\": \"$EMBED_MODEL\",
     \"input\": \"Shiva startup\",
-    \"keep_alive\": -1
+    \"keep_alive\": -1,
+    \"options\": { \"num_gpu\": 0 }
   }" >/dev/null
 
-curl -fsS http://127.0.0.1:11434/api/chat \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"model\": \"$MAIN_MODEL\",
-    \"messages\": [
-      {
-        \"role\": \"user\",
-        \"content\": \"Reply only OK\"
-      }
-    ],
-    \"stream\": false,
-    \"think\": false,
-    \"keep_alive\": -1
-  }" >/dev/null
+# The chat brain is Gemini by default (SHIVA_BRAIN_PROVIDER=gemini); only
+# warm Ollama's local chat model when it's actually the configured brain.
+if [[ "$BRAIN_PROVIDER" == "ollama" ]]; then
+  curl -fsS http://127.0.0.1:11434/api/chat \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"model\": \"$MAIN_MODEL\",
+      \"messages\": [
+        {
+          \"role\": \"user\",
+          \"content\": \"Reply only OK\"
+        }
+      ],
+      \"stream\": false,
+      \"think\": false,
+      \"keep_alive\": -1
+    }" >/dev/null
+fi
 
 echo
 echo "========================================"
