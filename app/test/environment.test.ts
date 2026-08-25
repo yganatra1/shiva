@@ -257,7 +257,7 @@ test("device-agent loads only its declared config and scrubs inherited Shiva sec
       GOOGLE_OAUTH_REFRESH_TOKEN: "google-refresh",
       GOOGLE_APPLICATION_CREDENTIALS: "/private/google-key.json",
       BRAVE_SEARCH_API_KEY: "web-secret",
-      AWS_SECRET_ACCESS_KEY: "aws-secret",
+      STRIPE_API_KEY: "stripe-secret",
       GITHUB_TOKEN: "github-secret",
       UNRELATED_API_TOKEN: "unrelated-secret",
     },
@@ -273,7 +273,7 @@ test("device-agent loads only its declared config and scrubs inherited Shiva sec
       assert.equal(process.env.GOOGLE_OAUTH_CLIENT_SECRET, undefined);
       assert.equal(process.env.GOOGLE_APPLICATION_CREDENTIALS, undefined);
       assert.equal(process.env.BRAVE_SEARCH_API_KEY, undefined);
-      assert.equal(process.env.AWS_SECRET_ACCESS_KEY, undefined);
+      assert.equal(process.env.STRIPE_API_KEY, undefined);
       assert.equal(process.env.GITHUB_TOKEN, undefined);
       assert.equal(process.env.UNRELATED_API_TOKEN, undefined);
       assert.equal(process.env.DEVICE_WS_TOKEN, "device-token");
@@ -292,7 +292,7 @@ test("google-agent keeps Google credentials but no Core database, device, or web
       DATABASE_URL: "postgresql://user:database-secret@127.0.0.1/shiva",
       DEVICE_WS_TOKEN: "device-secret",
       BRAVE_SEARCH_API_KEY: "web-secret",
-      AWS_SECRET_ACCESS_KEY: "aws-secret",
+      STRIPE_API_KEY: "stripe-secret",
       GITHUB_TOKEN: "github-secret",
       UNRELATED_API_TOKEN: "unrelated-secret",
     },
@@ -311,7 +311,7 @@ test("google-agent keeps Google credentials but no Core database, device, or web
       assert.equal(process.env.DEVICE_WS_TOKEN, undefined);
       assert.equal(process.env.GOOGLE_APPLICATION_CREDENTIALS, undefined);
       assert.equal(process.env.BRAVE_SEARCH_API_KEY, undefined);
-      assert.equal(process.env.AWS_SECRET_ACCESS_KEY, undefined);
+      assert.equal(process.env.STRIPE_API_KEY, undefined);
       assert.equal(process.env.GITHUB_TOKEN, undefined);
       assert.equal(process.env.UNRELATED_API_TOKEN, undefined);
       assert.equal(process.env.GOOGLE_OAUTH_CLIENT_SECRET, "google-secret");

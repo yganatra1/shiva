@@ -136,7 +136,9 @@ const environmentSchema = z
   .object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   HOST: z.string().trim().min(1).max(255).default("127.0.0.1"),
-  SHIVA_BRAIN_PROVIDER: z.enum(["ollama", "gemini"]).default("gemini"),
+  SHIVA_BRAIN_PROVIDER: z
+    .enum(["ollama", "gemini", "openai", "bedrock"])
+    .default("gemini"),
   OLLAMA_URL: httpBaseUrlSchema.default("http://127.0.0.1:11434"),
   SHIVA_MODEL: z
     .string()
@@ -145,6 +147,12 @@ const environmentSchema = z
     .max(255)
     .default("gemma-4-26b-a4b-it"),
   GEMINI_API_KEY: optionalSecretSchema,
+  OPENAI_API_KEY: optionalSecretSchema,
+  AWS_BEARER_TOKEN_BEDROCK: optionalSecretSchema,
+  AWS_ACCESS_KEY_ID: optionalSecretSchema,
+  AWS_SECRET_ACCESS_KEY: optionalSecretSchema,
+  AWS_SESSION_TOKEN: optionalSecretSchema,
+  AWS_REGION: z.string().trim().min(1).max(64).default("us-east-1"),
   SHIVA_CONTEXT_LENGTH: z.coerce
     .number()
     .int()
@@ -317,6 +325,36 @@ const environmentSchema = z
       });
     }
 
+    if (environment.SHIVA_BRAIN_PROVIDER === "openai" && !environment.OPENAI_API_KEY) {
+      context.addIssue({
+        code: "custom",
+        path: ["OPENAI_API_KEY"],
+        message: "is required when SHIVA_BRAIN_PROVIDER=openai",
+      });
+    }
+
+    if (
+      environment.SHIVA_BRAIN_PROVIDER === "bedrock" &&
+      !environment.AWS_BEARER_TOKEN_BEDROCK
+    ) {
+      if (!environment.AWS_ACCESS_KEY_ID) {
+        context.addIssue({
+          code: "custom",
+          path: ["AWS_ACCESS_KEY_ID"],
+          message:
+            "is required when SHIVA_BRAIN_PROVIDER=bedrock and AWS_BEARER_TOKEN_BEDROCK is not set",
+        });
+      }
+      if (!environment.AWS_SECRET_ACCESS_KEY) {
+        context.addIssue({
+          code: "custom",
+          path: ["AWS_SECRET_ACCESS_KEY"],
+          message:
+            "is required when SHIVA_BRAIN_PROVIDER=bedrock and AWS_BEARER_TOKEN_BEDROCK is not set",
+        });
+      }
+    }
+
     if (
       environment.SHIVA_BRAIN_PROVIDER === "gemini" &&
       environment.SHIVA_MODEL.includes(":")
@@ -355,10 +393,16 @@ const environmentSchema = z
 export interface AppConfig {
   readonly port: number;
   readonly host: string;
-  readonly brainProvider: "ollama" | "gemini";
+  readonly brainProvider: "ollama" | "gemini" | "openai" | "bedrock";
   readonly ollamaUrl: string;
   readonly model: string;
   readonly geminiApiKey?: string;
+  readonly openaiApiKey?: string;
+  readonly awsBearerTokenBedrock?: string;
+  readonly awsAccessKeyId?: string;
+  readonly awsSecretAccessKey?: string;
+  readonly awsSessionToken?: string;
+  readonly awsRegion: string;
   readonly contextLength: number;
   readonly keepAlive: string | number;
   readonly ollamaRequestTimeoutMs: number;
@@ -432,6 +476,12 @@ export type DeviceAgentConfig = Pick<
   | "ollamaUrl"
   | "model"
   | "geminiApiKey"
+  | "openaiApiKey"
+  | "awsBearerTokenBedrock"
+  | "awsAccessKeyId"
+  | "awsSecretAccessKey"
+  | "awsSessionToken"
+  | "awsRegion"
   | "contextLength"
   | "keepAlive"
   | "ollamaRequestTimeoutMs"
@@ -454,6 +504,12 @@ export type GoogleAgentConfig = Pick<
   | "ollamaUrl"
   | "model"
   | "geminiApiKey"
+  | "openaiApiKey"
+  | "awsBearerTokenBedrock"
+  | "awsAccessKeyId"
+  | "awsSecretAccessKey"
+  | "awsSessionToken"
+  | "awsRegion"
   | "contextLength"
   | "keepAlive"
   | "ollamaRequestTimeoutMs"
@@ -498,6 +554,12 @@ const DEVICE_AGENT_ENVIRONMENT_KEYS = [
   "OLLAMA_URL",
   "SHIVA_MODEL",
   "GEMINI_API_KEY",
+  "OPENAI_API_KEY",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_REGION",
   "SHIVA_CONTEXT_LENGTH",
   "SHIVA_KEEP_ALIVE",
   "OLLAMA_REQUEST_TIMEOUT_MS",
@@ -518,6 +580,12 @@ const GOOGLE_AGENT_ENVIRONMENT_KEYS = [
   "OLLAMA_URL",
   "SHIVA_MODEL",
   "GEMINI_API_KEY",
+  "OPENAI_API_KEY",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_REGION",
   "SHIVA_CONTEXT_LENGTH",
   "SHIVA_KEEP_ALIVE",
   "OLLAMA_REQUEST_TIMEOUT_MS",
@@ -586,6 +654,16 @@ export function loadDeviceAgentConfig(
     ollamaUrl: config.ollamaUrl,
     model: config.model,
     ...(config.geminiApiKey ? { geminiApiKey: config.geminiApiKey } : {}),
+    ...(config.openaiApiKey ? { openaiApiKey: config.openaiApiKey } : {}),
+    ...(config.awsBearerTokenBedrock
+      ? { awsBearerTokenBedrock: config.awsBearerTokenBedrock }
+      : {}),
+    ...(config.awsAccessKeyId ? { awsAccessKeyId: config.awsAccessKeyId } : {}),
+    ...(config.awsSecretAccessKey
+      ? { awsSecretAccessKey: config.awsSecretAccessKey }
+      : {}),
+    ...(config.awsSessionToken ? { awsSessionToken: config.awsSessionToken } : {}),
+    awsRegion: config.awsRegion,
     contextLength: config.contextLength,
     keepAlive: config.keepAlive,
     ollamaRequestTimeoutMs: config.ollamaRequestTimeoutMs,
@@ -618,6 +696,16 @@ export function loadGoogleAgentConfig(
     ollamaUrl: config.ollamaUrl,
     model: config.model,
     ...(config.geminiApiKey ? { geminiApiKey: config.geminiApiKey } : {}),
+    ...(config.openaiApiKey ? { openaiApiKey: config.openaiApiKey } : {}),
+    ...(config.awsBearerTokenBedrock
+      ? { awsBearerTokenBedrock: config.awsBearerTokenBedrock }
+      : {}),
+    ...(config.awsAccessKeyId ? { awsAccessKeyId: config.awsAccessKeyId } : {}),
+    ...(config.awsSecretAccessKey
+      ? { awsSecretAccessKey: config.awsSecretAccessKey }
+      : {}),
+    ...(config.awsSessionToken ? { awsSessionToken: config.awsSessionToken } : {}),
+    awsRegion: config.awsRegion,
     contextLength: config.contextLength,
     keepAlive: config.keepAlive,
     ollamaRequestTimeoutMs: config.ollamaRequestTimeoutMs,
@@ -710,6 +798,22 @@ function parseConfig(environment: NodeJS.ProcessEnv | Record<string, string>): A
     ...(result.data.GEMINI_API_KEY
       ? { geminiApiKey: result.data.GEMINI_API_KEY }
       : {}),
+    ...(result.data.OPENAI_API_KEY
+      ? { openaiApiKey: result.data.OPENAI_API_KEY }
+      : {}),
+    ...(result.data.AWS_BEARER_TOKEN_BEDROCK
+      ? { awsBearerTokenBedrock: result.data.AWS_BEARER_TOKEN_BEDROCK }
+      : {}),
+    ...(result.data.AWS_ACCESS_KEY_ID
+      ? { awsAccessKeyId: result.data.AWS_ACCESS_KEY_ID }
+      : {}),
+    ...(result.data.AWS_SECRET_ACCESS_KEY
+      ? { awsSecretAccessKey: result.data.AWS_SECRET_ACCESS_KEY }
+      : {}),
+    ...(result.data.AWS_SESSION_TOKEN
+      ? { awsSessionToken: result.data.AWS_SESSION_TOKEN }
+      : {}),
+    awsRegion: result.data.AWS_REGION,
     contextLength: result.data.SHIVA_CONTEXT_LENGTH,
     keepAlive: result.data.SHIVA_KEEP_ALIVE,
     ollamaRequestTimeoutMs: result.data.OLLAMA_REQUEST_TIMEOUT_MS,

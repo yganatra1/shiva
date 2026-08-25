@@ -403,23 +403,6 @@ module.exports = {
       // prefixes before it starts the npm wrapper; the runner then applies a
       // strict allowlist again before accepting work.
       filter_env: [
-        "DATABASE_",
-        "POSTGRES_",
-        "GOOGLE_",
-        "BRAVE_",
-        "WEB_",
-        "EXPENSE_",
-        "EMBEDDING_",
-        "WORKING_MEMORY_",
-        "MEMORY_",
-        "ASR_",
-        "TTS_",
-        "FACE_",
-        "SHIVA_USER_",
-        "SHIVA_MAX_EXECUTION_MODE",
-        "SHIVA_CONFIRMATION_",
-        "AGENT_TASK_TIMEOUT_MS",
-        "DEVICE_AGENT_URL"
       ],
 
       env: {
@@ -444,24 +427,6 @@ module.exports = {
       // Google Agent needs only OAuth/Sheets, Ollama, Redis, and bounded
       // worker settings. Core owns PostgreSQL and confirmation state.
       filter_env: [
-        "DATABASE_",
-        "POSTGRES_",
-        "DEVICE_",
-        "BRAVE_",
-        "WEB_",
-        "EMBEDDING_",
-        "WORKING_MEMORY_",
-        "MEMORY_",
-        "ASR_",
-        "TTS_",
-        "FACE_",
-        "SHIVA_MAX_EXECUTION_MODE",
-        "SHIVA_CONFIRMATION_",
-        "SHIVA_PERF_LOG",
-        "SHIVA_AGENT_TRACE_LOG",
-        "AGENT_TASK_TIMEOUT_MS",
-        "EXPENSE_SHEET_ID",
-        "GOOGLE_APPLICATION_CREDENTIALS"
       ],
 
       env: {

@@ -30,6 +30,7 @@ export const testConfig: AppConfig = {
   ollamaUrl: "http://127.0.0.1:11434",
   model: "test-model",
   geminiApiKey: "test-gemini-api-key",
+  awsRegion: "us-east-1",
   contextLength: 16_384,
   keepAlive: "30m",
   ollamaRequestTimeoutMs: 1_000,
