@@ -306,6 +306,38 @@ test("a top-level oneOf schema is nested under a wrapper property, and the wrapp
   });
 });
 
+test("a model that ignores the wrapper hint and answers with the bare decision is passed through unchanged", async (context) => {
+  const upstream = createServer((request, response) => {
+    request.resume();
+    response.setHeader("content-type", "text/event-stream");
+    response.end(
+      sseEvent({
+        choices: [
+          { delta: { content: '{"type":"direct_chat"}' }, finish_reason: "stop" },
+        ],
+      }) + "data: [DONE]\n\n",
+    );
+  });
+  context.after(() => closeServer(upstream));
+  const format = {
+    type: "object",
+    oneOf: [
+      {
+        type: "object",
+        properties: { type: { type: "string", const: "direct_chat" } },
+        required: ["type"],
+      },
+    ],
+  } as const;
+
+  const result = await createProvider(await listenOnRandomPort(upstream), 1_000).chat({
+    messages: [{ role: "user", content: "Decide." }],
+    responseFormat: format,
+  });
+
+  assert.deepEqual(result, { content: '{"type":"direct_chat"}' });
+});
+
 test("an object-typed responseFormat without a rejected top-level keyword is sent unwrapped", async (context) => {
   let requestBody: unknown;
   const upstream = createServer((request, response) => {

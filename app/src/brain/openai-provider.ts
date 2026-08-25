@@ -304,26 +304,30 @@ function needsTopLevelWrap(
   );
 }
 
+/**
+ * Without `strict: true` (see buildResponseFormat — strict mode's stricter
+ * shape requirements aren't worth taking on here), response_format is only a
+ * soft hint: a model is free to ignore the synthetic wrapper and answer with
+ * the bare decision object it actually means, which is what's observed in
+ * practice. So unwrapping is best-effort — pass the content through
+ * unchanged whenever it isn't actually wrapped, rather than treating that as
+ * an error; the planner's own JSON validation is what ultimately decides
+ * whether the shape is usable.
+ */
 function unwrapTopLevelValue(content: string): string {
   let parsed: unknown;
   console.log('content', content);
   try {
     parsed = JSON.parse(content) as unknown;
   } catch {
-    throw new AIProviderError(
-      "INVALID_RESPONSE",
-      "OpenAI returned malformed structured-output JSON.",
-    );
+    return content;
   }
   if (
     typeof parsed !== "object" ||
     parsed === null ||
     !(WRAPPED_VALUE_KEY in parsed)
   ) {
-    throw new AIProviderError(
-      "INVALID_RESPONSE",
-      "OpenAI returned a structured-output response without the expected wrapper field.",
-    );
+    return content;
   }
   return JSON.stringify((parsed as Record<string, unknown>)[WRAPPED_VALUE_KEY]);
 }
