@@ -306,6 +306,7 @@ function needsTopLevelWrap(
 
 function unwrapTopLevelValue(content: string): string {
   let parsed: unknown;
+  console.log('content', content);
   try {
     parsed = JSON.parse(content) as unknown;
   } catch {
