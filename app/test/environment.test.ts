@@ -75,6 +75,34 @@ test("SHIVA_BRAIN_PROVIDER selects the chat brain and gates GEMINI_API_KEY accor
   });
 });
 
+test("an Ollama-tag SHIVA_MODEL is rejected up front when SHIVA_BRAIN_PROVIDER=gemini", () => {
+  withEnvironment(
+    { SHIVA_MODEL: "gemma4:26b-a4b-it-q4_K_M" },
+    () => {
+      assert.throws(
+        () => loadConfig(),
+        (error: unknown) =>
+          error instanceof ConfigurationError &&
+          /SHIVA_MODEL/.test(error.message) &&
+          /Ollama tag/.test(error.message),
+      );
+    },
+  );
+
+  // The same value is fine once brainProvider is actually ollama.
+  withEnvironment(
+    {
+      SHIVA_BRAIN_PROVIDER: "ollama",
+      GEMINI_API_KEY: "",
+      SHIVA_MODEL: "gemma4:26b-a4b-it-q4_K_M",
+    },
+    () => {
+      const config = loadConfig();
+      assert.equal(config.model, "gemma4:26b-a4b-it-q4_K_M");
+    },
+  );
+});
+
 test("Core normalizes orchestration config and discards inherited Google secrets", () => {
   withEnvironment(
     {

@@ -317,6 +317,19 @@ const environmentSchema = z
       });
     }
 
+    if (
+      environment.SHIVA_BRAIN_PROVIDER === "gemini" &&
+      environment.SHIVA_MODEL.includes(":")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["SHIVA_MODEL"],
+        message:
+          "looks like an Ollama tag (contains ':'), not a Gemini model id; " +
+          "set a Gemini model id such as gemma-4-26b-a4b-it",
+      });
+    }
+
     const oauth = [
       environment.GOOGLE_OAUTH_CLIENT_ID,
       environment.GOOGLE_OAUTH_CLIENT_SECRET,
