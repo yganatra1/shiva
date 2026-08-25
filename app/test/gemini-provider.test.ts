@@ -258,6 +258,63 @@ test("the provider forwards a JSON Schema for structured output", async (context
   assert.deepEqual(requestBody.generationConfig.responseSchema, format);
 });
 
+test("the provider translates const/additionalProperties into what Gemini's schema dialect accepts", async (context) => {
+  let requestBody: unknown;
+  const upstream = createServer((request, response) => {
+    const bodyParts: Buffer[] = [];
+    request.on("data", (part: Buffer) => bodyParts.push(part));
+    request.on("end", () => {
+      requestBody = JSON.parse(
+        Buffer.concat(bodyParts).toString("utf8"),
+      ) as unknown;
+      response.setHeader("content-type", "text/event-stream");
+      response.end(
+        sseEvent({
+          candidates: [
+            {
+              content: { parts: [{ text: '{"type":"direct_chat"}' }] },
+              finishReason: "STOP",
+            },
+          ],
+        }),
+      );
+    });
+  });
+  context.after(() => closeServer(upstream));
+
+  // Mirrors ShivaAgentPlanner's decisionResponseFormat: a discriminated union
+  // expressed as plain JSON Schema, which is what triggered the real 400
+  // ("Unknown name const"/"Unknown name additionalProperties") against Gemini.
+  const format = {
+    type: "object",
+    oneOf: [
+      {
+        type: "object",
+        properties: { type: { type: "string", const: "direct_chat" } },
+        required: ["type"],
+        additionalProperties: false,
+      },
+    ],
+  } as const;
+
+  await createProvider(await listenOnRandomPort(upstream), 1_000).chat({
+    messages: [{ role: "user", content: "Decide." }],
+    responseFormat: format,
+  });
+
+  assert.ok(isRecord(requestBody) && isRecord(requestBody.generationConfig));
+  assert.deepEqual(requestBody.generationConfig.responseSchema, {
+    type: "object",
+    oneOf: [
+      {
+        type: "object",
+        properties: { type: { type: "string", enum: ["direct_chat"] } },
+        required: ["type"],
+      },
+    ],
+  });
+});
+
 test("the provider distinguishes caller cancellation from its deadline", async (context) => {
   const upstream = createServer((request, response) => {
     request.resume();

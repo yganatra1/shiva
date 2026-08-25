@@ -243,7 +243,7 @@ function buildRequestBody(input: ChatInput): Record<string, unknown> {
       ? {
           responseMimeType: "application/json",
           ...(typeof input.responseFormat === "object"
-            ? { responseSchema: input.responseFormat }
+            ? { responseSchema: toGeminiSchema(input.responseFormat) }
             : {}),
         }
       : {}),
@@ -254,6 +254,34 @@ function buildRequestBody(input: ChatInput): Record<string, unknown> {
     contents,
     ...(Object.keys(generationConfig).length > 0 ? { generationConfig } : {}),
   };
+}
+
+/**
+ * Gemini's responseSchema accepts only a restricted JSON Schema dialect: it
+ * has no `const` (Gemini rejects the whole request with an "Unknown name"
+ * 400) and no `additionalProperties`. Callers like the planner write plain
+ * JSON Schema — discriminated unions via `const` included — so translate it
+ * into what Gemini accepts rather than pushing that dialect split onto them.
+ */
+function toGeminiSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) {
+    return schema.map(toGeminiSchema);
+  }
+
+  if (schema === null || typeof schema !== "object") {
+    return schema;
+  }
+
+  const converted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
+    if (key === "additionalProperties") continue;
+    if (key === "const") {
+      converted.enum = [value];
+      continue;
+    }
+    converted[key] = toGeminiSchema(value);
+  }
+  return converted;
 }
 
 async function* readSseEvents(
