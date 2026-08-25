@@ -230,6 +230,10 @@ function buildRequestBody(
     model,
     messages,
     stream: true,
+    // Opt every request out of OpenAI's server-side logging/retention for
+    // model-distillation and evals — Shiva's conversations are personal data
+    // that shouldn't be stored on OpenAI's side beyond serving the request.
+    store: false,
     ...(input.temperature !== undefined
       ? { temperature: input.temperature }
       : {}),
