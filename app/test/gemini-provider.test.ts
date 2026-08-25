@@ -64,6 +64,35 @@ test("the provider streams SSE chunks and chat() collects them", async (context)
   }
 });
 
+test("the provider disables thinking by default so it can't consume the whole output budget", async (context) => {
+  let requestBody: unknown;
+  const upstream = createServer((request, response) => {
+    const bodyParts: Buffer[] = [];
+    request.on("data", (part: Buffer) => bodyParts.push(part));
+    request.on("end", () => {
+      requestBody = JSON.parse(Buffer.concat(bodyParts).toString("utf8")) as unknown;
+      response.setHeader("content-type", "text/event-stream");
+      response.end(
+        sseEvent({
+          candidates: [
+            { content: { parts: [{ text: "Ready" }] }, finishReason: "STOP" },
+          ],
+        }),
+      );
+    });
+  });
+  context.after(() => closeServer(upstream));
+
+  await createProvider(await listenOnRandomPort(upstream), 1_000).chat({
+    messages: [{ role: "user", content: "Hello" }],
+  });
+
+  assert.ok(isRecord(requestBody) && isRecord(requestBody.generationConfig));
+  assert.deepEqual(requestBody.generationConfig.thinkingConfig, {
+    thinkingLevel: "minimal",
+  });
+});
+
 test("the provider surfaces thinking deltas separately from content", async (context) => {
   const upstream = createServer((request, response) => {
     request.resume();
@@ -214,7 +243,8 @@ test("the provider forwards an explicit temperature and omits it by default", as
   const [withTemperature, withoutTemperature] = requestBodies;
   assert.ok(isRecord(withTemperature) && isRecord(withTemperature.generationConfig));
   assert.equal(withTemperature.generationConfig.temperature, 0);
-  assert.equal(isRecord(withoutTemperature) && "generationConfig" in withoutTemperature, false);
+  assert.ok(isRecord(withoutTemperature) && isRecord(withoutTemperature.generationConfig));
+  assert.equal("temperature" in withoutTemperature.generationConfig, false);
 });
 
 test("the provider forwards a JSON Schema for structured output", async (context) => {

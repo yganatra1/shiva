@@ -236,6 +236,12 @@ function buildRequestBody(input: ChatInput): Record<string, unknown> {
     }));
 
   const generationConfig: Record<string, unknown> = {
+    // Matches OllamaProvider's `think: false`: thinking tokens count against
+    // the output budget, and Gemma will happily spend all of it "thinking"
+    // and leave none for actual content — an empty response that looks like
+    // no response at all. "minimal" is Gemma-on-Gemini's off switch; see
+    // https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api.
+    thinkingConfig: { thinkingLevel: "minimal" },
     ...(input.temperature !== undefined
       ? { temperature: input.temperature }
       : {}),
