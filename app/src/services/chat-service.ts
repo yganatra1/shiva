@@ -184,10 +184,18 @@ export class ShivaChatService {
             userId: this.options.userId,
             userName: this.options.userName,
             timeZone: this.options.timeZone,
-            // The agent planner owns its system contract. Preserve voice,
-            // memory, and conversation context without injecting the direct
-            // chat system prompt as a competing planner instruction.
-            contextMessages: priorPlannerContext(messages, persistedMessage),
+            // The agent planner owns its system contract and has its own
+            // on-demand memory_search skill. Give it only the interaction
+            // mode and prior conversation turns (for reference resolution,
+            // e.g. "who is she?") — never the direct-chat system prompt or
+            // the retrieved-memory dump built for the direct-chat response,
+            // which would otherwise ride along on every single turn whether
+            // or not that turn's task has anything to do with it.
+            contextMessages: priorPlannerContext(
+              recentMessages,
+              interaction.mode,
+              persistedMessage,
+            ),
             sourceMessageId: userMessage.id,
             ...(attachedImages.length > 0 ? { images: attachedImages } : {}),
             ...(signal ? { signal } : {}),
@@ -523,14 +531,22 @@ function persistableUserMessage(
 }
 
 function priorPlannerContext(
-  messages: readonly ChatMessage[],
+  recentMessages: readonly StoredMessage[],
+  interactionMode: ChatInteractionMode,
   currentUserMessage: string,
 ): readonly ChatMessage[] {
-  const withoutCoreSystemPrompt = messages.slice(1);
-  const latest = withoutCoreSystemPrompt.at(-1);
-  return latest?.role === "user" && latest.content === currentUserMessage
-    ? withoutCoreSystemPrompt.slice(0, -1)
-    : withoutCoreSystemPrompt;
+  const turns: ChatMessage[] = recentMessages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
+  const latest = turns.at(-1);
+  const priorTurns =
+    latest?.role === "user" && latest.content === currentUserMessage
+      ? turns.slice(0, -1)
+      : turns;
+  const guidance =
+    interactionMode === "voice" ? VOICE_RESPONSE_GUIDANCE : TEXT_RESPONSE_GUIDANCE;
+  return [guidance, ...priorTurns];
 }
 
 function explicitMemoryInstruction(result: ExplicitMemoryResult): ChatMessage {

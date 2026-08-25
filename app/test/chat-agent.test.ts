@@ -8,6 +8,7 @@ import type { AIProvider } from "../src/brain/ai-provider.js";
 import {
   createTestOverrides,
   InMemoryRepository,
+  memoryResult,
   testConfig,
 } from "./test-support.js";
 
@@ -148,6 +149,57 @@ test("agent cancellation uses the existing public cancellation contract", async 
   assert.deepEqual(response.json(), {
     error: { code: "REQUEST_CANCELLED", message: "The request was cancelled." },
   });
+});
+
+test("retrieved memory reaches the direct-chat response but never rides along into the planner's context", async (context) => {
+  const repository = new InMemoryRepository();
+  repository.semanticSearchResults = [
+    memoryResult({ content: "The user's wife's name is Charmi." }),
+  ];
+  let plannerRequest: Parameters<AgentOrchestratorPort["run"]>[0] | undefined;
+  const agentOrchestrator: AgentOrchestratorPort = {
+    async run(request) {
+      plannerRequest = request;
+      return {
+        kind: "direct_chat",
+        runId: "90000000-0000-4000-8000-000000000012",
+        response: undefined,
+        steps: 1,
+        observations: [],
+      };
+    },
+  };
+  let sawMemoryInDirectChat = false;
+  const provider: AIProvider = {
+    async chat() {
+      return { content: '{"memories":[]}' };
+    },
+    async *streamChat(input) {
+      sawMemoryInDirectChat = input.messages.some((message) =>
+        /Charmi/.test(message.content),
+      );
+      yield { content: "Answer." };
+    },
+  };
+  const app = createApp(testConfig, {
+    ...createTestOverrides(provider, repository),
+    agentOrchestrator,
+  });
+  context.after(() => app.close());
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/chat",
+    headers: { "content-type": "application/json" },
+    payload: { message: "What is the match rate?" },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(sawMemoryInDirectChat, true);
+  assert.equal(
+    plannerRequest?.contextMessages.some((message) => /Charmi/.test(message.content)),
+    false,
+  );
 });
 
 test("a corrective follow-up is the sole current task and is not duplicated into reference context", async (context) => {
