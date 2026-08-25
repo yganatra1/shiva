@@ -60,7 +60,11 @@ export class OpenAiProvider implements AIProvider {
       );
     }
 
-    return { content };
+    return {
+      content: needsTopLevelWrap(input.responseFormat)
+        ? unwrapTopLevelValue(content)
+        : content,
+    };
   }
 
   async *streamChat(input: ChatInput): AsyncIterable<ChatChunk> {
@@ -255,7 +259,11 @@ function buildMessageContent(
  * OpenAI's Chat Completions API takes either a bare "json_object" mode or a
  * named "json_schema" (the latter requires a `name` and rejects the plain
  * JSON Schema our callers already write, so it's wrapped here rather than
- * pushed onto them).
+ * pushed onto them). It additionally rejects oneOf/anyOf/allOf/enum/const/not
+ * at the schema's top level (e.g. the planner's discriminated-union decision
+ * schema) even though it accepts them nested — so a top-level one of those is
+ * itself nested one level under a synthetic "value" property, and chat()
+ * unwraps that property back out of the model's response before returning it.
  */
 function buildResponseFormat(
   responseFormat: "json" | Readonly<Record<string, unknown>>,
@@ -263,10 +271,60 @@ function buildResponseFormat(
   if (responseFormat === "json") {
     return { type: "json_object" };
   }
+  const schema = needsTopLevelWrap(responseFormat)
+    ? {
+        type: "object",
+        properties: { [WRAPPED_VALUE_KEY]: responseFormat },
+        required: [WRAPPED_VALUE_KEY],
+      }
+    : responseFormat;
   return {
     type: "json_schema",
-    json_schema: { name: "response", schema: responseFormat },
+    json_schema: { name: "response", schema },
   };
+}
+
+const WRAPPED_VALUE_KEY = "value";
+const TOP_LEVEL_KEYS_REJECTED_BY_OPENAI = [
+  "oneOf",
+  "anyOf",
+  "allOf",
+  "enum",
+  "const",
+  "not",
+];
+
+function needsTopLevelWrap(
+  responseFormat: "json" | Readonly<Record<string, unknown>> | undefined,
+): responseFormat is Readonly<Record<string, unknown>> {
+  return (
+    typeof responseFormat === "object" &&
+    responseFormat !== null &&
+    TOP_LEVEL_KEYS_REJECTED_BY_OPENAI.some((key) => key in responseFormat)
+  );
+}
+
+function unwrapTopLevelValue(content: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content) as unknown;
+  } catch {
+    throw new AIProviderError(
+      "INVALID_RESPONSE",
+      "OpenAI returned malformed structured-output JSON.",
+    );
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !(WRAPPED_VALUE_KEY in parsed)
+  ) {
+    throw new AIProviderError(
+      "INVALID_RESPONSE",
+      "OpenAI returned a structured-output response without the expected wrapper field.",
+    );
+  }
+  return JSON.stringify((parsed as Record<string, unknown>)[WRAPPED_VALUE_KEY]);
 }
 
 async function* readSseEvents(

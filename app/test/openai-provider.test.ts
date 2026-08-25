@@ -254,6 +254,93 @@ test("a 400 unrelated to temperature is not retried", async (context) => {
   assert.equal(requestCount, 1);
 });
 
+test("a top-level oneOf schema is nested under a wrapper property, and the wrapped response is unwrapped back out", async (context) => {
+  let requestBody: unknown;
+  const upstream = createServer((request, response) => {
+    const bodyParts: Buffer[] = [];
+    request.on("data", (part: Buffer) => bodyParts.push(part));
+    request.on("end", () => {
+      requestBody = JSON.parse(Buffer.concat(bodyParts).toString("utf8")) as unknown;
+      response.setHeader("content-type", "text/event-stream");
+      response.end(
+        sseEvent({
+          choices: [
+            {
+              delta: { content: '{"value":{"type":"direct_chat"}}' },
+              finish_reason: "stop",
+            },
+          ],
+        }) + "data: [DONE]\n\n",
+      );
+    });
+  });
+  context.after(() => closeServer(upstream));
+
+  // Mirrors ShivaAgentPlanner's decisionResponseFormat: a discriminated union
+  // expressed as a top-level oneOf, which OpenAI rejects outright ("schema
+  // must have type 'object' and not have 'oneOf'/... at the top level").
+  const format = {
+    type: "object",
+    oneOf: [
+      {
+        type: "object",
+        properties: { type: { type: "string", const: "direct_chat" } },
+        required: ["type"],
+      },
+    ],
+  } as const;
+
+  const result = await createProvider(await listenOnRandomPort(upstream), 1_000).chat({
+    messages: [{ role: "user", content: "Decide." }],
+    responseFormat: format,
+  });
+
+  assert.deepEqual(result, { content: '{"type":"direct_chat"}' });
+  assert.ok(isRecord(requestBody) && isRecord(requestBody.response_format));
+  assert.deepEqual(requestBody.response_format, {
+    type: "json_schema",
+    json_schema: {
+      name: "response",
+      schema: { type: "object", properties: { value: format }, required: ["value"] },
+    },
+  });
+});
+
+test("an object-typed responseFormat without a rejected top-level keyword is sent unwrapped", async (context) => {
+  let requestBody: unknown;
+  const upstream = createServer((request, response) => {
+    const bodyParts: Buffer[] = [];
+    request.on("data", (part: Buffer) => bodyParts.push(part));
+    request.on("end", () => {
+      requestBody = JSON.parse(Buffer.concat(bodyParts).toString("utf8")) as unknown;
+      response.setHeader("content-type", "text/event-stream");
+      response.end(
+        sseEvent({
+          choices: [{ delta: { content: '{"memories":[]}' }, finish_reason: "stop" }],
+        }) + "data: [DONE]\n\n",
+      );
+    });
+  });
+  context.after(() => closeServer(upstream));
+  const format = {
+    type: "object",
+    properties: { memories: { type: "array", items: { type: "object" } } },
+    required: ["memories"],
+  } as const;
+
+  const result = await createProvider(await listenOnRandomPort(upstream), 1_000).chat({
+    messages: [{ role: "user", content: "Extract memory." }],
+    responseFormat: format,
+  });
+
+  assert.deepEqual(result, { content: '{"memories":[]}' });
+  assert.ok(isRecord(requestBody) && isRecord(requestBody.response_format));
+  assert.deepEqual(requestBody.response_format, {
+    type: "json_schema",
+    json_schema: { name: "response", schema: format },
+  });
+});
+
 test("a plain 'json' responseFormat becomes json_object mode", async (context) => {
   let requestBody: unknown;
   const upstream = createServer((request, response) => {
