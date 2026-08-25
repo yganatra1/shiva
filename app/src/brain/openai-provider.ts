@@ -79,16 +79,33 @@ export class OpenAiProvider implements AIProvider {
         "/v1/chat/completions",
         this.options.baseUrl ?? OPENAI_API_BASE_URL,
       );
+      const headers = {
+        authorization: `Bearer ${this.options.apiKey}`,
+        "content-type": "application/json",
+      };
 
-      const response = await fetch(endpoint, {
+      let response = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          authorization: `Bearer ${this.options.apiKey}`,
-          "content-type": "application/json",
-        },
+        headers,
         body: JSON.stringify(buildRequestBody(input, this.options.model)),
         signal: requestSignal,
       });
+
+      if (
+        response.status === 400 &&
+        input.temperature !== undefined &&
+        (await rejectsTemperature(response))
+      ) {
+        const { temperature: _temperature, ...inputWithoutTemperature } = input;
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(
+            buildRequestBody(inputWithoutTemperature, this.options.model),
+          ),
+          signal: requestSignal,
+        });
+      }
 
       if (!response.ok) {
         const detail = await readErrorBody(response);
@@ -317,6 +334,33 @@ function truncateForLog(text: string): string | undefined {
   return trimmed.length > MAX_ERROR_BODY_CHARS
     ? `${trimmed.slice(0, MAX_ERROR_BODY_CHARS)}...`
     : trimmed;
+}
+
+const openAiErrorParamSchema = z
+  .object({
+    error: z.object({ param: z.string().optional(), code: z.string().optional() }).passthrough(),
+  })
+  .passthrough();
+
+/**
+ * Some models (e.g. gpt-5's reasoning variants) reject any explicit
+ * `temperature` and only accept their fixed default. Detecting that specific
+ * 400 lets the caller retry once without the field instead of failing every
+ * request outright — mirrors OllamaProvider's retry-on-400 for `format`.
+ */
+async function rejectsTemperature(response: Response): Promise<boolean> {
+  let body: unknown;
+  try {
+    body = JSON.parse(await response.text()) as unknown;
+  } catch {
+    return false;
+  }
+  const parsed = openAiErrorParamSchema.safeParse(body);
+  return (
+    parsed.success &&
+    parsed.data.error.param === "temperature" &&
+    parsed.data.error.code === "unsupported_value"
+  );
 }
 
 /** Best-effort capture of OpenAI's own error text (e.g. an invalid API key) for diagnosis. */
