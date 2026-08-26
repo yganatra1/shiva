@@ -3,6 +3,8 @@ package com.shiva.assistant.feature.chat
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MicNone
@@ -56,7 +59,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -174,6 +179,10 @@ fun ChatScreen(
         },
         onRenameConversation = { localId, title ->
             scope.launch { container.chatRepository.renameConversation(localId, title) }
+        },
+        onDeleteConversation = { localId ->
+            pendingImageUri = null
+            scope.launch { container.chatRepository.deleteConversation(localId) }
         },
     ) {
         Column(
@@ -347,6 +356,8 @@ private fun MessageBubble(
     onRetry: () -> Unit,
 ) {
     val palette = LocalShivaPalette.current
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     val isUser = message.role == ChatRole.USER
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -401,6 +412,25 @@ private fun MessageBubble(
                     color = palette.dim,
                     modifier = Modifier.padding(top = 6.dp, start = 4.dp, end = 4.dp),
                 )
+                if (message.content.isNotBlank()) {
+                    IconButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString(message.content))
+                            // Android 13+ shows its own clipboard confirmation popup.
+                            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                                Toast.makeText(context, "Message copied", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.ContentCopy,
+                            contentDescription = "Copy message",
+                            tint = palette.muted,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
                 if (message.status == MessageStatus.FAILED) {
                     IconButton(onClick = onRetry, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Outlined.Refresh, contentDescription = "Retry", tint = palette.accent)

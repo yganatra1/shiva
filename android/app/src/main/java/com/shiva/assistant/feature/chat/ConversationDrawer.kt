@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material3.AlertDialog
@@ -56,10 +57,12 @@ internal fun ConversationNavigationDrawer(
     onNewConversation: () -> Unit,
     onSelectConversation: (String) -> Unit,
     onRenameConversation: (String, String) -> Unit,
+    onDeleteConversation: (String) -> Unit,
     content: @Composable () -> Unit,
 ) {
     val palette = LocalShivaPalette.current
     var renameTarget by remember { mutableStateOf<ConversationSummary?>(null) }
+    var deleteTarget by remember { mutableStateOf<ConversationSummary?>(null) }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -115,6 +118,7 @@ internal fun ConversationNavigationDrawer(
                                     enabled = switchingEnabled,
                                     onClick = { onSelectConversation(conversation.localId) },
                                     onRename = { renameTarget = conversation },
+                                    onDelete = { deleteTarget = conversation },
                                 )
                             }
                         }
@@ -142,6 +146,17 @@ internal fun ConversationNavigationDrawer(
             onRename = { title ->
                 onRenameConversation(conversation.localId, title)
                 renameTarget = null
+            },
+        )
+    }
+
+    deleteTarget?.let { conversation ->
+        DeleteConversationDialog(
+            title = conversation.title,
+            onDismiss = { deleteTarget = null },
+            onDelete = {
+                onDeleteConversation(conversation.localId)
+                deleteTarget = null
             },
         )
     }
@@ -181,6 +196,7 @@ private fun ConversationRow(
     enabled: Boolean,
     onClick: () -> Unit,
     onRename: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     val palette = LocalShivaPalette.current
     val shape = RoundedCornerShape(14.dp)
@@ -211,6 +227,13 @@ private fun ConversationRow(
             Icon(
                 Icons.Outlined.Edit,
                 contentDescription = "Rename ${conversation.title}",
+                tint = if (enabled) palette.muted else palette.dim,
+            )
+        }
+        IconButton(onClick = onDelete, enabled = enabled) {
+            Icon(
+                Icons.Outlined.DeleteOutline,
+                contentDescription = "Delete ${conversation.title}",
                 tint = if (enabled) palette.muted else palette.dim,
             )
         }
@@ -253,6 +276,35 @@ private fun RenameConversationDialog(
                 onClick = { onRename(title) },
             ) {
                 Text("Rename", color = if (valid) palette.accent else palette.dim)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = palette.muted)
+            }
+        },
+    )
+}
+
+@Composable
+private fun DeleteConversationDialog(
+    title: String,
+    onDismiss: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val palette = LocalShivaPalette.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        titleContentColor = palette.text,
+        textContentColor = palette.muted,
+        title = { Text("Delete conversation") },
+        text = {
+            Text("\"$title\" and its messages will be removed from this phone. This cannot be undone.")
+        },
+        confirmButton = {
+            TextButton(onClick = onDelete) {
+                Text("Delete", color = palette.danger)
             }
         },
         dismissButton = {

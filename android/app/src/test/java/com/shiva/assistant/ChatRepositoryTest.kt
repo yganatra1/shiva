@@ -136,6 +136,90 @@ class ChatRepositoryTest {
     }
 
     @Test
+    fun deletingAnInactiveConversationLeavesTheActiveOneAlone() = runTest {
+        val repository = ChatRepository(
+            client = FakeShivaClient(
+                listOf(
+                    ChatStreamEvent.Started("server-conversation"),
+                    ChatStreamEvent.Delta("answer"),
+                    ChatStreamEvent.Completed,
+                ),
+            ),
+            cache = InMemoryChatCache(),
+            now = increasingClock(),
+            ids = countingIds(),
+        )
+        repository.restore()
+        repository.send("First topic")
+        val firstId = repository.activeConversationId.value!!
+        repository.newConversation()
+        repository.send("Second topic")
+        val secondId = repository.activeConversationId.value!!
+
+        assertTrue(repository.deleteConversation(firstId))
+
+        assertEquals(secondId, repository.activeConversationId.value)
+        assertEquals(listOf(secondId), repository.conversations.value.map { it.localId })
+        assertEquals("Second topic", repository.state.value.messages.first().content)
+    }
+
+    @Test
+    fun deletingTheActiveConversationFallsBackToTheMostRecent() = runTest {
+        val older = StoredConversation(
+            localId = "local-old",
+            title = "Older",
+            serverConversationId = "server-old",
+            createdAtEpochMs = 1,
+            updatedAtEpochMs = 1,
+        )
+        val active = StoredConversation(
+            localId = "local-active",
+            title = "Active",
+            serverConversationId = "server-active",
+            createdAtEpochMs = 5,
+            updatedAtEpochMs = 5,
+        )
+        val repository = ChatRepository(
+            client = FakeShivaClient(emptyList()),
+            cache = InMemoryChatCache(ChatArchive("local-active", listOf(older, active))),
+            now = { 10 },
+        )
+        repository.restore()
+
+        assertTrue(repository.deleteConversation("local-active"))
+
+        assertEquals("local-old", repository.activeConversationId.value)
+        assertEquals("server-old", repository.state.value.conversationId)
+        assertEquals(listOf("local-old"), repository.conversations.value.map { it.localId })
+        assertFalse(repository.deleteConversation("local-active"))
+    }
+
+    @Test
+    fun deletingTheLastConversationStartsAnEmptyOne() = runTest {
+        val only = StoredConversation(
+            localId = "local-1",
+            title = "Only",
+            serverConversationId = "server-1",
+            createdAtEpochMs = 1,
+            updatedAtEpochMs = 1,
+        )
+        val repository = ChatRepository(
+            client = FakeShivaClient(emptyList()),
+            cache = InMemoryChatCache(ChatArchive("local-1", listOf(only))),
+            now = { 10 },
+            ids = countingIds(),
+        )
+        repository.restore()
+
+        assertTrue(repository.deleteConversation("local-1"))
+
+        val active = repository.activeConversationId.value
+        assertEquals(listOf(active), repository.conversations.value.map { it.localId })
+        assertNull(repository.state.value.conversationId)
+        assertTrue(repository.state.value.messages.isEmpty())
+    }
+
+    @Test
     fun archiveRestoresActiveConversationAndHistory() = runTest {
         val first = StoredConversation(
             localId = "first",

@@ -2208,8 +2208,9 @@ test("the current corrective task follows reference history in planner input", a
 
   const iteration = inputs[0]?.messages[1]?.content ?? "";
   const parsed = JSON.parse(iteration) as Record<string, unknown>;
-  assert.equal(parsed.task, "Expense 2026 sorry");
-  assert.match(String(parsed.taskRule), /supersedes conflicting names/i);
+  assert.equal(parsed.userLastMessage, "Expense 2026 sorry");
+  const systemPrompt = String(inputs[0]?.messages[0]?.content ?? "");
+  assert.match(systemPrompt, /supersedes earlier tasks in conversationHistory/i);
   assert.ok(iteration.indexOf("Expense 2026 sorry") > iteration.indexOf("Expenses 2026"));
 });
 

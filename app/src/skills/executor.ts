@@ -517,7 +517,6 @@ export class SkillExecutor {
     try {
       result = await skill.execute(input, executionContext);
     } catch (error: unknown) {
-      console.error('error', error);
       if (context.signal?.aborted) {
         await this.finishAuditSafely(
           auditId,
