@@ -1,5 +1,6 @@
 import type { z } from "zod";
 
+import type { RequestTrigger } from "../core/request-trigger";
 import type {
   ActionImpact,
   ActionMutability,
@@ -20,6 +21,8 @@ export interface SkillContext {
   readonly originalUserRequest?: string;
   /** Authoritative persisted chat message that originated this request. */
   readonly sourceMessageId?: string;
+  /** Runtime-verified request provenance; never supplied by the model. */
+  readonly trigger?: RequestTrigger;
   /** Existing durable request when Core is continuing after an agent reply. */
   readonly orchestrationRequestId?: string;
   /** Agent response that caused the current continuation reasoning pass. */

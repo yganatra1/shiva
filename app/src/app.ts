@@ -57,6 +57,11 @@ import {
   type ExecutionStatusPort,
 } from "./security/execution-status";
 import { ShivaChatService } from "./services/chat-service";
+import { createSchedulerQueue, type SchedulerLogSink } from "./scheduler/pg-boss";
+import { DrizzleSchedulerRepository } from "./scheduler/scheduler-repository";
+import { SchedulerService } from "./scheduler/scheduler-service";
+import { ScheduledCoreExecutor } from "./scheduler/scheduled-core-executor";
+import { registerSchedulerInternalRoute } from "./scheduler/scheduler-api-route";
 import { HttpASRProvider } from "./voice/http-asr-provider";
 import { HttpTTSProvider } from "./voice/http-tts-provider";
 import type { ASRProvider, TTSProvider } from "./voice/provider";
@@ -112,6 +117,29 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
   const database = overrides.repository ? undefined : createDatabase(config);
   const repository =
     overrides.repository ?? new MemoryRepository(requiredDatabase(database));
+  const schedulerRepository = database
+    ? new DrizzleSchedulerRepository(database.db)
+    : undefined;
+  const schedulerLogger = fastifySchedulerLogger(app);
+  const schedulerQueue = schedulerRepository
+    ? createSchedulerQueue({
+        databaseUrl: config.databaseUrl,
+        databaseSsl: config.databaseSsl,
+        poolMax: config.schedulerDatabasePoolMax,
+        monitorSchedules: false,
+        applicationName: "shiva-api-scheduler-producer",
+        logger: schedulerLogger,
+      })
+    : undefined;
+  const schedulerService =
+    schedulerRepository && schedulerQueue
+      ? new SchedulerService({
+          queue: schedulerQueue,
+          repository: schedulerRepository,
+          queueOptions: config.schedulerQueueOptions,
+          logger: schedulerLogger,
+        })
+      : undefined;
   const embeddingProvider =
     overrides.embeddingProvider ??
     new OllamaEmbeddingProvider({
@@ -201,6 +229,7 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
           app.log.error({ err: error }, "Agent audit finalization failed");
         },
         config.agentTraceLog ? consoleTrace : undefined,
+        schedulerService,
       )
     : undefined;
   const agentOrchestrator =
@@ -236,8 +265,10 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
   app.addHook("preClose", async () => {
     voicePlaybackCoordinator.close();
     await agentRuntime?.close();
+    await schedulerService?.stop();
   });
   app.addHook("onReady", async () => {
+    await schedulerService?.start();
     await agentRuntime?.start();
   });
   app.addHook("onClose", async () => {
@@ -263,6 +294,25 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
     userId: config.userId,
   });
   registerVoiceRoutes(app, { asrProvider, ttsProvider });
+  if (
+    schedulerRepository &&
+    schedulerService &&
+    config.schedulerToken
+  ) {
+    registerSchedulerInternalRoute(
+      app,
+      new ScheduledCoreExecutor({
+        repository: schedulerRepository,
+        chatService,
+        updates: coreUpdateHub,
+        configuredUserId: config.userId,
+        logger: schedulerLogger,
+        processingUncertainAfterMs:
+          config.schedulerProcessingUncertainAfterMs,
+      }),
+      config.schedulerToken,
+    );
+  }
   if (peopleRepository && faceRecognition) {
     registerPeopleRoutes(app, {
       repository: peopleRepository,
@@ -332,4 +382,18 @@ function requiredDatabase(
 function consoleTrace(detail: Record<string, unknown>, message: string): void {
   console.log(`[SHIVA-TRACE] ${message}`);
   console.log(JSON.stringify(detail, null, 2));
+}
+
+function fastifySchedulerLogger(app: FastifyInstance): SchedulerLogSink {
+  return {
+    info(detail, message) {
+      app.log.info(detail, message);
+    },
+    warn(detail, message) {
+      app.log.warn(detail, message);
+    },
+    error(detail, message) {
+      app.log.error(detail, message);
+    },
+  };
 }

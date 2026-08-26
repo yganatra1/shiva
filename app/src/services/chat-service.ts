@@ -4,6 +4,7 @@ import type {
   ChatMessage,
 } from "../brain/ai-provider";
 import type { AgentOrchestratorPort } from "../agent/types";
+import type { RequestTrigger } from "../core/request-trigger";
 import { SHIVA_SYSTEM_PROMPT, TEXT_MARKDOWN_RESPONSE_GUIDANCE } from "../brain/system-prompt";
 import type {
   FaceIdentificationResult,
@@ -63,6 +64,9 @@ export type ChatInteractionMode = "text" | "voice";
 export interface ChatInteractionContext {
   readonly mode: ChatInteractionMode;
   readonly performance?: ChatPerformanceTrace;
+  readonly trigger?: RequestTrigger;
+  readonly onUserPersisted?: (message: StoredMessage) => void | Promise<void>;
+  readonly onAssistantPersisted?: (message: StoredMessage) => void | Promise<void>;
 }
 
 const VOICE_RESPONSE_GUIDANCE: ChatMessage = {
@@ -132,8 +136,16 @@ export class ShivaChatService {
           conversation.id,
           "user",
           persistedMessage,
+          interaction.trigger
+            ? {
+                source: "scheduled_task",
+                sourceId: interaction.trigger.occurrenceId,
+                metadata: { ...interaction.trigger },
+              }
+            : undefined,
         ),
     );
+    await interaction.onUserPersisted?.(userMessage);
     const recentMessages = await measureChatPerformance(
       performance,
       "working-memory",
@@ -143,7 +155,8 @@ export class ShivaChatService {
           this.options.workingMemoryMessageLimit,
         ),
     );
-    const explicitRequest = isExplicitMemoryRequest(persistedMessage);
+    const explicitRequest =
+      !interaction.trigger && isExplicitMemoryRequest(persistedMessage);
     const explicitMemory = explicitRequest
       ? await measureChatPerformance(performance, "explicit-memory", () =>
           this.options.memoryService.rememberExplicitInteraction({
@@ -197,6 +210,7 @@ export class ShivaChatService {
               persistedMessage,
             ),
             sourceMessageId: userMessage.id,
+            ...(interaction.trigger ? { trigger: interaction.trigger } : {}),
             ...(attachedImages.length > 0 ? { images: attachedImages } : {}),
             ...(signal ? { signal } : {}),
           })
@@ -220,6 +234,7 @@ export class ShivaChatService {
           : undefined,
         signal,
         performance,
+        interaction,
       ),
     };
   }
@@ -290,6 +305,7 @@ export class ShivaChatService {
     agentResponse?: string,
     signal?: AbortSignal,
     performance?: ChatPerformanceTrace,
+    interaction: ChatInteractionContext = { mode: "text" },
   ): AsyncIterable<ChatChunk> {
     let assistantResponse = "";
     if (agentResponse !== undefined) {
@@ -314,15 +330,26 @@ export class ShivaChatService {
       return;
     }
 
-    await measureChatPerformance(performance, "save-assistant", () =>
+    const storedAssistant = await measureChatPerformance(
+      performance,
+      "save-assistant",
+      () =>
       this.options.repository.addMessage(
         conversationId,
         "assistant",
         assistantResponse,
+        interaction.trigger
+          ? {
+              source: "scheduled_task",
+              sourceId: interaction.trigger.occurrenceId,
+              metadata: { ...interaction.trigger },
+            }
+          : undefined,
       ),
     );
+    await interaction.onAssistantPersisted?.(storedAssistant);
 
-    if (!deferMemoryExtraction) {
+    if (!deferMemoryExtraction || interaction.trigger) {
       return;
     }
 

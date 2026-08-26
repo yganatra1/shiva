@@ -386,6 +386,34 @@ module.exports = {
     },
 
     {
+      name: "shiva-scheduler",
+      cwd: "$APP",
+      script: "npm",
+      args: "run start:scheduler",
+      interpreter: "none",
+
+      autorestart: true,
+      restart_delay: 2000,
+      max_restarts: 20,
+      kill_timeout: 35000,
+
+      out_file: "$PM2_LOG_DIR/scheduler-out.log",
+      error_file: "$PM2_LOG_DIR/scheduler-error.log",
+
+      // The runner applies a strict allowlist as well. Filter known model,
+      // account, device, and media secrets before even starting npm.
+      filter_env: [
+        "GOOGLE_", "GEMINI_", "OPENAI_", "AWS_", "OLLAMA_",
+        "DEVICE_", "ASR_", "TTS_", "FACE_", "BRAVE_", "EXPENSE_",
+        "REDIS_"
+      ],
+
+      env: {
+        NODE_ENV: "production"
+      }
+    },
+
+    {
       name: "shiva-device-agent",
       cwd: "$APP",
       script: "npm",
@@ -442,6 +470,7 @@ PMEOF
 # configuration is always applied.
 
 pm2 delete shiva-api >/dev/null 2>&1 || true
+pm2 delete shiva-scheduler >/dev/null 2>&1 || true
 pm2 delete shiva-device-agent >/dev/null 2>&1 || true
 pm2 delete shiva-google-agent >/dev/null 2>&1 || true
 pm2 delete shiva-asr >/dev/null 2>&1 || true
@@ -575,6 +604,7 @@ echo
 echo "Useful commands:"
 echo "  pm2 status"
 echo "  pm2 logs shiva-api"
+echo "  pm2 logs shiva-scheduler"
 echo "  pm2 logs shiva-device-agent"
 echo "  pm2 logs shiva-google-agent"
 echo "  pm2 logs shiva-asr"

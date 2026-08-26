@@ -169,11 +169,13 @@ export class AgentLoop {
     let completedSteps = 0;
     try {
       selectedSkills = initialSkillScope(request, this.registry);
-      pendingConfirmation = await this.executor.getPendingConfirmation(
-        request.userId,
-        request.conversationId,
-        this.now(),
-      );
+      pendingConfirmation = request.trigger
+        ? undefined
+        : await this.executor.getPendingConfirmation(
+            request.userId,
+            request.conversationId,
+            this.now(),
+          );
       for (let step = 1; step <= this.maxSteps; step += 1) {
         completedSteps = step;
         throwIfAborted(baseRequest.signal);
@@ -256,6 +258,7 @@ export class AgentLoop {
             ...(scopedRequest.sourceMessageId
               ? { sourceMessageId: scopedRequest.sourceMessageId }
               : {}),
+            ...(scopedRequest.trigger ? { trigger: scopedRequest.trigger } : {}),
             ...(scopedRequest.delegationContinuation
               ? {
                   orchestrationRequestId:
@@ -505,6 +508,7 @@ export class AgentLoop {
             ...(scopedRequest.sourceMessageId
               ? { sourceMessageId: scopedRequest.sourceMessageId }
               : {}),
+            ...(scopedRequest.trigger ? { trigger: scopedRequest.trigger } : {}),
             ...(scopedRequest.delegationContinuation
               ? {
                   orchestrationRequestId:
@@ -518,7 +522,9 @@ export class AgentLoop {
             now: this.now,
           },
           {
-            userAuthorized: decision.authorization === "user_authorized",
+            userAuthorized:
+              decision.authorization === "user_authorized" ||
+              scopedRequest.trigger?.source === "scheduled_task",
           },
         );
         if (callKey) completedSkillCalls.set(callKey, result);

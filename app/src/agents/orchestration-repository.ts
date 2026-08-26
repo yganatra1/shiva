@@ -9,6 +9,7 @@ import {
 } from "drizzle-orm";
 
 import type { ShivaDatabase } from "../database/pool.js";
+import type { StoredMessage } from "../memory/types.js";
 import {
   agentResponses,
   agentTasks,
@@ -21,7 +22,7 @@ export type OrchestrationRequestRecord =
   typeof orchestrationRequests.$inferSelect;
 export type AgentTaskRecord = typeof agentTasks.$inferSelect;
 export type AgentResponseRecord = typeof agentResponses.$inferSelect;
-export type OrchestrationAssistantMessage = typeof messages.$inferSelect;
+export type OrchestrationAssistantMessage = StoredMessage;
 
 export interface CreateInitialRequestWithTaskInput {
   readonly requestId?: string;

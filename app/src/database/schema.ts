@@ -24,6 +24,10 @@ import {
 import { EMBEDDING_DIMENSIONS } from "../types/embedding";
 
 export const messageRole = pgEnum("message_role", ["user", "assistant"]);
+export const messageSource = pgEnum("message_source", [
+  "chat",
+  "scheduled_task",
+]);
 export const memoryType = pgEnum("memory_type", ["episodic", "semantic"]);
 export const semanticMemoryType = pgEnum("semantic_memory_type", [
   "fact",
@@ -71,6 +75,22 @@ export const confirmationStatus = pgEnum("confirmation_status", [
   "EXECUTED",
   "FAILED",
 ]);
+export const scheduledTaskType = pgEnum("scheduled_task_type", [
+  "once",
+  "cron",
+  "interval",
+]);
+export const scheduledTaskLastStatus = pgEnum("scheduled_task_last_status", [
+  "pending",
+  "running",
+  "succeeded",
+  "failed",
+  "skipped",
+]);
+export const scheduledTaskExecutionStatus = pgEnum(
+  "scheduled_task_execution_status",
+  ["processing", "succeeded", "failed"],
+);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
@@ -339,16 +359,168 @@ export const messages = pgTable(
       .references(() => conversations.id, { onDelete: "cascade" }),
     role: messageRole("role").notNull(),
     content: text("content").notNull(),
+    source: messageSource("source").default("chat").notNull(),
+    sourceId: text("source_id"),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .default({})
+      .notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
   },
   (table) => [
     check("messages_content_not_empty", sql`length(${table.content}) > 0`),
+    check(
+      "messages_source_shape",
+      sql`(${table.source} = 'chat' AND ${table.sourceId} IS NULL) OR (${table.source} = 'scheduled_task' AND length(btrim(${table.sourceId})) > 0)`,
+    ),
+    check(
+      "messages_metadata_object",
+      sql`jsonb_typeof(${table.metadata}) = 'object'`,
+    ),
+    uniqueIndex("messages_source_role_unique")
+      .on(table.source, table.sourceId, table.role)
+      .where(sql`${table.sourceId} IS NOT NULL`),
     index("messages_conversation_created_idx").on(
       table.conversationId,
       table.createdAt.desc(),
       table.id.desc(),
+    ),
+  ],
+);
+
+/** User-facing metadata for persistent Shiva wake-ups managed by pg-boss. */
+export const scheduledTasks = pgTable(
+  "scheduled_tasks",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    conversationId: uuid("conversation_id").references(() => conversations.id, {
+      onDelete: "set null",
+    }),
+    name: text("name").notNull(),
+    instruction: text("instruction").notNull(),
+    scheduleType: scheduledTaskType("schedule_type").notNull(),
+    scheduleExpression: text("schedule_expression"),
+    runAt: timestamp("run_at", { withTimezone: true }),
+    intervalSeconds: integer("interval_seconds"),
+    timezone: text("timezone").notNull(),
+    enabled: boolean("enabled").default(true).notNull(),
+    revision: integer("revision").default(1).notNull(),
+    currentJobId: text("current_job_id"),
+    scheduleKey: text("schedule_key"),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    lastStatus: scheduledTaskLastStatus("last_status"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    check("scheduled_tasks_name_not_empty", sql`length(btrim(${table.name})) > 0`),
+    check(
+      "scheduled_tasks_instruction_not_empty",
+      sql`length(btrim(${table.instruction})) > 0`,
+    ),
+    check(
+      "scheduled_tasks_timezone_not_empty",
+      sql`length(btrim(${table.timezone})) > 0`,
+    ),
+    check("scheduled_tasks_revision_positive", sql`${table.revision} > 0`),
+    check(
+      "scheduled_tasks_interval_positive",
+      sql`${table.intervalSeconds} IS NULL OR ${table.intervalSeconds} > 0`,
+    ),
+    check(
+      "scheduled_tasks_schedule_shape",
+      sql`(${table.scheduleType} = 'once' AND ${table.runAt} IS NOT NULL AND ${table.scheduleExpression} IS NULL AND ${table.intervalSeconds} IS NULL AND ${table.scheduleKey} IS NULL) OR (${table.scheduleType} = 'cron' AND ${table.runAt} IS NULL AND ${table.scheduleExpression} IS NOT NULL AND ${table.intervalSeconds} IS NULL AND ${table.scheduleKey} IS NOT NULL) OR (${table.scheduleType} = 'interval' AND ${table.runAt} IS NULL AND ${table.scheduleExpression} IS NULL AND ${table.intervalSeconds} IS NOT NULL AND ${table.scheduleKey} IS NULL)`,
+    ),
+    check(
+      "scheduled_tasks_last_error_not_empty",
+      sql`${table.lastError} IS NULL OR length(btrim(${table.lastError})) > 0`,
+    ),
+    uniqueIndex("scheduled_tasks_current_job_unique")
+      .on(table.currentJobId)
+      .where(sql`${table.currentJobId} IS NOT NULL`),
+    uniqueIndex("scheduled_tasks_schedule_key_unique")
+      .on(table.scheduleKey)
+      .where(sql`${table.scheduleKey} IS NOT NULL`),
+    index("scheduled_tasks_user_enabled_updated_idx").on(
+      table.userId,
+      table.enabled,
+      table.updatedAt.desc(),
+    ),
+    index("scheduled_tasks_next_run_idx")
+      .on(table.nextRunAt)
+      .where(sql`${table.enabled} = true`),
+  ],
+);
+
+/** Durable Core-side idempotency boundary for one pg-boss occurrence. */
+export const scheduledTaskExecutions = pgTable(
+  "scheduled_task_executions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    scheduledTaskId: uuid("scheduled_task_id")
+      .notNull()
+      .references(() => scheduledTasks.id, { onDelete: "cascade" }),
+    pgBossJobId: text("pg_boss_job_id").notNull(),
+    occurrenceId: text("occurrence_id").notNull(),
+    scheduleRevision: integer("schedule_revision").notNull(),
+    status: scheduledTaskExecutionStatus("status")
+      .default("processing")
+      .notNull(),
+    triggeredAt: timestamp("triggered_at", { withTimezone: true }).notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    sourceMessageId: uuid("source_message_id").references(() => messages.id, {
+      onDelete: "set null",
+    }),
+    assistantMessageId: uuid("assistant_message_id").references(
+      () => messages.id,
+      { onDelete: "set null" },
+    ),
+    response: text("response"),
+    lastError: text("last_error"),
+  },
+  (table) => [
+    check(
+      "scheduled_task_executions_occurrence_not_empty",
+      sql`length(btrim(${table.occurrenceId})) > 0`,
+    ),
+    check(
+      "scheduled_task_executions_job_not_empty",
+      sql`length(btrim(${table.pgBossJobId})) > 0`,
+    ),
+    check(
+      "scheduled_task_executions_revision_positive",
+      sql`${table.scheduleRevision} > 0`,
+    ),
+    check(
+      "scheduled_task_executions_completion_shape",
+      sql`(${table.status} = 'processing' AND ${table.finishedAt} IS NULL) OR (${table.status} <> 'processing' AND ${table.finishedAt} IS NOT NULL)`,
+    ),
+    uniqueIndex("scheduled_task_executions_job_unique").on(table.pgBossJobId),
+    uniqueIndex("scheduled_task_executions_occurrence_unique").on(
+      table.scheduledTaskId,
+      table.occurrenceId,
+    ),
+    uniqueIndex("scheduled_task_executions_source_message_unique")
+      .on(table.sourceMessageId)
+      .where(sql`${table.sourceMessageId} IS NOT NULL`),
+    index("scheduled_task_executions_task_started_idx").on(
+      table.scheduledTaskId,
+      table.startedAt.desc(),
     ),
   ],
 );

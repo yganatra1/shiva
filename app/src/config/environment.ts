@@ -16,6 +16,9 @@ const deviceAgentEnvironmentPath = fileURLToPath(
 const googleAgentEnvironmentPath = fileURLToPath(
   new URL("../../../.env.google-agent", import.meta.url),
 );
+const schedulerEnvironmentPath = fileURLToPath(
+  new URL("../../../.env.scheduler", import.meta.url),
+);
 
 const httpBaseUrlSchema = z
   .string()
@@ -103,6 +106,10 @@ const optionalSecretSchema = z
   .string()
   .transform((value): string | undefined => value.trim() || undefined)
   .optional();
+const optionalSchedulerTokenSchema = optionalSecretSchema.refine(
+  (value) => value === undefined || value.length >= 32,
+  { message: "must contain at least 32 characters when configured" },
+);
 const optionalSheetIdSchema = optionalSecretSchema.refine(
   (value) => value === undefined || /^[A-Za-z0-9_-]{5,256}$/.test(value),
   { message: "must be a Google spreadsheet ID, not a full URL" },
@@ -178,6 +185,52 @@ const environmentSchema = z
     .default("00000000-0000-4000-8000-000000000001"),
   SHIVA_USER_NAME: z.string().trim().min(1).max(255).default("Yash"),
   SHIVA_TIME_ZONE: timeZoneSchema.default("Asia/Kolkata"),
+  SHIVA_SCHEDULER_CORE_URL: httpBaseUrlSchema.default("http://127.0.0.1:3000"),
+  SHIVA_SCHEDULER_TOKEN: optionalSchedulerTokenSchema,
+  SCHEDULER_DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(10).default(2),
+  SCHEDULER_CORE_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(1_800_000)
+    .default(330_000),
+  SCHEDULER_PROCESSING_UNCERTAIN_AFTER_MS: z.coerce
+    .number()
+    .int()
+    .min(30_000)
+    .max(86_400_000)
+    .default(600_000),
+  SCHEDULER_JOB_RETRY_LIMIT: z.coerce.number().int().min(0).max(20).default(5),
+  SCHEDULER_JOB_RETRY_DELAY_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(3_600)
+    .default(5),
+  SCHEDULER_JOB_EXPIRE_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(30)
+    .max(3_600)
+    .default(600),
+  SCHEDULER_JOB_HEARTBEAT_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(20)
+    .max(300)
+    .default(30),
+  SCHEDULER_JOB_RETENTION_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(86_400)
+    .max(315_360_000)
+    .default(31_536_000),
+  SCHEDULER_JOB_DELETE_AFTER_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(31_536_000)
+    .default(2_592_000),
   AGENT_MAX_STEPS: z.coerce.number().int().min(1).max(32).default(12),
   AGENT_REQUEST_TIMEOUT_MS: z.coerce
     .number()
@@ -413,6 +466,12 @@ export interface AppConfig {
   readonly userId: string;
   readonly userName: string;
   readonly timeZone: string;
+  readonly schedulerCoreUrl: string;
+  readonly schedulerToken?: string;
+  readonly schedulerDatabasePoolMax: number;
+  readonly schedulerCoreTimeoutMs: number;
+  readonly schedulerProcessingUncertainAfterMs: number;
+  readonly schedulerQueueOptions: SchedulerQueueConfig;
   readonly agentMaxSteps: number;
   readonly agentRequestTimeoutMs: number;
   readonly agentTaskTimeoutMs: number;
@@ -462,6 +521,29 @@ export interface AppConfig {
   readonly performanceLogging: boolean;
   /** Full per-step planner prompt/response/decision tracing — verbose, opt-in. */
   readonly agentTraceLog: boolean;
+  readonly nodeEnv: "development" | "test" | "production";
+}
+
+export interface SchedulerQueueConfig {
+  readonly retryLimit: number;
+  readonly retryDelaySeconds: number;
+  readonly expireInSeconds: number;
+  readonly heartbeatSeconds: number;
+  readonly retentionSeconds: number;
+  readonly deleteAfterSeconds: number;
+}
+
+export interface SchedulerConfig {
+  readonly databaseUrl: string;
+  readonly databasePoolMax: number;
+  readonly databaseSsl: boolean;
+  readonly schedulerDatabasePoolMax: number;
+  readonly schedulerCoreUrl: string;
+  readonly schedulerToken: string;
+  readonly schedulerCoreTimeoutMs: number;
+  readonly schedulerProcessingUncertainAfterMs: number;
+  readonly schedulerQueueOptions: SchedulerQueueConfig;
+  readonly timeZone: string;
   readonly nodeEnv: "development" | "test" | "production";
 }
 
@@ -605,6 +687,25 @@ const GOOGLE_AGENT_ENVIRONMENT_KEYS = [
   "NODE_ENV",
 ] as const;
 
+const SCHEDULER_ENVIRONMENT_KEYS = [
+  "DATABASE_URL",
+  "DATABASE_POOL_MAX",
+  "DATABASE_SSL",
+  "SHIVA_TIME_ZONE",
+  "SHIVA_SCHEDULER_CORE_URL",
+  "SHIVA_SCHEDULER_TOKEN",
+  "SCHEDULER_DATABASE_POOL_MAX",
+  "SCHEDULER_CORE_TIMEOUT_MS",
+  "SCHEDULER_PROCESSING_UNCERTAIN_AFTER_MS",
+  "SCHEDULER_JOB_RETRY_LIMIT",
+  "SCHEDULER_JOB_RETRY_DELAY_SECONDS",
+  "SCHEDULER_JOB_EXPIRE_SECONDS",
+  "SCHEDULER_JOB_HEARTBEAT_SECONDS",
+  "SCHEDULER_JOB_RETENTION_SECONDS",
+  "SCHEDULER_JOB_DELETE_AFTER_SECONDS",
+  "NODE_ENV",
+] as const;
+
 /** Non-secret host settings that Node/network libraries may still require. */
 const SAFE_AGENT_RUNTIME_ENVIRONMENT_KEYS = [
   "HOME",
@@ -726,6 +827,58 @@ export function loadGoogleAgentConfig(
   };
 }
 
+/** Lightweight worker config: PostgreSQL + authenticated Core transport only. */
+export function loadSchedulerConfig(
+  options: AgentEnvironmentLoadOptions = {},
+): SchedulerConfig {
+  const loadDevelopmentFile =
+    process.env.NODE_ENV !== "production" &&
+    process.env.SHIVA_LOAD_AGENT_ENV_FILES === "true";
+  const fileEnvironment = loadDevelopmentFile
+    ? (options.readEnvironmentFile ?? readAgentEnvironmentFile)(
+        schedulerEnvironmentPath,
+      )
+    : {};
+  const allowed: ReadonlySet<string> = new Set<string>([
+    ...SCHEDULER_ENVIRONMENT_KEYS,
+    ...SAFE_AGENT_RUNTIME_ENVIRONMENT_KEYS,
+  ]);
+  const environment: Record<string, string> = {};
+  for (const key of allowed) {
+    const inherited = process.env[key];
+    const fromFile = fileEnvironment[key];
+    if (inherited !== undefined) environment[key] = inherited;
+    else if (fromFile !== undefined) environment[key] = fromFile;
+  }
+  for (const key of Object.keys(process.env)) {
+    if (!allowed.has(key)) delete process.env[key];
+  }
+  // Reuse the shared scalar/default validation without requiring or exposing
+  // any brain credential in this lightweight process.
+  environment.SHIVA_BRAIN_PROVIDER = "ollama";
+  const parsed = environmentSchema.safeParse(environment);
+  if (!parsed.success) throw configurationError(parsed.error);
+  if (!parsed.data.SHIVA_SCHEDULER_TOKEN) {
+    throw new ConfigurationError(
+      "Invalid environment configuration: SHIVA_SCHEDULER_TOKEN: is required for the scheduler worker",
+    );
+  }
+  return {
+    databaseUrl: parsed.data.DATABASE_URL,
+    databasePoolMax: parsed.data.DATABASE_POOL_MAX,
+    databaseSsl: parsed.data.DATABASE_SSL,
+    schedulerDatabasePoolMax: parsed.data.SCHEDULER_DATABASE_POOL_MAX,
+    schedulerCoreUrl: parsed.data.SHIVA_SCHEDULER_CORE_URL,
+    schedulerToken: parsed.data.SHIVA_SCHEDULER_TOKEN,
+    schedulerCoreTimeoutMs: parsed.data.SCHEDULER_CORE_TIMEOUT_MS,
+    schedulerProcessingUncertainAfterMs:
+      parsed.data.SCHEDULER_PROCESSING_UNCERTAIN_AFTER_MS,
+    schedulerQueueOptions: schedulerQueueOptions(parsed.data),
+    timeZone: parsed.data.SHIVA_TIME_ZONE,
+    nodeEnv: parsed.data.NODE_ENV,
+  };
+}
+
 function loadScopedAgentConfig(
   allowedKeys: readonly string[],
   developmentEnvironmentPath: string,
@@ -824,6 +977,15 @@ function parseConfig(environment: NodeJS.ProcessEnv | Record<string, string>): A
     userId: result.data.SHIVA_USER_ID,
     userName: result.data.SHIVA_USER_NAME,
     timeZone: result.data.SHIVA_TIME_ZONE,
+    schedulerCoreUrl: result.data.SHIVA_SCHEDULER_CORE_URL,
+    ...(result.data.SHIVA_SCHEDULER_TOKEN
+      ? { schedulerToken: result.data.SHIVA_SCHEDULER_TOKEN }
+      : {}),
+    schedulerDatabasePoolMax: result.data.SCHEDULER_DATABASE_POOL_MAX,
+    schedulerCoreTimeoutMs: result.data.SCHEDULER_CORE_TIMEOUT_MS,
+    schedulerProcessingUncertainAfterMs:
+      result.data.SCHEDULER_PROCESSING_UNCERTAIN_AFTER_MS,
+    schedulerQueueOptions: schedulerQueueOptions(result.data),
     agentMaxSteps: result.data.AGENT_MAX_STEPS,
     agentRequestTimeoutMs: result.data.AGENT_REQUEST_TIMEOUT_MS,
     agentTaskTimeoutMs: result.data.AGENT_TASK_TIMEOUT_MS,
@@ -893,4 +1055,22 @@ function isValidTimeZone(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function schedulerQueueOptions(data: z.infer<typeof environmentSchema>): SchedulerQueueConfig {
+  return {
+    retryLimit: data.SCHEDULER_JOB_RETRY_LIMIT,
+    retryDelaySeconds: data.SCHEDULER_JOB_RETRY_DELAY_SECONDS,
+    expireInSeconds: data.SCHEDULER_JOB_EXPIRE_SECONDS,
+    heartbeatSeconds: data.SCHEDULER_JOB_HEARTBEAT_SECONDS,
+    retentionSeconds: data.SCHEDULER_JOB_RETENTION_SECONDS,
+    deleteAfterSeconds: data.SCHEDULER_JOB_DELETE_AFTER_SECONDS,
+  };
+}
+
+function configurationError(error: z.ZodError): ConfigurationError {
+  const issues = error.issues
+    .map((issue) => `${issue.path.map(String).join(".")}: ${issue.message}`)
+    .join("; ");
+  return new ConfigurationError(`Invalid environment configuration: ${issues}`);
 }

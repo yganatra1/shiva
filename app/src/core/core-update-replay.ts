@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNotNull, or } from "drizzle-orm";
 
 import type { ShivaDatabase } from "../database/pool";
 import { agentResponses, messages } from "../database/schema";
@@ -43,9 +43,20 @@ export class DrizzleCoreUpdateReplaySource implements CoreUpdateReplaySource {
     if (!afterMessageId) {
       const recent = await this.database
         .select({ message: messages })
-        .from(agentResponses)
-        .innerJoin(messages, eq(agentResponses.assistantMessageId, messages.id))
-        .where(eq(messages.conversationId, conversationId))
+        .from(messages)
+        .leftJoin(
+          agentResponses,
+          eq(agentResponses.assistantMessageId, messages.id),
+        )
+        .where(
+          and(
+            eq(messages.conversationId, conversationId),
+            or(
+              isNotNull(agentResponses.id),
+              eq(messages.source, "scheduled_task"),
+            ),
+          ),
+        )
         .orderBy(desc(messages.createdAt), desc(messages.id))
         .limit(boundedLimit);
       return recent.reverse().map(({ message }) => mapUpdate(message));
@@ -53,12 +64,16 @@ export class DrizzleCoreUpdateReplaySource implements CoreUpdateReplaySource {
 
     const [cursor] = await this.database
       .select({ createdAt: messages.createdAt })
-      .from(agentResponses)
-      .innerJoin(messages, eq(agentResponses.assistantMessageId, messages.id))
+      .from(messages)
+      .leftJoin(agentResponses, eq(agentResponses.assistantMessageId, messages.id))
       .where(
         and(
           eq(messages.id, afterMessageId),
           eq(messages.conversationId, conversationId),
+          or(
+            isNotNull(agentResponses.id),
+            eq(messages.source, "scheduled_task"),
+          ),
         ),
       )
       .limit(1);
@@ -70,11 +85,15 @@ export class DrizzleCoreUpdateReplaySource implements CoreUpdateReplaySource {
 
     const following = await this.database
       .select({ message: messages })
-      .from(agentResponses)
-      .innerJoin(messages, eq(agentResponses.assistantMessageId, messages.id))
+      .from(messages)
+      .leftJoin(agentResponses, eq(agentResponses.assistantMessageId, messages.id))
       .where(
         and(
           eq(messages.conversationId, conversationId),
+          or(
+            isNotNull(agentResponses.id),
+            eq(messages.source, "scheduled_task"),
+          ),
           or(
             gt(messages.createdAt, cursor.createdAt),
             and(

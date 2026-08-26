@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../brain/ai-provider";
+import type { RequestTrigger } from "../core/request-trigger";
 import type { SkillResult, SkillSummary } from "../skills/types";
 
 export type AgentDecision =
@@ -56,6 +57,8 @@ export interface AgentRequest {
    * and used when a delegation becomes a durable asynchronous request.
    */
   readonly sourceMessageId?: string;
+  /** Runtime-verified provenance; never accepted from planner arguments. */
+  readonly trigger?: RequestTrigger;
   /**
    * Present only while Core is resuming a delegated request. These are plain
    * text facts for the planner, not a serialized workflow or state machine.

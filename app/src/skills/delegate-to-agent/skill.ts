@@ -136,7 +136,8 @@ export function createDelegateToAgentSkill(
       // instruction inside that already-approved objective is therefore an
       // ordinary write, not a second autonomous-goal confirmation. Lockdown,
       // Safe mode, and the planner's user-authorized flag still apply normally.
-      return context.orchestrationRequestId && context.agentResponseId
+      return (context.orchestrationRequestId && context.agentResponseId) ||
+        context.trigger?.source === "scheduled_task"
         ? { mutability: "write", impact: "normal" }
         : {
             mutability: "write",

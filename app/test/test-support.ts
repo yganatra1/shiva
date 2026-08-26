@@ -5,6 +5,7 @@ import type { AppConfig } from "../src/config/environment.js";
 import { ConversationNotFoundError } from "../src/memory/memory-repository.js";
 import type {
   Conversation,
+  AddMessageOptions,
   ConversationCursor,
   ConversationSummary,
   ExtractedMemory,
@@ -41,6 +42,19 @@ export const testConfig: AppConfig = {
   userId: "00000000-0000-4000-8000-000000000001",
   userName: "Yash",
   timeZone: "Asia/Kolkata",
+  schedulerCoreUrl: "http://127.0.0.1:3000",
+  schedulerToken: "test-scheduler-token-that-is-long-enough",
+  schedulerDatabasePoolMax: 2,
+  schedulerCoreTimeoutMs: 330_000,
+  schedulerProcessingUncertainAfterMs: 600_000,
+  schedulerQueueOptions: {
+    retryLimit: 5,
+    retryDelaySeconds: 5,
+    expireInSeconds: 600,
+    heartbeatSeconds: 30,
+    retentionSeconds: 31_536_000,
+    deleteAfterSeconds: 2_592_000,
+  },
   agentMaxSteps: 8,
   agentRequestTimeoutMs: 300_000,
   agentTaskTimeoutMs: 300_000,
@@ -208,6 +222,31 @@ export class InMemoryRepository implements MemoryRepositoryPort {
       .slice(0, limit);
   }
 
+  async searchConversationMessages(
+    userId: string,
+    query: string,
+    limit: number,
+  ): Promise<readonly StoredMessage[]> {
+    const normalizedQuery = query.trim().toLowerCase();
+    const conversationIds = new Set(
+      [...this.conversations.values()]
+        .filter((conversation) => conversation.userId === userId)
+        .map((conversation) => conversation.id),
+    );
+    return this.messages
+      .filter(
+        (message) =>
+          conversationIds.has(message.conversationId) &&
+          message.content.toLowerCase().includes(normalizedQuery),
+      )
+      .sort(
+        (left, right) =>
+          right.createdAt.getTime() - left.createdAt.getTime() ||
+          right.id.localeCompare(left.id),
+      )
+      .slice(0, limit);
+  }
+
   async updateConversationTitle(
     userId: string,
     conversationId: string,
@@ -250,12 +289,25 @@ export class InMemoryRepository implements MemoryRepositoryPort {
     conversationId: string,
     role: StoredMessageRole,
     content: string,
+    options?: AddMessageOptions,
   ): Promise<StoredMessage> {
+    if (options?.sourceId) {
+      const existing = this.messages.find(
+        (message) =>
+          message.source === options.source &&
+          message.sourceId === options.sourceId &&
+          message.role === role,
+      );
+      if (existing) return existing;
+    }
     const message: StoredMessage = {
       id: this.nextUuid(),
       conversationId,
       role,
       content,
+      source: options?.source ?? "chat",
+      sourceId: options?.sourceId ?? null,
+      metadata: { ...(options?.metadata ?? {}) },
       createdAt: new Date(Date.now() + this.sequence),
     };
     this.messages.push(message);
@@ -268,6 +320,10 @@ export class InMemoryRepository implements MemoryRepositoryPort {
       });
     }
     return message;
+  }
+
+  async getMessageById(messageId: string): Promise<StoredMessage | undefined> {
+    return this.messages.find((message) => message.id === messageId);
   }
 
   async getRecentMessages(

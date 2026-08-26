@@ -32,6 +32,7 @@ import { registerAgentSkills } from "../skills/agents/register";
 import { registerCoreSkills } from "../skills/core/register";
 import { registerMemorySkills } from "../skills/memory/register";
 import { registerSystemSkills } from "../skills/system/register";
+import { registerSchedulerSkills } from "../skills/scheduler/register";
 import { registerPeopleSkills } from "../skills/people/register";
 import { registerWebSkills } from "../skills/web/register";
 import { SkillRegistry } from "../skills/registry";
@@ -40,6 +41,7 @@ import { AgentAuditRepository } from "./audit";
 import { ShivaOrchestrator } from "./orchestrator";
 import { ShivaAgentPlanner, type AgentTraceLogger } from "./planner";
 import type { AgentOrchestratorPort } from "./types";
+import type { SchedulerService } from "../scheduler/scheduler-service";
 
 export interface AgentRuntime {
   readonly orchestrator: AgentOrchestratorPort;
@@ -59,6 +61,10 @@ export function createAgentRuntime(
   updates: CoreUpdatePublisher,
   onAuditError: (error: unknown) => void = () => {},
   onTrace?: AgentTraceLogger,
+  scheduler?: Pick<
+    SchedulerService,
+    "create" | "update" | "delete" | "pause" | "resume" | "list" | "get"
+  >,
 ): AgentRuntime {
   // Google tools and their OAuth credentials live only in google-agent. Core
   // advertises that worker through delegate_to_agent and never executes an
@@ -92,6 +98,7 @@ export function createAgentRuntime(
   registerPeopleSkills(registry, new DrizzlePeopleRepository(database));
   registerWebSkills(registry, config);
   registerMemorySkills(registry, repository, embeddingProvider, memoryService);
+  if (scheduler) registerSchedulerSkills(registry, scheduler);
   const agentRegistry = new AgentRegistry();
   agentRegistry.register({
     id: "device-agent",
@@ -116,6 +123,8 @@ export function createAgentRuntime(
       "search Google Drive",
       "read and update Google Sheets",
       "manage expense data stored in Google Sheets",
+      "search, read, send, and reply to Gmail",
+      "read, create, update, and delete Google Calendar events",
     ],
   });
   const transport = new RedisAgentTransport({

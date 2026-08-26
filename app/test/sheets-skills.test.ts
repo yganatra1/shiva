@@ -97,6 +97,7 @@ class FakeDriveClient extends GoogleDriveClient {
     {
       id: "sheet-1",
       name: "Expenses 2026",
+      mimeType: "application/vnd.google-apps.spreadsheet",
       url: "https://docs.google.com/spreadsheets/d/sheet-1",
       modifiedTime: "2026-08-22T00:00:00Z",
     },

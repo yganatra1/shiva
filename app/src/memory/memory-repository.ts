@@ -5,6 +5,7 @@ import {
   desc,
   eq,
   gte,
+  ilike,
   inArray,
   isNull,
   lt,
@@ -25,6 +26,7 @@ import type {
   Conversation,
   ConversationCursor,
   ConversationSummary,
+  AddMessageOptions,
   MemoryRecord,
   MemoryRepositoryPort,
   MemorySearchResult,
@@ -153,6 +155,25 @@ export class MemoryRepository implements MemoryRepositoryPort {
     return rows.map(({ message }) => message);
   }
 
+  async searchConversationMessages(
+    userId: string,
+    query: string,
+    limit: number,
+  ): Promise<readonly StoredMessage[]> {
+    const pattern = `%${escapeLikePattern(query)}%`;
+    const rows = await this.db
+      .select({ message: messages })
+      .from(messages)
+      .innerJoin(conversations, eq(messages.conversationId, conversations.id))
+      .where(
+        and(eq(conversations.userId, userId), ilike(messages.content, pattern)),
+      )
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(limit);
+
+    return rows.map(({ message }) => message);
+  }
+
   async updateConversationTitle(
     userId: string,
     conversationId: string,
@@ -208,12 +229,35 @@ export class MemoryRepository implements MemoryRepositoryPort {
     conversationId: string,
     role: StoredMessageRole,
     content: string,
+    options?: AddMessageOptions,
   ): Promise<StoredMessage> {
     return this.db.transaction(async (transaction) => {
       const [inserted] = await transaction
         .insert(messages)
-        .values({ conversationId, role, content })
+        .values({
+          conversationId,
+          role,
+          content,
+          source: options?.source ?? "chat",
+          sourceId: options?.sourceId ?? null,
+          metadata: { ...(options?.metadata ?? {}) },
+        })
+        .onConflictDoNothing()
         .returning();
+      if (!inserted && options?.sourceId) {
+        const [existing] = await transaction
+          .select()
+          .from(messages)
+          .where(
+            and(
+              eq(messages.source, options.source),
+              eq(messages.sourceId, options.sourceId),
+              eq(messages.role, role),
+            ),
+          )
+          .limit(1);
+        if (existing) return existing;
+      }
       const now = new Date();
       await transaction
         .update(conversations)
@@ -221,6 +265,15 @@ export class MemoryRepository implements MemoryRepositoryPort {
         .where(eq(conversations.id, conversationId));
       return requiredRow(inserted, "message");
     });
+  }
+
+  async getMessageById(messageId: string): Promise<StoredMessage | undefined> {
+    const [message] = await this.db
+      .select()
+      .from(messages)
+      .where(eq(messages.id, messageId))
+      .limit(1);
+    return message;
   }
 
   async getRecentMessages(
@@ -427,4 +480,9 @@ function requiredRow<T>(row: T | undefined, entity: string): T {
     throw new Error(`Database did not return the inserted ${entity}.`);
   }
   return row;
+}
+
+/** Escapes ILIKE wildcard characters so a search query is matched literally. */
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
 }

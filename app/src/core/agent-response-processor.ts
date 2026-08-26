@@ -14,6 +14,7 @@ import type {
 } from "../agents/shared/redis-agent-transport";
 import type { AgentResponse } from "../agents/shared/protocol";
 import type { MemoryRepositoryPort } from "../memory/types";
+import { scheduledTaskTriggerFromMetadata } from "./request-trigger";
 import type { CoreUpdatePublisher } from "./core-update-hub";
 
 const DEFAULT_BATCH_SIZE = 10;
@@ -32,7 +33,8 @@ export interface CoreAgentResponseProcessorOptions {
   readonly conversationRepository: Pick<
     MemoryRepositoryPort,
     "getRecentMessages"
-  >;
+  > &
+    Partial<Pick<MemoryRepositoryPort, "getMessageById">>;
   readonly orchestrator: AgentOrchestratorPort;
   readonly updates: CoreUpdatePublisher;
   readonly userName: string;
@@ -228,6 +230,15 @@ export class CoreAgentResponseProcessor {
       accepted.request.conversationId,
       this.options.workingMemoryMessageLimit,
     );
+    const sourceMessage = this.options.conversationRepository.getMessageById
+      ? await this.options.conversationRepository.getMessageById(
+          accepted.request.sourceMessageId,
+        )
+      : undefined;
+    const trigger = scheduledTaskTriggerFromMetadata(
+      sourceMessage?.source,
+      sourceMessage?.metadata,
+    );
     const result = await this.options.orchestrator.run({
       userMessage: accepted.request.originalUserRequest,
       conversationId: accepted.request.conversationId,
@@ -245,6 +256,7 @@ export class CoreAgentResponseProcessor {
         executionContext: accepted.request.executionContext,
         latestAgentResponse: accepted.response.message,
       },
+      ...(trigger ? { trigger } : {}),
       signal: this.abortController.signal,
     });
     const outcome = continuationOutcome(result);

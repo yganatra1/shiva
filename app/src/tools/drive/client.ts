@@ -28,6 +28,7 @@ export class DriveClientError extends Error {
 export interface DriveFile {
   readonly id: string;
   readonly name: string;
+  readonly mimeType: string;
   readonly url: string;
   readonly modifiedTime: string;
 }
@@ -36,6 +37,23 @@ export interface FindSpreadsheetsInput {
   readonly query: string;
   readonly maxResults?: number;
   readonly signal?: AbortSignal;
+}
+
+export interface FindFilesInput {
+  readonly query: string;
+  readonly maxResults?: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface ReadFileInput {
+  readonly fileId: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface DriveFileContent {
+  readonly name: string;
+  readonly mimeType: string;
+  readonly content: string;
 }
 
 export interface GoogleDriveClientOptions {
@@ -49,6 +67,15 @@ const DEFAULT_API_BASE_URL = "https://www.googleapis.com";
 const DEFAULT_MAX_RESULTS = 10;
 const MAX_RESULTS_CAP = 25;
 const MAX_QUERY_LENGTH = 200;
+const GOOGLE_RESOURCE_ID_PATTERN = /^[A-Za-z0-9_-]{5,256}$/;
+/** Caps a read Drive file's decoded text so one call can't pull an unbounded body into memory. */
+const MAX_FILE_CONTENT_BYTES = 2_000_000;
+/** Google-native document types have no raw bytes; export them as plain text/CSV instead. */
+const GOOGLE_NATIVE_EXPORT_MIME_TYPES: Readonly<Record<string, string>> = {
+  "application/vnd.google-apps.document": "text/plain",
+  "application/vnd.google-apps.spreadsheet": "text/csv",
+  "application/vnd.google-apps.presentation": "text/plain",
+};
 
 /**
  * Finds a user's own spreadsheets by name via the Drive API, so a skill that
@@ -101,11 +128,80 @@ export class GoogleDriveClient {
         "q",
         `mimeType='application/vnd.google-apps.spreadsheet' and trashed=false and (${nameClauses})`,
       );
-      url.searchParams.set("fields", "files(id,name,webViewLink,modifiedTime)");
+      url.searchParams.set(
+        "fields",
+        "files(id,name,mimeType,webViewLink,modifiedTime)",
+      );
       url.searchParams.set("orderBy", "modifiedTime desc");
       url.searchParams.set("pageSize", String(maxResults));
       const payload = await this.requestJson(url, token, signal);
       return readDriveFiles(payload);
+    });
+  }
+
+  /** General Drive-wide name search, unlike findSpreadsheets it isn't limited to one mimeType. */
+  async findFiles(input: FindFilesInput): Promise<readonly DriveFile[]> {
+    if (input.query.trim().length === 0 || input.query.length > MAX_QUERY_LENGTH) {
+      throw new DriveClientError(
+        "INVALID_INPUT",
+        "query must be non-empty and within bounds.",
+      );
+    }
+    const maxResults = clamp(
+      input.maxResults ?? DEFAULT_MAX_RESULTS,
+      1,
+      MAX_RESULTS_CAP,
+    );
+    return this.withDeadline(input.signal, async (signal) => {
+      const token = await this.getAccessToken(signal);
+      const url = new URL("/drive/v3/files", this.apiBaseUrl);
+      const tokens = looseQueryTokens(input.query);
+      const nameClauses = (tokens.length > 0 ? tokens : [input.query])
+        .map((token) => `name contains '${escapeDriveQueryLiteral(token)}'`)
+        .join(" or ");
+      url.searchParams.set("q", `trashed=false and (${nameClauses})`);
+      url.searchParams.set(
+        "fields",
+        "files(id,name,mimeType,webViewLink,modifiedTime)",
+      );
+      url.searchParams.set("orderBy", "modifiedTime desc");
+      url.searchParams.set("pageSize", String(maxResults));
+      const payload = await this.requestJson(url, token, signal);
+      return readDriveFiles(payload);
+    });
+  }
+
+  /**
+   * Reads a file's content. Google-native docs (Docs/Sheets/Slides) have no
+   * raw bytes, so they're exported as text/CSV; everything else is fetched
+   * as-is via alt=media and decoded as UTF-8 text.
+   */
+  async readFile(input: ReadFileInput): Promise<DriveFileContent> {
+    if (!GOOGLE_RESOURCE_ID_PATTERN.test(input.fileId)) {
+      throw new DriveClientError("INVALID_INPUT", "fileId is not a valid Google resource ID.");
+    }
+    return this.withDeadline(input.signal, async (signal) => {
+      const token = await this.getAccessToken(signal);
+      const metadataUrl = new URL(
+        `/drive/v3/files/${encodeURIComponent(input.fileId)}`,
+        this.apiBaseUrl,
+      );
+      metadataUrl.searchParams.set("fields", "name,mimeType");
+      const metadata = await this.requestJson(metadataUrl, token, signal);
+      const { name, mimeType } = readFileMetadata(metadata);
+
+      const exportMimeType = GOOGLE_NATIVE_EXPORT_MIME_TYPES[mimeType];
+      const contentUrl = new URL(
+        `/drive/v3/files/${encodeURIComponent(input.fileId)}${exportMimeType ? "/export" : ""}`,
+        this.apiBaseUrl,
+      );
+      if (exportMimeType) {
+        contentUrl.searchParams.set("mimeType", exportMimeType);
+      } else {
+        contentUrl.searchParams.set("alt", "media");
+      }
+      const content = await this.requestText(contentUrl, token, signal);
+      return { name, mimeType, content };
     });
   }
 
@@ -158,6 +254,53 @@ export class GoogleDriveClient {
         { cause: error },
       );
     }
+  }
+
+  private async requestText(
+    url: URL,
+    token: string,
+    signal: AbortSignal,
+  ): Promise<string> {
+    const response = await this.fetchFunction(url, {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}` },
+      signal,
+    });
+    if (!response.ok) {
+      await discardBody(response);
+      if (response.status === 401 || response.status === 403) {
+        throw new DriveClientError(
+          "AUTH",
+          "Google Drive rejected the configured credentials, or the granted scope does not permit reading this file.",
+        );
+      }
+      if (response.status === 404) {
+        throw new DriveClientError("INVALID_INPUT", "The requested Drive file was not found.");
+      }
+      throw new DriveClientError(
+        "UNAVAILABLE",
+        `Google Drive returned HTTP status ${response.status}.`,
+      );
+    }
+    const declaredLength = response.headers.get("content-length");
+    if (declaredLength !== null && Number(declaredLength) > MAX_FILE_CONTENT_BYTES) {
+      await discardBody(response);
+      throw new DriveClientError("INVALID_RESPONSE", "The Drive file content exceeded the size limit.");
+    }
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await response.arrayBuffer();
+    } catch (error: unknown) {
+      throw new DriveClientError(
+        "INVALID_RESPONSE",
+        "Google Drive returned an unreadable file body.",
+        { cause: error },
+      );
+    }
+    if (buffer.byteLength > MAX_FILE_CONTENT_BYTES) {
+      throw new DriveClientError("INVALID_RESPONSE", "The Drive file content exceeded the size limit.");
+    }
+    return Buffer.from(buffer).toString("utf-8");
   }
 
   private async withDeadline<T>(
@@ -249,6 +392,7 @@ function readDriveFiles(payload: unknown): readonly DriveFile[] {
     return {
       id: file.id,
       name: file.name,
+      mimeType: typeof file.mimeType === "string" ? file.mimeType : "",
       url:
         typeof file.webViewLink === "string"
           ? file.webViewLink
@@ -257,6 +401,20 @@ function readDriveFiles(payload: unknown): readonly DriveFile[] {
         typeof file.modifiedTime === "string" ? file.modifiedTime : "",
     };
   });
+}
+
+function readFileMetadata(payload: unknown): { readonly name: string; readonly mimeType: string } {
+  if (
+    !isRecord(payload) ||
+    typeof payload.name !== "string" ||
+    typeof payload.mimeType !== "string"
+  ) {
+    throw new DriveClientError(
+      "INVALID_RESPONSE",
+      "Google Drive returned invalid file metadata.",
+    );
+  }
+  return { name: payload.name, mimeType: payload.mimeType };
 }
 
 function clamp(value: number, min: number, max: number): number {

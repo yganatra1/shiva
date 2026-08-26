@@ -173,6 +173,9 @@ function publicMessage(message: StoredMessage) {
     conversationId: message.conversationId,
     role: message.role,
     content: message.content,
+    source: message.source ?? "chat",
+    sourceId: message.sourceId ?? null,
+    metadata: message.metadata ?? {},
     createdAt: message.createdAt.toISOString(),
   };
 }

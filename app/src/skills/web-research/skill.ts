@@ -36,7 +36,7 @@ export class WebResearchSkill
 {
   readonly name = "web_research";
   readonly description =
-    "Searches current public web sources, opens selected results, and returns evidence with URLs for a grounded answer.";
+    "Searches current public web sources, opens selected results, and returns evidence with URLs for a grounded answer. Also use this for current weather (e.g. query \"weather in <location> today\") — there is no separate weather tool.";
   readonly inputDescription =
     '{ "query": "2-400 character search", "additionalQueries"?: [up to 2 alternate searches], "maxSources"?: 1-6 }';
   readonly inputSchema: z.ZodType<WebResearchInput> = inputSchema;

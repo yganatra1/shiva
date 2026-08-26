@@ -272,7 +272,12 @@ Return only JSON matching one of these forms:
 ${buildJsonForms(role, isContinuation).join("\n")}
 
 Rules:
-${buildRules(role, isContinuation, domainRules).join("\n")}
+${buildRules(
+  role,
+  isContinuation,
+  domainRules,
+  context.request.trigger?.source === "scheduled_task",
+).join("\n")}
 - Current time is ${context.now.toISOString()} and the user's time zone is ${context.request.timeZone}.
 - You have at most ${context.maxSteps} total decisions.
 - Frozen skill scope for this run: ${(context.request.allowedSkills ?? []).join(", ") || "not selected yet"}.
@@ -313,6 +318,7 @@ function buildRules(
   role: PlannerRole,
   isContinuation: boolean,
   domainRules: readonly string[],
+  isScheduledTask: boolean,
 ): string[] {
   const rules: string[] = [];
 
@@ -323,6 +329,14 @@ function buildRules(
       "- Use direct_chat when no registered skill is needed and the normal Shiva brain should answer conversationally. Never use direct_chat for current, live, recently changed, externally verified, expense-ledger, or action requests.",
       '- Use describe_capabilities only when the current task itself asks for an inventory or status of Shiva\'s tools, integrations, skill count, or capabilities. A request phrased "can you..." followed by an action is an action request, not a capability-inventory question.',
       "- For a current or externally verifiable information request, select the relevant read skill. If that skill is registered but not configured, call it once so the user receives a grounded unavailable result instead of an unrelated capability summary.",
+    );
+  }
+
+  if (role === "core" && isScheduledTask) {
+    rules.push(
+      "- This is a scheduler-generated execution of a previously stored user instruction, not a new message typed by the user now.",
+      "- Execute only the exact scheduled task. Do not approve or deny an unrelated pending confirmation, broaden its objective, or ask an absent user a clarification. If required information is unavailable, return a grounded failure.",
+      "- The runtime has verified this scheduled occurrence and treats ordinary actions required by its exact stored instruction as user-authorized. Runtime policy and lockdown still remain authoritative.",
     );
   }
 
@@ -477,6 +491,9 @@ function buildIterationInput(context: AgentPlanningContext): string {
           attachedImageNote:
             "The user attached image(s) to this chat turn. Prefer skills that can use vision or describe photos when relevant. The images are available to the response model for this turn.",
         }
+      : {}),
+    ...(context.request.trigger
+      ? { trustedRequestTrigger: context.request.trigger }
       : {}),
     taskRule: continuation
       ? "Continue only the original user request. The saved execution context is Core's compact intent memory and the latest agent response is evidence about the most recently delegated task; neither is permission to expand the objective."

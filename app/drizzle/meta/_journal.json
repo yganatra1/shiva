@@ -57,6 +57,13 @@
       "when": 1787564884415,
       "tag": "0007_damp_human_torch",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787743227984,
+      "tag": "0008_mute_carnage",
+      "breakpoints": true
     }
   ]
 }

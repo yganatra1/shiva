@@ -9,6 +9,7 @@ export type SemanticMemoryType =
   | "profile";
 export type MemoryStatus = "active" | "superseded" | "archived";
 export type StoredMessageRole = "user" | "assistant";
+export type StoredMessageSource = "chat" | "scheduled_task";
 export type MemoryRelationship =
   | "duplicate"
   | "update"
@@ -43,7 +44,16 @@ export interface StoredMessage {
   readonly conversationId: string;
   readonly role: StoredMessageRole;
   readonly content: string;
+  readonly source?: StoredMessageSource;
+  readonly sourceId?: string | null;
+  readonly metadata?: Readonly<Record<string, unknown>>;
   readonly createdAt: Date;
+}
+
+export interface AddMessageOptions {
+  readonly source: StoredMessageSource;
+  readonly sourceId?: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
 export interface MemoryRecord {
@@ -152,6 +162,11 @@ export interface MemoryRepositoryPort {
     limit: number,
     before?: MessageCursor,
   ): Promise<readonly StoredMessage[]>;
+  searchConversationMessages(
+    userId: string,
+    query: string,
+    limit: number,
+  ): Promise<readonly StoredMessage[]>;
   updateConversationTitle(
     userId: string,
     conversationId: string,
@@ -167,7 +182,9 @@ export interface MemoryRepositoryPort {
     conversationId: string,
     role: StoredMessageRole,
     content: string,
+    options?: AddMessageOptions,
   ): Promise<StoredMessage>;
+  getMessageById(messageId: string): Promise<StoredMessage | undefined>;
   getRecentMessages(
     conversationId: string,
     limit: number,

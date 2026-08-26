@@ -517,6 +517,7 @@ export class SkillExecutor {
     try {
       result = await skill.execute(input, executionContext);
     } catch (error: unknown) {
+      console.error('error', error);
       if (context.signal?.aborted) {
         await this.finishAuditSafely(
           auditId,
@@ -536,7 +537,7 @@ export class SkillExecutor {
             ? failure("LOCKDOWN_ACTIVE", error.message)
             : failure(
                 "SKILL_EXECUTION_FAILED",
-                "The skill could not complete its operation.",
+                "The skill could not complete its operation." + error,
               );
       await this.finishAuditSafely(
         auditId,

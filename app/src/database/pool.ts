@@ -1,12 +1,17 @@
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 
-import type { AppConfig } from "../config/environment";
 import * as schema from "./schema";
 
 export type ShivaDatabase = ReturnType<typeof createDatabase>["db"];
 
-export function createDatabase(config: AppConfig) {
+export interface DatabaseConnectionConfig {
+  readonly databaseUrl: string;
+  readonly databasePoolMax: number;
+  readonly databaseSsl: boolean;
+}
+
+export function createDatabase(config: DatabaseConnectionConfig) {
   const pool = new Pool({
     connectionString: config.databaseUrl,
     max: config.databasePoolMax,

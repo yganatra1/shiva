@@ -13,6 +13,7 @@ __pycache__/
 !.env.example
 !.env.device-agent.example
 !.env.google-agent.example
+!.env.scheduler.example
 
 # Runtime data
 data/
@@ -34,7 +35,7 @@ pgdata/
 .DS_Store
 *.swp
 *.swo
-
+shiva-backup/**
 .tmp
 # Android companion app
 android/.gradle/
