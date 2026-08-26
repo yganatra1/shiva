@@ -24,7 +24,7 @@ runMigrations().catch((error: unknown) => {
   if (error instanceof ConfigurationError) {
     console.error(error.message);
   } else {
-    console.error("Database migration failed.");
+    console.error("Database migration failed.", error);
   }
   process.exitCode = 1;
 });
