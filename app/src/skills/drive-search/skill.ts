@@ -22,7 +22,7 @@ export function createDriveSearchSkill(client?: GoogleDriveClient) {
   return defineSkill<DriveSearchInput, DriveSearchOutput>({
     name: "drive_search",
     description:
-      "Searches the user's Google Drive by name across all file types (Docs, Sheets, Slides, PDFs, etc.), returning each match's id, name, mimeType, URL, and last-modified time, most recently modified first. Use drive_read with the id to fetch a file's content. Use sheets_find instead if you specifically need a spreadsheet.",
+      "Searches the user's Google Drive by NAME across all file types (Docs, Sheets, Slides, PDFs, etc.) — query is matched against filenames only, not file content or Drive as a whole. Only useful when you already know (or can guess) a distinctive word from the file's name. Use drive_list instead for browsing or summarizing the Drive in general (e.g. \"summarise my Google Drive\", \"what's in my Drive\") — calling drive_search with a query like \"Google Drive\" or \"my files\" will find nothing, since no file is actually named that. Use drive_read with the id to fetch a file's content. Use sheets_find instead if you specifically need a spreadsheet.",
     inputDescription: '{ "query": string, "maxResults"?: 1-25 (default 10) }',
     inputSchema,
     execution: { mutability: "read", impact: "normal" },

@@ -123,7 +123,7 @@ export function createAgentRuntime(
     name: "Google Agent",
     description: "Handles operations in the configured Google account.",
     capabilities: [
-      "search Google Drive",
+      "browse and search Google Drive",
       "read and update Google Sheets",
       "manage expense data stored in Google Sheets",
       "search, read, send, and reply to Gmail",

@@ -45,6 +45,19 @@ export interface FindFilesInput {
   readonly signal?: AbortSignal;
 }
 
+export interface ListFilesInput {
+  readonly maxResults?: number;
+  /** From a previous listFiles() call's nextPageToken, to continue browsing past the first page. */
+  readonly pageToken?: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface DriveFileListResult {
+  readonly files: readonly DriveFile[];
+  /** Present when more files exist beyond this page; pass it back in as pageToken to continue. */
+  readonly nextPageToken?: string;
+}
+
 export interface ReadFileInput {
   readonly fileId: string;
   readonly signal?: AbortSignal;
@@ -67,6 +80,9 @@ const DEFAULT_API_BASE_URL = "https://www.googleapis.com";
 const DEFAULT_MAX_RESULTS = 10;
 const MAX_RESULTS_CAP = 25;
 const MAX_QUERY_LENGTH = 200;
+const LIST_DEFAULT_MAX_RESULTS = 25;
+const LIST_MAX_RESULTS_CAP = 100;
+const MAX_PAGE_TOKEN_LENGTH = 2_000;
 const GOOGLE_RESOURCE_ID_PATTERN = /^[A-Za-z0-9_-]{5,256}$/;
 /** Caps a read Drive file's decoded text so one call can't pull an unbounded body into memory. */
 const MAX_FILE_CONTENT_BYTES = 2_000_000;
@@ -168,6 +184,37 @@ export class GoogleDriveClient {
       url.searchParams.set("pageSize", String(maxResults));
       const payload = await this.requestJson(url, token, signal);
       return readDriveFiles(payload);
+    });
+  }
+
+  /**
+   * Lists Drive files with no name filter, most recently modified first —
+   * for browsing/summarizing the Drive, unlike findFiles/findSpreadsheets
+   * which only return files matching a name query. Supports pagination via
+   * pageToken/nextPageToken since one page never covers an entire Drive.
+   */
+  async listFiles(input: ListFilesInput = {}): Promise<DriveFileListResult> {
+    if (input.pageToken !== undefined && input.pageToken.length > MAX_PAGE_TOKEN_LENGTH) {
+      throw new DriveClientError("INVALID_INPUT", "pageToken exceeds the length limit.");
+    }
+    const maxResults = clamp(
+      input.maxResults ?? LIST_DEFAULT_MAX_RESULTS,
+      1,
+      LIST_MAX_RESULTS_CAP,
+    );
+    return this.withDeadline(input.signal, async (signal) => {
+      const token = await this.getAccessToken(signal);
+      const url = new URL("/drive/v3/files", this.apiBaseUrl);
+      url.searchParams.set("q", "trashed=false");
+      url.searchParams.set(
+        "fields",
+        "nextPageToken,files(id,name,mimeType,webViewLink,modifiedTime)",
+      );
+      url.searchParams.set("orderBy", "modifiedTime desc");
+      url.searchParams.set("pageSize", String(maxResults));
+      if (input.pageToken) url.searchParams.set("pageToken", input.pageToken);
+      const payload = await this.requestJson(url, token, signal);
+      return readDriveFileList(payload);
     });
   }
 
@@ -401,6 +448,14 @@ function readDriveFiles(payload: unknown): readonly DriveFile[] {
         typeof file.modifiedTime === "string" ? file.modifiedTime : "",
     };
   });
+}
+
+function readDriveFileList(payload: unknown): DriveFileListResult {
+  const files = readDriveFiles(payload);
+  const nextPageToken = isRecord(payload) && typeof payload.nextPageToken === "string"
+    ? payload.nextPageToken
+    : undefined;
+  return nextPageToken ? { files, nextPageToken } : { files };
 }
 
 function readFileMetadata(payload: unknown): { readonly name: string; readonly mimeType: string } {
