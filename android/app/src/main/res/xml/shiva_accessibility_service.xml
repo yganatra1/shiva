@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- canTakeScreenshot is honoured from API 30 and ignored below it, where device.ui.screenshot
-     reports UNSUPPORTED instead. -->
+<!-- canTakeScreenshot is honoured from API 30 and ignored below it. -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeWindowsChanged"

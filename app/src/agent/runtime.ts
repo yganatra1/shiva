@@ -115,7 +115,6 @@ export function createAgentRuntime(
       "access the camera",
       "read device status (battery, connectivity)",
       "open applications",
-      "interact with on-screen applications",
     ],
   });
   agentRegistry.register({

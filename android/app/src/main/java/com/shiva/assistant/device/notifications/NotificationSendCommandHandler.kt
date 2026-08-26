@@ -26,6 +26,11 @@ class NotificationSendCommandHandler(
                 status = DeviceCommandStatus.COMPLETED,
                 result = mapOf("posted" to "true"),
             )
+            is NotificationSendResult.Denied -> DeviceCommandResult(
+                commandId = command.id,
+                status = DeviceCommandStatus.DENIED,
+                error = outcome.reason,
+            )
             is NotificationSendResult.Failed -> DeviceCommandResult(
                 commandId = command.id,
                 status = DeviceCommandStatus.FAILED,

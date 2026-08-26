@@ -225,10 +225,11 @@ test("the result message schema accepts every status and rejects unknown fields"
   );
 });
 
-test("IMPLEMENTED_DEVICE_COMMAND_TYPES includes the full UI-automation surface", async () => {
+test("IMPLEMENTED_DEVICE_COMMAND_TYPES matches the live device-agent catalog", async () => {
   const { IMPLEMENTED_DEVICE_COMMAND_TYPES } = await import(
     "../../../src/agents/device/device-protocol.js"
   );
+  const { DEVICE_TOOLS } = await import("../../../src/agents/device/device-tools.js");
   for (const type of [
     "device.app.open",
     "device.app.list",
@@ -236,21 +237,23 @@ test("IMPLEMENTED_DEVICE_COMMAND_TYPES includes the full UI-automation surface",
     "device.sms.send",
     "device.location.get",
     "device.status.get",
-    "device.ui.inspect",
-    "device.ui.find",
-    "device.ui.click",
-    "device.ui.type",
-    "device.ui.scroll",
-    "device.ui.wait",
-    "device.ui.screenshot",
-    "device.ui.gesture",
-    "device.ui.back",
-    "device.ui.global",
   ] as const) {
     assert.ok(
       (IMPLEMENTED_DEVICE_COMMAND_TYPES as readonly string[]).includes(type),
       `expected ${type} to be implemented`,
     );
   }
-  assert.equal(IMPLEMENTED_DEVICE_COMMAND_TYPES.length, 21);
+  assert.equal(
+    IMPLEMENTED_DEVICE_COMMAND_TYPES.length,
+    DEVICE_TOOLS.length,
+  );
+  assert.equal(
+    [...IMPLEMENTED_DEVICE_COMMAND_TYPES].sort().join("\n"),
+    DEVICE_TOOLS.map((tool) => tool.name).sort().join("\n"),
+  );
+  assert.ok(
+    !(IMPLEMENTED_DEVICE_COMMAND_TYPES as readonly string[]).some((type) =>
+      type.startsWith("device.ui."),
+    ),
+  );
 });

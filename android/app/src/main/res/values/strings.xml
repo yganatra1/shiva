@@ -2,7 +2,7 @@
     <string name="app_name">Shiva</string>
     <string name="notification_listener_label">Shiva notifications</string>
     <string name="accessibility_service_label">Shiva device access</string>
-    <string name="accessibility_service_description">Lets your self-hosted Shiva assistant read the current screen and tap, type, and scroll on your behalf when you ask it to operate an app. Shiva never enables this on its own, and everything it sees stays on your own server.</string>
+    <string name="accessibility_service_description">Lets your self-hosted Shiva assistant inspect the current screen in Diagnostics. Shiva never enables this on its own, and everything it sees stays on your own server.</string>
     <string name="voice_interaction_recognition_service">com.shiva.assistant.device.assistant.ShivaVoiceInteractionService</string>
     <string name="connection_service_channel">Shiva connection</string>
     <string name="connection_service_title">Shiva connected</string>

@@ -65,7 +65,7 @@ test("the main-agent contract routes every phone task through sensitive delegati
     mutability: "write",
     impact: "sensitive",
     confirmationReason:
-      "This delegates a goal to an autonomous agent that can take real actions (tapping through apps, placing calls, etc.) without further confirmation on each individual step.",
+      "This delegates a goal to an autonomous agent that can take real actions (placing calls, sending messages, opening apps, etc.) without further confirmation on each individual step.",
   });
 });
 

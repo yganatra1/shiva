@@ -75,7 +75,7 @@ test("drives call_tool decisions against the dispatcher and stops on done", asyn
 test("reports failure and stops after reaching the step limit", async () => {
   const planner = new ScriptedPlanner(() => ({
     type: "call_tool",
-    tool: "device.ui.click",
+    tool: "device.app.open",
     arguments: {},
   }));
   const dispatcher = new FakeDispatcher(() => ({ commandId: "x", status: "FAILED" }));
@@ -111,7 +111,7 @@ test("an unknown tool name is fed back as a correction instead of dispatched", a
 test("a dispatch-level failure becomes a synthetic failed step, not a thrown error", async () => {
   const planner = new ScriptedPlanner((context) =>
     context.steps.length === 0
-      ? { type: "call_tool", tool: "device.ui.click", arguments: {} }
+      ? { type: "call_tool", tool: "device.app.open", arguments: {} }
       : { type: "done", success: false, summary: context.steps[0]?.result.error ?? "unknown" },
   );
   const dispatcher = new FakeDispatcher(() => new DeviceDispatchError("DEVICE_TIMEOUT", "The device did not respond in time."));
@@ -141,7 +141,7 @@ test("an AbortSignal stops the loop before the next planner call", async () => {
   const planner = new ScriptedPlanner((context) => {
     assert.equal(context.signal, controller.signal);
     controller.abort();
-    return { type: "call_tool", tool: "device.ui.click", arguments: {} };
+    return { type: "call_tool", tool: "device.app.open", arguments: {} };
   });
   const dispatcher = new FakeDispatcher(() => ({ commandId: "x", status: "COMPLETED" }));
 
@@ -154,7 +154,7 @@ test("a caller cancellation during dispatch is propagated instead of becoming a 
   const controller = new AbortController();
   const planner = new ScriptedPlanner(() => ({
     type: "call_tool",
-    tool: "device.ui.click",
+    tool: "device.app.open",
     arguments: {},
   }));
   const dispatcher = new FakeDispatcher(() => {

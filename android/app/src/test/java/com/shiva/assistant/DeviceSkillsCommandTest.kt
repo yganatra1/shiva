@@ -12,11 +12,15 @@ import com.shiva.assistant.device.command.deviceCommandStatusForWire
 import com.shiva.assistant.device.command.encodeDeviceCommandResult
 import com.shiva.assistant.device.command.parseDeviceCommandMessage
 import com.shiva.assistant.device.notifications.NotificationDetail
+import com.shiva.assistant.device.notifications.NotificationSendCommandHandler
+import com.shiva.assistant.device.notifications.NotificationSendController
+import com.shiva.assistant.device.notifications.NotificationSendResult
 import com.shiva.assistant.device.notifications.NotificationSummary
 import com.shiva.assistant.device.notifications.NotificationsAccess
 import com.shiva.assistant.device.notifications.NotificationsListCommandHandler
 import com.shiva.assistant.device.notifications.NotificationsReadCommandHandler
 import com.shiva.assistant.device.notifications.NotificationsRepository
+import com.shiva.assistant.device.notifications.notificationPostingBlockReason
 import com.shiva.assistant.core.network.ShivaJson
 import kotlinx.serialization.encodeToString
 import kotlinx.coroutines.test.runTest
@@ -116,6 +120,73 @@ class DeviceSkillsCommandTest {
         assertEquals("DENIED", deviceCommandStatusForWire(DeviceCommandStatus.DENIED))
         assertEquals("UNSUPPORTED", deviceCommandStatusForWire(DeviceCommandStatus.UNSUPPORTED))
         assertEquals("FAILED", deviceCommandStatusForWire(DeviceCommandStatus.EXPIRED))
+    }
+
+    @Test
+    fun notificationSendIsDeniedWithoutPostPermission() = runTest {
+        val handler = NotificationSendCommandHandler(
+            object : NotificationSendController {
+                override fun send(title: String, body: String) =
+                    NotificationSendResult.Denied("Notification permission has not been granted.")
+            },
+        )
+        val result = handler.handle(
+            DeviceCommand(
+                id = "n4",
+                type = "device.notification.send",
+                arguments = mapOf("title" to "Test", "body" to "Hello"),
+                createdAtEpochMs = 1,
+            ),
+        )
+        assertEquals(DeviceCommandStatus.DENIED, result.status)
+        assertEquals("Notification permission has not been granted.", result.error)
+    }
+
+    @Test
+    fun notificationSendPostsWhenAllowed() = runTest {
+        val handler = NotificationSendCommandHandler(
+            object : NotificationSendController {
+                override fun send(title: String, body: String) = NotificationSendResult.Sent
+            },
+        )
+        val result = handler.handle(
+            DeviceCommand(
+                id = "n5",
+                type = "device.notification.send",
+                arguments = mapOf("title" to "Test", "body" to "Hello"),
+                createdAtEpochMs = 1,
+            ),
+        )
+        assertEquals(DeviceCommandStatus.COMPLETED, result.status)
+        assertEquals("true", result.result["posted"])
+    }
+
+    @Test
+    fun postingIsBlockedOnAndroid13WithoutPermission() {
+        assertEquals(
+            "Notification permission has not been granted.",
+            notificationPostingBlockReason(
+                sdkInt = 33,
+                postNotificationsGranted = false,
+                notificationsEnabled = true,
+            ),
+        )
+        assertEquals(
+            null,
+            notificationPostingBlockReason(
+                sdkInt = 33,
+                postNotificationsGranted = true,
+                notificationsEnabled = true,
+            ),
+        )
+        assertEquals(
+            "Notifications are disabled for Shiva.",
+            notificationPostingBlockReason(
+                sdkInt = 26,
+                postNotificationsGranted = true,
+                notificationsEnabled = false,
+            ),
+        )
     }
 
     @Test

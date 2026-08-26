@@ -56,6 +56,36 @@ class AndroidCapabilityRegistry(
                 action = Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS,
             )
         },
+        object : DeviceCapability {
+            override val id = CapabilityId.POST_NOTIFICATIONS
+            override fun snapshot(): CapabilitySnapshot {
+                val granted = canPostNotifications()
+                return CapabilitySnapshot(
+                    id = id,
+                    title = "Post notifications",
+                    description = "Lets Shiva show its own alerts on this phone when you ask it to send a notification. This is separate from reading other apps' notifications.",
+                    status = if (granted) CapabilityStatus.AVAILABLE else CapabilityStatus.PERMISSION_REQUIRED,
+                    detail = if (granted) {
+                        "Shiva can post notifications."
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        "Android 13+ requires notification permission before Shiva can post alerts."
+                    } else {
+                        "Notifications are turned off for Shiva in Android settings."
+                    },
+                )
+            }
+
+            override fun accessRequest(): AccessRequest {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    !hasPermission(Manifest.permission.POST_NOTIFICATIONS)
+                ) {
+                    return AccessRequest.RuntimePermissions(
+                        listOf(Manifest.permission.POST_NOTIFICATIONS),
+                    )
+                }
+                return AccessRequest.AppDetailsSettings()
+            }
+        },
         RuntimeCapability(
             id = CapabilityId.LOCATION,
             title = "Location",
@@ -120,12 +150,12 @@ class AndroidCapabilityRegistry(
                 return CapabilitySnapshot(
                     id = id,
                     title = "Accessibility",
-                    description = "Powers on-screen automation: reading the current screen and tapping, typing, and scrolling in other apps. You must enable it yourself. Shiva does not use it to bypass Android security.",
+                    description = "Lets Diagnostics inspect the current screen. On-screen tapping and typing are not available. You must enable it yourself.",
                     status = if (enabled) CapabilityStatus.ENABLED else CapabilityStatus.REQUIRES_SYSTEM_SETTING,
                     detail = if (enabled) {
-                        "Screen reading and UI automation are available. Use Diagnostics → Inspect current screen to see what Shiva can read."
+                        "Screen reading is available. Use Diagnostics → Inspect current screen to see what Shiva can read."
                     } else {
-                        "Enable Shiva in Android accessibility settings to allow screen reading and UI automation."
+                        "Enable Shiva in Android accessibility settings to allow Diagnostics to inspect the current screen."
                     },
                 )
             }
@@ -227,6 +257,14 @@ class AndroidCapabilityRegistry(
 
     private fun hasPermission(permission: String): Boolean {
         return ContextCompat.checkSelfPermission(appContext, permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun canPostNotifications(): Boolean {
+        val manager = NotificationManagerCompat.from(appContext)
+        val permissionGranted =
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                hasPermission(Manifest.permission.POST_NOTIFICATIONS)
+        return permissionGranted && manager.areNotificationsEnabled()
     }
 
     private fun mediaPermissions(): List<String> {

@@ -1,9 +1,6 @@
 package com.shiva.assistant
 
-import com.shiva.assistant.device.automation.GlobalUiAction
-import com.shiva.assistant.device.automation.ScrollDirection
 import com.shiva.assistant.device.automation.UiBounds
-import com.shiva.assistant.device.automation.UiCommandArgs
 import com.shiva.assistant.device.automation.UiNode
 import com.shiva.assistant.device.automation.UiSelector
 import com.shiva.assistant.device.automation.matches
@@ -18,7 +15,6 @@ import com.shiva.assistant.device.command.DeviceCommandStatus
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -106,89 +102,38 @@ class UiAutomationTest {
     }
 
     @Test
-    fun `scroll direction parsing falls back to forward`() {
-        assertEquals(ScrollDirection.UP, UiCommandArgs.scrollDirection("up"))
-        assertEquals(ScrollDirection.BACKWARD, UiCommandArgs.scrollDirection("Back"))
-        assertEquals(ScrollDirection.FORWARD, UiCommandArgs.scrollDirection("nonsense"))
-        assertEquals(ScrollDirection.FORWARD, UiCommandArgs.scrollDirection(null))
-    }
-
-    @Test
-    fun `global action parsing accepts aliases and rejects unknown`() {
-        assertEquals(GlobalUiAction.RECENTS, UiCommandArgs.globalAction("overview"))
-        assertEquals(GlobalUiAction.LOCK_SCREEN, UiCommandArgs.globalAction("lock"))
-        assertNull(UiCommandArgs.globalAction("explode"))
-    }
-
-    @Test
-    fun `selector can arrive as json`() {
-        val selector = UiCommandArgs.selector(
-            mapOf("selector" to """{"textContains":"Add","clickable":true,"index":2}"""),
-        )
-        assertEquals("Add", selector.textContains)
-        assertEquals(true, selector.clickable)
-        assertEquals(2, selector.index)
-    }
-
-    @Test
-    fun `selector falls back to flat arguments and aliases`() {
-        val selector = UiCommandArgs.selector(
-            mapOf("id" to "search_input", "desc" to "Search", "editable" to "true"),
-        )
-        assertEquals("search_input", selector.viewId)
-        assertEquals("Search", selector.description)
-        assertEquals(true, selector.editable)
-    }
-
-    @Test
-    fun `malformed selector json falls back instead of throwing`() {
-        val selector = UiCommandArgs.selector(mapOf("selector" to "{not json", "text" to "Cart"))
-        assertEquals("Cart", selector.text)
-    }
-
-    @Test
-    fun `timeout is clamped to the supported window`() {
-        assertEquals(1_000L, UiCommandArgs.timeout(mapOf("timeoutMs" to "1000"), 4_000))
-        assertEquals(
-            UiCommandArgs.MAX_WAIT_MS,
-            UiCommandArgs.timeout(mapOf("timeoutMs" to "999999"), 4_000),
-        )
-        assertEquals(4_000L, UiCommandArgs.timeout(emptyMap(), 4_000))
-    }
-
-    @Test
     fun `activity log records the most recent command first`() = runTest {
         val log = DeviceActivityLog(capacity = 2)
         val router = DeviceCommandRouter(
             handlers = listOf(
-                handler("device.ui.click", DeviceCommandStatus.COMPLETED),
-                handler("device.ui.type", DeviceCommandStatus.FAILED, "no field"),
+                handler("device.app.open", DeviceCommandStatus.COMPLETED),
+                handler("device.contacts.search", DeviceCommandStatus.FAILED, "no match"),
             ),
             observer = log,
         )
 
-        router.dispatch(command("a", "device.ui.click"))
-        router.dispatch(command("b", "device.ui.type"))
-        router.dispatch(command("c", "device.ui.nope"))
+        router.dispatch(command("a", "device.app.open"))
+        router.dispatch(command("b", "device.contacts.search"))
+        router.dispatch(command("c", "device.ui.click"))
 
         val snapshot = log.state.value
         assertEquals(3, snapshot.handled)
         assertEquals(2, snapshot.recent.size)
-        assertEquals("device.ui.nope", snapshot.last?.type)
+        assertEquals("device.ui.click", snapshot.last?.type)
         assertEquals(DeviceCommandStatus.UNSUPPORTED, snapshot.last?.status)
-        assertEquals("device.ui.type", snapshot.recent[1].type)
-        assertEquals("no field", snapshot.recent[1].error)
+        assertEquals("device.contacts.search", snapshot.recent[1].type)
+        assertEquals("no match", snapshot.recent[1].error)
     }
 
     @Test
     fun `router exposes every registered automation type`() {
         val router = DeviceCommandRouter(
             handlers = listOf(
-                handler("device.ui.click", DeviceCommandStatus.COMPLETED),
                 handler("device.app.open", DeviceCommandStatus.COMPLETED),
+                handler("device.app.list", DeviceCommandStatus.COMPLETED),
             ),
         )
-        assertEquals(setOf("device.ui.click", "device.app.open"), router.supportedTypes)
+        assertEquals(setOf("device.app.open", "device.app.list"), router.supportedTypes)
     }
 
     private fun command(id: String, type: String) = DeviceCommand(

@@ -42,7 +42,9 @@ test("the device planner owns direct phone tasks and receives cancellation", asy
   assert.equal(provider.input?.signal, controller.signal);
   const systemPrompt = provider.input?.messages[0]?.content ?? "";
   assert.match(systemPrompt, /every Android-phone goal/i);
-  assert.match(systemPrompt, /contacts, calls, notifications, camera capture/i);
+  assert.match(systemPrompt, /contacts, calls, notifications, SMS, location, camera capture/i);
+  assert.match(systemPrompt, /no on-screen UI automation/i);
+  assert.doesNotMatch(systemPrompt, /device\.ui\./);
   assert.match(systemPrompt, /include the requested returned facts/i);
   assert.match(systemPrompt, /sole instruction.*authorization boundary/i);
   assert.match(systemPrompt, /screen text.*untrusted data/i);

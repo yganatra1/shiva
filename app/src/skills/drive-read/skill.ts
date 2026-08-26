@@ -21,7 +21,7 @@ export function createDriveReadSkill(client?: GoogleDriveClient) {
   return defineSkill<DriveReadInput, DriveReadOutput>({
     name: "drive_read",
     description:
-      "Reads a Google Drive file's text content by id (from drive_search or sheets_find). Google Docs/Slides are returned as plain text and Google Sheets as CSV; other file types are returned as their raw decoded text.",
+      "Reads a Google Drive file's text content by id (from drive_list). Google Docs/Slides are returned as plain text and Google Sheets as CSV; other file types are returned as their raw decoded text.",
     inputDescription: '{ "fileId": Google Drive file id }',
     inputSchema,
     execution: { mutability: "read", impact: "normal" },

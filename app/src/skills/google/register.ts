@@ -11,7 +11,6 @@ import { createCalendarReadSkill } from "../calendar-read/skill";
 import { createCalendarUpdateSkill } from "../calendar-update/skill";
 import { createDriveListSkill } from "../drive-list/skill";
 import { createDriveReadSkill } from "../drive-read/skill";
-import { createDriveSearchSkill } from "../drive-search/skill";
 import { createGmailReadSkill } from "../gmail-read/skill";
 import { createGmailReplySkill } from "../gmail-reply/skill";
 import { createGmailSearchSkill } from "../gmail-search/skill";
@@ -69,7 +68,6 @@ export function registerGoogleSkills(
   registry.register(createSheetsUpdateSkill(sheetsClient));
   registry.register(createSheetsAddTabSkill(sheetsClient));
   registry.register(createSheetsFindSkill(driveClient));
-  registry.register(createDriveSearchSkill(driveClient));
   registry.register(createDriveListSkill(driveClient));
   registry.register(createDriveReadSkill(driveClient));
   registry.register(createGmailSearchSkill(gmailClient));

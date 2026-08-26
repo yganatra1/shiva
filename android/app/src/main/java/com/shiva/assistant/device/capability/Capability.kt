@@ -5,6 +5,7 @@ enum class CapabilityId {
     CONTACTS,
     PHONE_CALLS,
     NOTIFICATIONS,
+    POST_NOTIFICATIONS,
     LOCATION,
     CAMERA,
     FILES,

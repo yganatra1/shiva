@@ -1,8 +1,6 @@
 package com.shiva.assistant.device.automation
 
 import com.shiva.assistant.core.network.ShivaJson
-import com.shiva.assistant.device.automation.UiCommandArgs.int
-import com.shiva.assistant.device.automation.UiCommandArgs.string
 import com.shiva.assistant.device.command.DeviceCommand
 import com.shiva.assistant.device.command.DeviceCommandHandler
 import com.shiva.assistant.device.command.DeviceCommandResult
@@ -66,3 +64,9 @@ class AppListCommandHandler(
         )
     }
 }
+
+private fun Map<String, String>.string(key: String): String? =
+    this[key]?.takeIf { it.isNotBlank() }
+
+private fun Map<String, String>.int(key: String): Int? =
+    this[key]?.trim()?.toIntOrNull()

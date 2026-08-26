@@ -20,14 +20,17 @@ class AndroidNotificationSendController(
     private val appContext = context.applicationContext
 
     override fun send(title: String, body: String): NotificationSendResult {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            return NotificationSendResult.Failed("Notification permission has not been granted.")
-        }
         val manager = appContext.getSystemService(NotificationManager::class.java)
             ?: return NotificationSendResult.Failed("Notifications are not available on this device.")
+        val permissionGranted =
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+        notificationPostingBlockReason(
+            sdkInt = Build.VERSION.SDK_INT,
+            postNotificationsGranted = permissionGranted,
+            notificationsEnabled = manager.areNotificationsEnabled(),
+        )?.let { reason -> return NotificationSendResult.Denied(reason) }
         ensureChannel(manager)
         val launch = PendingIntent.getActivity(
             appContext,

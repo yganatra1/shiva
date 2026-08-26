@@ -9,6 +9,7 @@ import {
 } from "../../tools/drive/client";
 
 const inputSchema = z.object({
+  query: z.string().trim().min(1).max(200).optional(),
   maxResults: z.number().int().min(1).max(100).default(25),
   pageToken: z.string().trim().min(1).max(2_000).optional(),
 });
@@ -23,9 +24,9 @@ export function createDriveListSkill(client?: GoogleDriveClient) {
   return defineSkill<DriveListInput, DriveListOutput>({
     name: "drive_list",
     description:
-      "Lists files in the user's Google Drive, most recently modified first, with no name filter — use this to browse or summarize the Drive as a whole (e.g. \"summarise my Google Drive\"). Use drive_search instead when looking for a specific file by name. One call returns at most 100 files; if nextPageToken is present in the result, call again with pageToken set to it to see more.",
+      "Lists files in the user's Google Drive across all file types (Docs, Sheets, Slides, PDFs, etc.), most recently modified first. Omit query to browse or summarize the Drive as a whole (e.g. \"summarise my Google Drive\"); pass query to narrow to files whose NAME matches it (matches filenames only, not content). Use drive_read with the id to fetch a file's content, and sheets_find instead if you specifically need a spreadsheet. One call returns at most 100 files; if nextPageToken is present in the result, call again with pageToken set to it to see more.",
     inputDescription:
-      '{ "maxResults"?: 1-100 (default 25), "pageToken"?: string (from a previous call\'s nextPageToken) }',
+      '{ "query"?: string (matches filenames only; omit to browse everything), "maxResults"?: 1-100 (default 25), "pageToken"?: string (from a previous call\'s nextPageToken) }',
     inputSchema,
     execution: { mutability: "read", impact: "normal" },
     configured: client !== undefined,
@@ -41,6 +42,7 @@ export function createDriveListSkill(client?: GoogleDriveClient) {
       }
       try {
         const result = await client.listFiles({
+          ...(input.query ? { query: input.query } : {}),
           maxResults: input.maxResults,
           ...(input.pageToken ? { pageToken: input.pageToken } : {}),
           ...(context.signal ? { signal: context.signal } : {}),

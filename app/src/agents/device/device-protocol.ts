@@ -13,16 +13,6 @@ export const IMPLEMENTED_DEVICE_COMMAND_TYPES = [
   "device.sms.send",
   "device.location.get",
   "device.status.get",
-  "device.ui.inspect",
-  "device.ui.find",
-  "device.ui.click",
-  "device.ui.type",
-  "device.ui.scroll",
-  "device.ui.wait",
-  "device.ui.screenshot",
-  "device.ui.gesture",
-  "device.ui.back",
-  "device.ui.global",
 ] as const;
 
 /**

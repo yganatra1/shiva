@@ -39,13 +39,9 @@ export interface FindSpreadsheetsInput {
   readonly signal?: AbortSignal;
 }
 
-export interface FindFilesInput {
-  readonly query: string;
-  readonly maxResults?: number;
-  readonly signal?: AbortSignal;
-}
-
 export interface ListFilesInput {
+  /** When given, only files whose name matches this query are returned. Omit to browse the whole Drive. */
+  readonly query?: string;
   readonly maxResults?: number;
   /** From a previous listFiles() call's nextPageToken, to continue browsing past the first page. */
   readonly pageToken?: string;
@@ -94,11 +90,11 @@ const GOOGLE_NATIVE_EXPORT_MIME_TYPES: Readonly<Record<string, string>> = {
 };
 
 /**
- * Finds a user's own spreadsheets by name via the Drive API, so a skill that
- * created a sheet earlier (or the user made one manually) can be found again
- * without depending on conversational memory retaining its raw ID. Read-only
- * metadata search — file *content* still goes through GoogleSheetsClient's
- * separate `spreadsheets` scope, never through this client.
+ * Adapter over the Drive v3 API: browse/search files by name (listFiles),
+ * find spreadsheets specifically (findSpreadsheets), and read a file's
+ * content (readFile). Read-only metadata + content — writing/editing sheet
+ * *values* still goes through GoogleSheetsClient's separate `spreadsheets`
+ * scope, never through this client.
  */
 export class GoogleDriveClient {
   private readonly apiBaseUrl: URL;
@@ -115,6 +111,13 @@ export class GoogleDriveClient {
     }
   }
 
+  /**
+   * Finds a user's own spreadsheets by name, so a skill that created a sheet
+   * earlier (or the user made one manually) can be found again without
+   * depending on conversational memory retaining its raw ID. Unlike
+   * listFiles, this always restricts to the Sheets mimeType and always
+   * requires a query — it has no "browse everything" mode.
+   */
   async findSpreadsheets(
     input: FindSpreadsheetsInput,
   ): Promise<readonly DriveFile[]> {
@@ -132,50 +135,10 @@ export class GoogleDriveClient {
     return this.withDeadline(input.signal, async (signal) => {
       const token = await this.getAccessToken(signal);
       const url = new URL("/drive/v3/files", this.apiBaseUrl);
-      // Drive's `contains` only prefix-matches whole words, so "Expense 2026"
-      // wouldn't find a file named "Expense2026" (and vice versa). Splitting
-      // the query into tokens and OR-ing them widens that to a loose, casing-
-      // and spacing-insensitive match, matching either direction.
-      const tokens = looseQueryTokens(input.query);
-      const nameClauses = (tokens.length > 0 ? tokens : [input.query])
-        .map((token) => `name contains '${escapeDriveQueryLiteral(token)}'`)
-        .join(" or ");
       url.searchParams.set(
         "q",
-        `mimeType='application/vnd.google-apps.spreadsheet' and trashed=false and (${nameClauses})`,
+        `mimeType='application/vnd.google-apps.spreadsheet' and ${buildDriveQuery(input.query)}`,
       );
-      url.searchParams.set(
-        "fields",
-        "files(id,name,mimeType,webViewLink,modifiedTime)",
-      );
-      url.searchParams.set("orderBy", "modifiedTime desc");
-      url.searchParams.set("pageSize", String(maxResults));
-      const payload = await this.requestJson(url, token, signal);
-      return readDriveFiles(payload);
-    });
-  }
-
-  /** General Drive-wide name search, unlike findSpreadsheets it isn't limited to one mimeType. */
-  async findFiles(input: FindFilesInput): Promise<readonly DriveFile[]> {
-    if (input.query.trim().length === 0 || input.query.length > MAX_QUERY_LENGTH) {
-      throw new DriveClientError(
-        "INVALID_INPUT",
-        "query must be non-empty and within bounds.",
-      );
-    }
-    const maxResults = clamp(
-      input.maxResults ?? DEFAULT_MAX_RESULTS,
-      1,
-      MAX_RESULTS_CAP,
-    );
-    return this.withDeadline(input.signal, async (signal) => {
-      const token = await this.getAccessToken(signal);
-      const url = new URL("/drive/v3/files", this.apiBaseUrl);
-      const tokens = looseQueryTokens(input.query);
-      const nameClauses = (tokens.length > 0 ? tokens : [input.query])
-        .map((token) => `name contains '${escapeDriveQueryLiteral(token)}'`)
-        .join(" or ");
-      url.searchParams.set("q", `trashed=false and (${nameClauses})`);
       url.searchParams.set(
         "fields",
         "files(id,name,mimeType,webViewLink,modifiedTime)",
@@ -188,12 +151,16 @@ export class GoogleDriveClient {
   }
 
   /**
-   * Lists Drive files with no name filter, most recently modified first —
-   * for browsing/summarizing the Drive, unlike findFiles/findSpreadsheets
-   * which only return files matching a name query. Supports pagination via
-   * pageToken/nextPageToken since one page never covers an entire Drive.
+   * Lists Drive files, most recently modified first. With no query, this
+   * browses the whole Drive (paginated via pageToken/nextPageToken, since one
+   * page never covers an entire Drive); with a query, the same call narrows
+   * to files whose name matches it — one implementation serves both listing
+   * and searching rather than two near-duplicate methods.
    */
   async listFiles(input: ListFilesInput = {}): Promise<DriveFileListResult> {
+    if (input.query !== undefined && input.query.length > MAX_QUERY_LENGTH) {
+      throw new DriveClientError("INVALID_INPUT", "query exceeds the length limit.");
+    }
     if (input.pageToken !== undefined && input.pageToken.length > MAX_PAGE_TOKEN_LENGTH) {
       throw new DriveClientError("INVALID_INPUT", "pageToken exceeds the length limit.");
     }
@@ -205,7 +172,7 @@ export class GoogleDriveClient {
     return this.withDeadline(input.signal, async (signal) => {
       const token = await this.getAccessToken(signal);
       const url = new URL("/drive/v3/files", this.apiBaseUrl);
-      url.searchParams.set("q", "trashed=false");
+      url.searchParams.set("q", buildDriveQuery(input.query));
       url.searchParams.set(
         "fields",
         "nextPageToken,files(id,name,mimeType,webViewLink,modifiedTime)",
@@ -493,6 +460,16 @@ function looseQueryTokens(query: string): string[] {
 
 function escapeDriveQueryLiteral(value: string): string {
   return value.replace(/[\\']/g, (match) => `\\${match}`);
+}
+
+/** Builds the Drive `q` filter: always excludes trash, and narrows by name when a query is given. */
+function buildDriveQuery(query: string | undefined): string {
+  if (!query || query.trim().length === 0) return "trashed=false";
+  const tokens = looseQueryTokens(query);
+  const nameClauses = (tokens.length > 0 ? tokens : [query])
+    .map((token) => `name contains '${escapeDriveQueryLiteral(token)}'`)
+    .join(" or ");
+  return `trashed=false and (${nameClauses})`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

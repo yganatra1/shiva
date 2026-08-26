@@ -7,9 +7,8 @@ import com.shiva.assistant.core.logging.ShivaLog
 import com.shiva.assistant.device.automation.AccessibilityEngineHolder
 
 /**
- * Explicitly user-enabled. Backs the device.ui.* commands: the service itself only tracks which
- * app is in front and hands its instance to [AccessibilityEngineHolder]; all traversal and
- * gesture work lives in the automation engine.
+ * Explicitly user-enabled. Backs Diagnostics screen inspection: the service itself only tracks
+ * which app is in front and hands its instance to [AccessibilityEngineHolder].
  */
 class ShivaAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {

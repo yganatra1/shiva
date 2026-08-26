@@ -16,17 +16,7 @@ import com.shiva.assistant.device.automation.AccessibilityUiEngine
 import com.shiva.assistant.device.automation.AppLauncher
 import com.shiva.assistant.device.automation.AppListCommandHandler
 import com.shiva.assistant.device.automation.AppOpenCommandHandler
-import com.shiva.assistant.device.automation.GlobalUiAction
-import com.shiva.assistant.device.automation.UiClickCommandHandler
 import com.shiva.assistant.device.automation.UiEngine
-import com.shiva.assistant.device.automation.UiFindCommandHandler
-import com.shiva.assistant.device.automation.UiGestureCommandHandler
-import com.shiva.assistant.device.automation.UiGlobalActionCommandHandler
-import com.shiva.assistant.device.automation.UiInspectCommandHandler
-import com.shiva.assistant.device.automation.UiScreenshotCommandHandler
-import com.shiva.assistant.device.automation.UiScrollCommandHandler
-import com.shiva.assistant.device.automation.UiTypeCommandHandler
-import com.shiva.assistant.device.automation.UiWaitCommandHandler
 import com.shiva.assistant.device.camera.AndroidCameraController
 import com.shiva.assistant.device.camera.CameraCommandHandler
 import com.shiva.assistant.device.capability.AndroidCapabilityRegistry
@@ -106,16 +96,6 @@ class AppContainer(
             CameraCommandHandler(cameraController),
             AppOpenCommandHandler(appLauncher),
             AppListCommandHandler(appLauncher),
-            UiInspectCommandHandler(uiEngine),
-            UiFindCommandHandler(uiEngine),
-            UiClickCommandHandler(uiEngine),
-            UiTypeCommandHandler(uiEngine),
-            UiScrollCommandHandler(uiEngine),
-            UiWaitCommandHandler(uiEngine),
-            UiScreenshotCommandHandler(uiEngine),
-            UiGestureCommandHandler(uiEngine),
-            UiGlobalActionCommandHandler("device.ui.back", uiEngine, GlobalUiAction.BACK),
-            UiGlobalActionCommandHandler("device.ui.global", uiEngine),
         ),
         observer = deviceActivityLog,
     )
