@@ -430,6 +430,7 @@ function buildRules(
     "- If a skill failed, explain the safe failure or choose a useful different action; do not invent success.",
     "- Use another skill call when more work is needed. Respond only when the request is complete or cannot safely continue.",
     "- Never repeat a skill call with identical arguments in the same run. Use its existing observation; after a failure, return a grounded failure or choose a materially different allowed action.",
+    '- A write skill\'s success already accomplishes the user\'s request — it is not a draft to refine. Once a write skill_call succeeds, do not call that same skill again for the same request just because its wording, name, or timing could be phrased better (e.g. rewording a reminder\'s instruction, or nudging its time by a few seconds, is NOT a new request and creates an unwanted duplicate). Only call the same write skill again in one run when the user\'s message named more than one genuinely distinct target (e.g. two separate reminders for two separate things) — never to retry, rephrase, or "fix" an action that already succeeded. If in doubt, use the existing successful observation and respond.',
     "- Never end a turn by saying you will start, inspect, check, continue, or perform work later. If more work is required, call the relevant skill now. A respond decision must communicate concrete grounded findings or a completed safe failure.",
   );
 
@@ -556,6 +557,7 @@ function parseDecision(
       visibleSkillNames,
     ),
   );
+  console.log('PARSED', parsed)
   if (!parsed.success) {
     throw new AgentPlannerError(
       "The planner returned a decision with an invalid shape.",

@@ -21,6 +21,14 @@ import { AgentPlannerError, type AgentTraceLogger } from "./planner";
 
 export const DEFAULT_MAX_AGENT_STEPS = 12;
 export const DEFAULT_AGENT_REQUEST_TIMEOUT_MS = 300_000;
+/**
+ * Caps how many times one write-mutability skill may succeed within a single
+ * run. Set above 1 so a legitimate multi-target request (e.g. two separate
+ * reminders in one message) still goes through; sized to stop a runaway
+ * planner loop that keeps re-invoking the same write skill with reworded
+ * arguments well before it reaches its step limit.
+ */
+export const MAX_WRITE_SKILL_SUCCESSES_PER_RUN = 2;
 
 export class AgentMaxStepsError extends Error {
   override readonly name = "AgentMaxStepsError";
@@ -92,6 +100,12 @@ export class AgentLoop {
       string,
       AgentObservation["result"]
     >();
+    // Circuit breaker against a planner that re-invokes the same write skill
+    // over and over with slightly reworded arguments (e.g. rephrasing a
+    // reminder's instruction/time each attempt) instead of recognizing its
+    // own prior success — the exact-argument dedup above can't catch that
+    // since the arguments genuinely differ each time.
+    const writeSkillSuccessCounts = new Map<string, number>();
     const startedAt = this.now();
     const monotonicStartedAt = this.monotonicNow();
     await this.audit.startAgentRun({
@@ -492,6 +506,16 @@ export class AgentLoop {
             : `The identical ${decision.skill} call with the same arguments already failed in this run${previous && !previous.success ? ` with code ${previous.error.code}` : ""}. It was not executed again. Use the existing failure observation to return a grounded failure, or choose a materially different allowed action.`;
           continue;
         }
+        if (
+          (writeSkillSuccessCounts.get(decision.skill) ?? 0) >=
+          MAX_WRITE_SKILL_SUCCESSES_PER_RUN
+        ) {
+          const skillDefinition = this.registry.get(decision.skill);
+          if (skillDefinition.execution.mutability === "write") {
+            plannerFeedback = `${decision.skill} has already succeeded ${MAX_WRITE_SKILL_SUCCESSES_PER_RUN} time(s) in this run. It was not executed again, to avoid creating a duplicate of an action already completed. If the user's request genuinely named more distinct targets than that, explain that limit in your response instead; otherwise use the existing successful observation(s) and return a grounded response now.`;
+            continue;
+          }
+        }
         const executionAllowedSkills = currentAllowedSkills();
         const result = await this.executor.execute(
           decision.skill,
@@ -528,6 +552,12 @@ export class AgentLoop {
           },
         );
         if (callKey) completedSkillCalls.set(callKey, result);
+        if (result.success && this.registry.get(decision.skill).execution.mutability === "write") {
+          writeSkillSuccessCounts.set(
+            decision.skill,
+            (writeSkillSuccessCounts.get(decision.skill) ?? 0) + 1,
+          );
+        }
         observations.push({
           step,
           skill: decision.skill,

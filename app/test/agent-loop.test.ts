@@ -113,6 +113,72 @@ test("agent loop executes a skill, observes confirmed output, then responds", as
   });
 });
 
+test("agent loop blocks a write skill from succeeding more than the per-run cap, even with reworded arguments each time", async () => {
+  const registry = new SkillRegistry();
+  let executionCount = 0;
+  registry.register({
+    name: "schedule_create",
+    description: "Creates a reminder.",
+    inputDescription: '{ "name": string, "runAt": string }',
+    inputSchema: z.object({ name: z.string(), runAt: z.string() }).strict(),
+    execution: { mutability: "write", impact: "normal" },
+    async execute(input) {
+      executionCount += 1;
+      return { success: true, data: { id: `task-${executionCount}`, ...input } };
+    },
+  });
+  const contexts: AgentPlanningContext[] = [];
+  const decisions: AgentDecision[] = [
+    {
+      type: "skill_call",
+      skill: "schedule_create",
+      arguments: { name: "Call meow", runAt: "2026-08-26T19:08:42+05:30" },
+      authorization: "user_authorized",
+    },
+    {
+      type: "skill_call",
+      skill: "schedule_create",
+      arguments: { name: "Call meow", runAt: "2026-08-26T19:08:45+05:30" },
+      authorization: "user_authorized",
+    },
+    {
+      type: "skill_call",
+      skill: "schedule_create",
+      arguments: { name: "Call meow please", runAt: "2026-08-26T19:08:50+05:30" },
+      authorization: "user_authorized",
+    },
+    {
+      type: "respond",
+      message: "I scheduled a reminder to call meow.",
+    },
+  ];
+  const planner: AgentPlanner = {
+    async decide(context) {
+      contexts.push(context);
+      const decision = decisions.shift();
+      if (!decision) throw new Error("No fake decision available.");
+      return decision;
+    },
+  };
+  const loop = new AgentLoop(
+    planner,
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+    8,
+    () => new Date("2026-08-20T00:00:00Z"),
+    () => "30000000-0000-4000-8000-000000000003",
+  );
+
+  const result = await loop.run(request);
+
+  assert.equal(executionCount, 2, "the third, reworded call must not execute");
+  assert.equal(result.response, "I scheduled a reminder to call meow.");
+  assert.match(
+    String(contexts[3]?.plannerFeedback),
+    /already succeeded 2 time\(s\)/,
+  );
+});
+
 test("agent loop resumes only the exact action approved by a pending confirmation", async () => {
   const confirmationId = "40000000-0000-4000-8000-000000000004";
   const confirmationStore = new InMemoryConfirmationStore();
