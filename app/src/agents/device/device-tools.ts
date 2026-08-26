@@ -34,6 +34,23 @@ export const DEVICE_TOOLS: readonly DeviceTool[] = [
     description: "Read one notification's full content. Args: key (from device.notifications.list).",
   },
   {
+    name: "device.notification.send",
+    description: "Post a notification from Shiva on the phone's notification shade. Args: title, body.",
+  },
+  {
+    name: "device.sms.send",
+    description:
+      "Send an SMS text message. Args: number, message. Requires Shiva to hold the phone's default-SMS-app role; fails closed otherwise.",
+  },
+  {
+    name: "device.location.get",
+    description: "Get the phone's current location. No args. Result: latitude, longitude, accuracyMeters, ageMs.",
+  },
+  {
+    name: "device.status.get",
+    description: "Get basic device status. No args. Result: batteryPercent, charging, networkType, connected.",
+  },
+  {
     name: "device.camera.capture",
     description: "Take a photo with the phone's camera. No args.",
   },

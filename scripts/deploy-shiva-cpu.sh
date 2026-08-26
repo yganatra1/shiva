@@ -8,7 +8,8 @@ set -Eeuo pipefail
 ROOT="/workspace/shiva"
 REPO="$ROOT/repo"
 APP="$REPO/app"
-
+LOG_DIR="$ROOT/logs"
+PM2_LOG_DIR="$LOG_DIR/pm2"
 RUNTIME="$ROOT/runtime"
 
 
@@ -16,7 +17,6 @@ export NVM_DIR
 export PM2_HOME
 
 mkdir -p \
-  "$STATE_DIR" \
   "$PM2_LOG_DIR" \
   "$ROOT/config" \
   "$RUNTIME"
@@ -41,7 +41,9 @@ fi
 
 echo
 echo "[6/7] Running database migrations..."
+cd "$APP"
 
+ECOSYSTEM="$ROOT/config/ecosystem.config.cjs"
 npm run db:migrate
 
 # ------------------------------------------------------------
@@ -93,9 +95,6 @@ module.exports = {
       out_file: "$PM2_LOG_DIR/scheduler-out.log",
       error_file: "$PM2_LOG_DIR/scheduler-error.log",
 
-      filter_env: [
-      ],
-
       env: {
         NODE_ENV: "production"
       }
@@ -137,7 +136,26 @@ module.exports = {
       env: {
         NODE_ENV: "production"
       }
-    }
+    },
+   {
+  name: "shiva-face",
+  cwd: "/workspace/shiva/repo",
+
+  script: "/workspace/shiva/runtime/venvs/face/bin/python",
+  args: ["-m", "face.server"],
+  interpreter: "none",
+
+  autorestart: true,
+  restart_delay: 2000,
+  max_restarts: 20,
+
+  out_file: "/workspace/shiva/runtime/pm2/logs/shiva-face-out.log",
+  error_file: "/workspace/shiva/runtime/pm2/logs/shiva-face-error.log",
+
+  env: {
+    NODE_ENV: "production"
+  }
+}
   ]
 };
 PMEOF

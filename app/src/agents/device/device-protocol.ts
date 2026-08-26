@@ -6,9 +6,13 @@ export const IMPLEMENTED_DEVICE_COMMAND_TYPES = [
   "device.phone.call",
   "device.notifications.list",
   "device.notifications.read",
+  "device.notification.send",
   "device.camera.capture",
   "device.app.open",
   "device.app.list",
+  "device.sms.send",
+  "device.location.get",
+  "device.status.get",
   "device.ui.inspect",
   "device.ui.find",
   "device.ui.click",
@@ -29,9 +33,7 @@ export const IMPLEMENTED_DEVICE_COMMAND_TYPES = [
  */
 export const PLANNED_DEVICE_COMMAND_TYPES = [
   "device.notifications.reply",
-  "device.sms.send",
   "device.sms.read",
-  "device.location.get",
   "device.microphone.record",
   "device.microphone.stream",
   "device.whatsapp.send",

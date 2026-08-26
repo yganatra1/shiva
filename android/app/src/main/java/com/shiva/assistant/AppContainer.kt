@@ -35,12 +35,20 @@ import com.shiva.assistant.device.command.DeviceCommandRouter
 import com.shiva.assistant.device.contacts.AndroidContactsRepository
 import com.shiva.assistant.device.contacts.ContactsCommandHandler
 import com.shiva.assistant.device.identity.DeviceIdentityStore
+import com.shiva.assistant.device.location.AndroidLocationController
+import com.shiva.assistant.device.location.LocationCommandHandler
+import com.shiva.assistant.device.notifications.AndroidNotificationSendController
 import com.shiva.assistant.device.notifications.AndroidNotificationsRepository
+import com.shiva.assistant.device.notifications.NotificationSendCommandHandler
 import com.shiva.assistant.device.notifications.NotificationStore
 import com.shiva.assistant.device.notifications.NotificationsListCommandHandler
 import com.shiva.assistant.device.notifications.NotificationsReadCommandHandler
 import com.shiva.assistant.device.phone.AndroidPhoneController
 import com.shiva.assistant.device.phone.PhoneCommandHandler
+import com.shiva.assistant.device.sms.AndroidSmsController
+import com.shiva.assistant.device.sms.SmsCommandHandler
+import com.shiva.assistant.device.status.AndroidDeviceStatusController
+import com.shiva.assistant.device.status.DeviceStatusCommandHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -77,6 +85,10 @@ class AppContainer(
     val phoneController = AndroidPhoneController(appContext)
     val contactsRepository = AndroidContactsRepository(appContext)
     val notificationsRepository = AndroidNotificationsRepository(appContext, notificationStore)
+    val smsController = AndroidSmsController(appContext)
+    val locationController = AndroidLocationController(appContext)
+    val deviceStatusController = AndroidDeviceStatusController(appContext)
+    val notificationSendController = AndroidNotificationSendController(appContext)
     val cameraController = AndroidCameraController(appContext)
     val uiEngine: UiEngine = AccessibilityUiEngine()
     val appLauncher = AppLauncher(appContext)
@@ -87,6 +99,10 @@ class AppContainer(
             ContactsCommandHandler(contactsRepository),
             NotificationsListCommandHandler(notificationsRepository),
             NotificationsReadCommandHandler(notificationsRepository),
+            SmsCommandHandler(smsController),
+            LocationCommandHandler(locationController),
+            DeviceStatusCommandHandler(deviceStatusController),
+            NotificationSendCommandHandler(notificationSendController),
             CameraCommandHandler(cameraController),
             AppOpenCommandHandler(appLauncher),
             AppListCommandHandler(appLauncher),

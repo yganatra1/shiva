@@ -232,6 +232,10 @@ test("IMPLEMENTED_DEVICE_COMMAND_TYPES includes the full UI-automation surface",
   for (const type of [
     "device.app.open",
     "device.app.list",
+    "device.notification.send",
+    "device.sms.send",
+    "device.location.get",
+    "device.status.get",
     "device.ui.inspect",
     "device.ui.find",
     "device.ui.click",
@@ -248,5 +252,5 @@ test("IMPLEMENTED_DEVICE_COMMAND_TYPES includes the full UI-automation surface",
       `expected ${type} to be implemented`,
     );
   }
-  assert.equal(IMPLEMENTED_DEVICE_COMMAND_TYPES.length, 17);
+  assert.equal(IMPLEMENTED_DEVICE_COMMAND_TYPES.length, 21);
 });
