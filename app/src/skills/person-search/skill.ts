@@ -10,9 +10,9 @@ const inputSchema = z
   })
   .strict();
 
-export function createPeopleSearchSkill(repository: PeopleRepositoryPort) {
+export function createPersonSearchSkill(repository: PeopleRepositoryPort) {
   return defineSkill({
-    name: "people_search",
+    name: "person_search",
     description:
       "Looks up people Shiva has been explicitly taught, including aliases, relationship, structured details, notes, and face-enrollment readiness. Use this for durable person facts; it does not run face recognition.",
     inputDescription:

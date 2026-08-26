@@ -47,7 +47,9 @@ Threshold defaults are starting points. Before regular use, build a representati
 
 ## Grounding person details
 
-People are durable entities with a display name, owner marker, aliases, relationship, structured details, and notes. The `people_search` skill exposes those facts to the planner without exposing biometrics. When `/chat` receives attached images, Shiva runs local identification first and injects a bounded profile for each confident result as explicitly untrusted personal data. Device camera capture returns the same resolved details beside the non-identifying visual description. If the face service is unavailable, ordinary chat and visual description continue without identity context.
+People are durable entities with a display name, owner marker, aliases, relationship (to the owner), structured details, and notes. The `people_search` skill exposes those facts to the planner without exposing biometrics; `person_create` and `person_update` let Core add and edit them, guarded against accidentally creating a duplicate record for someone who already exists under the same name or alias. When `/chat` receives attached images, Shiva runs local identification first and injects a bounded profile for each confident result as explicitly untrusted personal data. Device camera capture returns the same resolved details beside the non-identifying visual description. If the face service is unavailable, ordinary chat and visual description continue without identity context.
+
+`person_relationships` is a separate directed person-to-person graph (e.g. Yash --father--> Rajesh, Charmi --brother--> Amit), independent of the single owner-relative `relationship` field above. `relationship` is free text with no enum, so new kinds (father, wife, manager, business partner, ...) never need a schema change. `person_relationship_add` records one edge; `person_relationship_search` returns a person's outgoing edges, so the planner can chain lookups to resolve an indirect reference like "call my wife's brother" — resolve the owner, follow "wife" to Charmi, then search again from Charmi for "brother".
 
 ## Services and API
 

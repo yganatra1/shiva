@@ -5,6 +5,19 @@ export class FaceImageAlreadyEnrolledError extends Error {
   override readonly name = "FaceImageAlreadyEnrolledError";
 }
 
+/** Thrown by createPerson/updatePerson instead of silently creating a duplicate person record. */
+export class PersonAlreadyExistsError extends Error {
+  override readonly name = "PersonAlreadyExistsError";
+
+  constructor(
+    readonly existingPersonId: string,
+    readonly existingDisplayName: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export type PersonDetails = Readonly<Record<string, string>>;
 
 export interface FaceBoundingBox {
@@ -83,6 +96,27 @@ export interface AddPersonFaceSampleInput {
   readonly imageSha256: string;
 }
 
+/** A directed person-to-person edge, e.g. Yash --father--> Rajesh. */
+export interface PersonRelationship {
+  readonly id: string;
+  readonly userId: string;
+  readonly fromPersonId: string;
+  readonly toPersonId: string;
+  readonly toPersonDisplayName: string;
+  readonly relationship: string;
+  readonly notes: string | null;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+}
+
+export interface AddPersonRelationshipInput {
+  readonly userId: string;
+  readonly fromPersonId: string;
+  readonly toPersonId: string;
+  readonly relationship: string;
+  readonly notes?: string | null;
+}
+
 export interface FindNearestFaceCandidatesInput {
   readonly userId: string;
   readonly embedding: readonly number[];
@@ -133,4 +167,12 @@ export interface PeopleRepositoryPort {
   findNearestFaceCandidates(
     input: FindNearestFaceCandidatesInput,
   ): Promise<readonly FaceMatchCandidate[]>;
+  addRelationship(
+    input: AddPersonRelationshipInput,
+  ): Promise<PersonRelationship>;
+  /** Outgoing edges only, e.g. listRelationshipsFrom(yash) -> [{relationship:"father", toPersonId:rajesh}, ...]. */
+  listRelationshipsFrom(
+    userId: string,
+    personId: string,
+  ): Promise<readonly PersonRelationship[]>;
 }

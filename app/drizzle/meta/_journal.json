@@ -64,6 +64,13 @@
       "when": 1787743227984,
       "tag": "0008_mute_carnage",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787754866928,
+      "tag": "0009_curved_sprite",
+      "breakpoints": true
     }
   ]
 }

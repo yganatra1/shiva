@@ -186,6 +186,59 @@ export const personAliases = pgTable(
 );
 
 /**
+ * Directed person-to-person edges (e.g. Yash --father--> Rajesh), independent
+ * of `people.relationship` (which only expresses a relationship to the
+ * account owner). Free-text `relationship` deliberately has no enum so new
+ * relationship kinds never need a migration.
+ */
+export const personRelationships = pgTable(
+  "person_relationships",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    fromPersonId: uuid("from_person_id")
+      .notNull()
+      .references(() => people.id, { onDelete: "cascade" }),
+    toPersonId: uuid("to_person_id")
+      .notNull()
+      .references(() => people.id, { onDelete: "cascade" }),
+    relationship: text("relationship").notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    check(
+      "person_relationships_relationship_not_empty",
+      sql`length(btrim(${table.relationship})) > 0`,
+    ),
+    check(
+      "person_relationships_notes_not_empty",
+      sql`${table.notes} IS NULL OR length(btrim(${table.notes})) > 0`,
+    ),
+    check(
+      "person_relationships_not_self",
+      sql`${table.fromPersonId} <> ${table.toPersonId}`,
+    ),
+    uniqueIndex("person_relationships_unique").on(
+      table.userId,
+      table.fromPersonId,
+      table.toPersonId,
+      table.relationship,
+    ),
+    index("person_relationships_from_idx").on(table.fromPersonId),
+    index("person_relationships_to_idx").on(table.toPersonId),
+  ],
+);
+
+/**
  * Biometric gallery templates are deliberately separate from semantic-memory
  * embeddings. Source image bytes are never persisted here.
  */

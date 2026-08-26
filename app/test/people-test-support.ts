@@ -1,7 +1,9 @@
 import {
   FACE_READY_SAMPLE_COUNT,
   FaceImageAlreadyEnrolledError,
+  PersonAlreadyExistsError,
   type AddPersonFaceSampleInput,
+  type AddPersonRelationshipInput,
   type CreatePersonInput,
   type FaceMatchCandidate,
   type FindNearestFaceCandidatesInput,
@@ -9,6 +11,7 @@ import {
   type Person,
   type PersonFaceSample,
   type PersonFaceTemplate,
+  type PersonRelationship,
   type UpdatePersonInput,
 } from "../src/people/types";
 import type {
@@ -79,11 +82,20 @@ export class FakeFaceProvider implements FaceProvider {
 export class InMemoryPeopleRepository implements PeopleRepositoryPort {
   private readonly people = new Map<string, Omit<Person, "faceSampleCount" | "faceReady">>();
   private readonly templates = new Map<string, PersonFaceTemplate[]>();
+  private readonly relationships: PersonRelationship[] = [];
   private sequence = 1;
 
   async ensureUser(): Promise<void> {}
 
   async createPerson(input: CreatePersonInput): Promise<Person> {
+    const collision = this.findDisplayNameCollision(input.userId, input.displayName);
+    if (collision) {
+      throw new PersonAlreadyExistsError(
+        collision.id,
+        collision.displayName,
+        `A person named "${collision.displayName}" already exists (id ${collision.id}).`,
+      );
+    }
     if (input.isOwner) this.unsetOwners(input.userId);
     const now = new Date("2026-08-23T10:00:00.000Z");
     const id = this.uuid();
@@ -105,6 +117,20 @@ export class InMemoryPeopleRepository implements PeopleRepositoryPort {
   async updatePerson(input: UpdatePersonInput): Promise<Person | null> {
     const existing = this.people.get(input.personId);
     if (!existing || existing.userId !== input.userId) return null;
+    if (input.displayName !== undefined) {
+      const collision = this.findDisplayNameCollision(
+        input.userId,
+        input.displayName,
+        input.personId,
+      );
+      if (collision) {
+        throw new PersonAlreadyExistsError(
+          collision.id,
+          collision.displayName,
+          `Renaming to "${input.displayName}" would collide with the existing person "${collision.displayName}" (id ${collision.id}).`,
+        );
+      }
+    }
     if (input.isOwner) this.unsetOwners(input.userId);
     this.people.set(input.personId, {
       ...existing,
@@ -255,6 +281,53 @@ export class InMemoryPeopleRepository implements PeopleRepositoryPort {
       .slice(0, input.limit);
   }
 
+  async addRelationship(
+    input: AddPersonRelationshipInput,
+  ): Promise<PersonRelationship> {
+    const from = this.people.get(input.fromPersonId);
+    const to = this.people.get(input.toPersonId);
+    if (!from || from.userId !== input.userId || !to || to.userId !== input.userId) {
+      throw new TypeError(
+        "fromPersonId and toPersonId must both be existing people owned by userId.",
+      );
+    }
+    const now = new Date("2026-08-23T10:03:00.000Z");
+    const existing = this.relationships.find(
+      (relationship) =>
+        relationship.userId === input.userId &&
+        relationship.fromPersonId === input.fromPersonId &&
+        relationship.toPersonId === input.toPersonId &&
+        relationship.relationship === input.relationship,
+    );
+    const record: PersonRelationship = {
+      id: existing?.id ?? this.uuid(),
+      userId: input.userId,
+      fromPersonId: input.fromPersonId,
+      toPersonId: input.toPersonId,
+      toPersonDisplayName: to.displayName,
+      relationship: input.relationship,
+      notes: input.notes ?? null,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    if (existing) {
+      this.relationships.splice(this.relationships.indexOf(existing), 1, record);
+    } else {
+      this.relationships.push(record);
+    }
+    return record;
+  }
+
+  async listRelationshipsFrom(
+    userId: string,
+    personId: string,
+  ): Promise<readonly PersonRelationship[]> {
+    return this.relationships.filter(
+      (relationship) =>
+        relationship.userId === userId && relationship.fromPersonId === personId,
+    );
+  }
+
   private requiredPerson(userId: string, personId: string): Person {
     const person = this.people.get(personId);
     if (!person || person.userId !== userId) throw new Error("missing person");
@@ -272,6 +345,25 @@ export class InMemoryPeopleRepository implements PeopleRepositoryPort {
       faceSampleCount: count,
       faceReady: count >= FACE_READY_SAMPLE_COUNT,
     };
+  }
+
+  private findDisplayNameCollision(
+    userId: string,
+    displayName: string,
+    excludePersonId?: string,
+  ): { id: string; displayName: string } | null {
+    const normalized = displayName.trim().toLowerCase();
+    for (const person of this.people.values()) {
+      if (person.userId !== userId || person.id === excludePersonId) continue;
+      const matchesName = person.displayName.trim().toLowerCase() === normalized;
+      const matchesAlias = person.aliases.some(
+        (alias) => alias.trim().toLowerCase() === normalized,
+      );
+      if (matchesName || matchesAlias) {
+        return { id: person.id, displayName: person.displayName };
+      }
+    }
+    return null;
   }
 
   private unsetOwners(userId: string): void {

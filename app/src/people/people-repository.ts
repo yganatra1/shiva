@@ -5,6 +5,7 @@ import {
   desc,
   eq,
   inArray,
+  ne,
   or,
   sql,
 } from "drizzle-orm";
@@ -14,13 +15,16 @@ import {
   people,
   personAliases,
   personFaceEmbeddings,
+  personRelationships,
   users,
 } from "../database/schema.js";
 import {
   FACE_READY_SAMPLE_COUNT,
   FaceImageAlreadyEnrolledError,
   PERSON_FACE_EMBEDDING_DIMENSIONS,
+  PersonAlreadyExistsError,
   type AddPersonFaceSampleInput,
+  type AddPersonRelationshipInput,
   type CreatePersonInput,
   type FaceBoundingBox,
   type FaceMatchCandidate,
@@ -30,6 +34,7 @@ import {
   type PersonDetails,
   type PersonFaceSample,
   type PersonFaceTemplate,
+  type PersonRelationship,
   type UpdatePersonInput,
 } from "./types.js";
 
@@ -76,6 +81,17 @@ export class DrizzlePeopleRepository implements PeopleRepositoryPort {
 
   async createPerson(input: CreatePersonInput): Promise<Person> {
     const normalized = validateCreatePersonInput(input);
+    const collision = await this.findDisplayNameCollision(
+      input.userId,
+      normalized.displayName,
+    );
+    if (collision) {
+      throw new PersonAlreadyExistsError(
+        collision.id,
+        collision.displayName,
+        `A person named "${collision.displayName}" already exists (id ${collision.id}). Use person_update or person_relationship_add on the existing record instead of creating a duplicate.`,
+      );
+    }
     const created = await this.database.transaction(async (transaction) => {
       if (input.isOwner === true) {
         await transaction
@@ -120,6 +136,20 @@ export class DrizzlePeopleRepository implements PeopleRepositoryPort {
       input.aliases === undefined
         ? undefined
         : validatedAliases(input.aliases, displayName);
+    if (input.displayName !== undefined) {
+      const collision = await this.findDisplayNameCollision(
+        input.userId,
+        displayName,
+        input.personId,
+      );
+      if (collision) {
+        throw new PersonAlreadyExistsError(
+          collision.id,
+          collision.displayName,
+          `Renaming to "${displayName}" would collide with the existing person "${collision.displayName}" (id ${collision.id}).`,
+        );
+      }
+    }
     const now = new Date();
 
     await this.database.transaction(async (transaction) => {
@@ -454,6 +484,119 @@ export class DrizzlePeopleRepository implements PeopleRepositoryPort {
     }));
   }
 
+  async addRelationship(
+    input: AddPersonRelationshipInput,
+  ): Promise<PersonRelationship> {
+    assertUuid(input.userId, "userId");
+    assertUuid(input.fromPersonId, "fromPersonId");
+    assertUuid(input.toPersonId, "toPersonId");
+    if (input.fromPersonId === input.toPersonId) {
+      throw new TypeError("fromPersonId and toPersonId must be different people.");
+    }
+    const relationship = requiredText(
+      input.relationship,
+      "relationship",
+      MAX_RELATIONSHIP_CHARACTERS,
+    );
+    const notes = optionalText(input.notes ?? null, "notes", MAX_NOTES_CHARACTERS);
+
+    const owned = await this.database
+      .select({ id: people.id })
+      .from(people)
+      .where(
+        and(
+          eq(people.userId, input.userId),
+          inArray(people.id, [input.fromPersonId, input.toPersonId]),
+        ),
+      );
+    if (owned.length !== 2) {
+      throw new TypeError(
+        "fromPersonId and toPersonId must both be existing people owned by userId.",
+      );
+    }
+
+    const [inserted] = await this.database
+      .insert(personRelationships)
+      .values({
+        userId: input.userId,
+        fromPersonId: input.fromPersonId,
+        toPersonId: input.toPersonId,
+        relationship,
+        notes,
+      })
+      .onConflictDoUpdate({
+        target: [
+          personRelationships.userId,
+          personRelationships.fromPersonId,
+          personRelationships.toPersonId,
+          personRelationships.relationship,
+        ],
+        set: { notes, updatedAt: new Date() },
+      })
+      .returning();
+    const row = requiredRow(inserted, "person relationship");
+    const [toPerson] = await this.database
+      .select({ displayName: people.displayName })
+      .from(people)
+      .where(eq(people.id, input.toPersonId))
+      .limit(1);
+    return mapRelationship(row, toPerson?.displayName ?? "");
+  }
+
+  async listRelationshipsFrom(
+    userId: string,
+    personId: string,
+  ): Promise<readonly PersonRelationship[]> {
+    assertUuid(userId, "userId");
+    assertUuid(personId, "personId");
+    const rows = await this.database
+      .select({
+        relationship: personRelationships,
+        toPersonDisplayName: people.displayName,
+      })
+      .from(personRelationships)
+      .innerJoin(people, eq(people.id, personRelationships.toPersonId))
+      .where(
+        and(
+          eq(personRelationships.userId, userId),
+          eq(personRelationships.fromPersonId, personId),
+        ),
+      )
+      .orderBy(asc(personRelationships.createdAt), asc(personRelationships.id));
+    return rows.map(({ relationship, toPersonDisplayName }) =>
+      mapRelationship(relationship, toPersonDisplayName),
+    );
+  }
+
+  /**
+   * Guards against accidentally creating a second record for someone who
+   * already exists under the same (or an aliased) name — duplicate people
+   * fragment the relationship graph and are painful to merge back later.
+   */
+  private async findDisplayNameCollision(
+    userId: string,
+    displayName: string,
+    excludePersonId?: string,
+  ): Promise<{ readonly id: string; readonly displayName: string } | null> {
+    const normalized = normalizeAlias(displayName);
+    const [collision] = await this.database
+      .select({ id: people.id, displayName: people.displayName })
+      .from(people)
+      .leftJoin(personAliases, eq(personAliases.personId, people.id))
+      .where(
+        and(
+          eq(people.userId, userId),
+          ...(excludePersonId ? [ne(people.id, excludePersonId)] : []),
+          or(
+            sql`lower(btrim(${people.displayName})) = ${normalized}`,
+            eq(personAliases.normalizedAlias, normalized),
+          ),
+        ),
+      )
+      .limit(1);
+    return collision ?? null;
+  }
+
   private async selectPersonRow(
     userId: string,
     personId: string,
@@ -533,6 +676,23 @@ async function insertAliases(
       ...(now ? { createdAt: now, updatedAt: now } : {}),
     })),
   );
+}
+
+function mapRelationship(
+  row: typeof personRelationships.$inferSelect,
+  toPersonDisplayName: string,
+): PersonRelationship {
+  return {
+    id: row.id,
+    userId: row.userId,
+    fromPersonId: row.fromPersonId,
+    toPersonId: row.toPersonId,
+    toPersonDisplayName,
+    relationship: row.relationship,
+    notes: row.notes,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
 }
 
 function mapPerson(
