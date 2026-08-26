@@ -43,8 +43,10 @@ export function createDriveSearchSkill(client?: GoogleDriveClient) {
           maxResults: input.maxResults,
           ...(context.signal ? { signal: context.signal } : {}),
         });
+        console.log('matches', matches);
         return { success: true, data: { matches } };
       } catch (error: unknown) {
+        console.error(error);
         if (context.signal?.aborted) throw error;
         return { success: false, error: driveErrorToFailure(error) };
       }
