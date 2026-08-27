@@ -230,22 +230,22 @@ export class GoogleCalendarClient {
       signal,
     });
     if (!response.ok) {
-      await discardBody(response);
+      const detail = await readErrorDetail(response);
       if (response.status === 401 || response.status === 403) {
         throw new CalendarClientError(
           "AUTH",
-          "Google Calendar rejected the configured credentials, or the granted scope does not permit this operation.",
+          `Google Calendar rejected the configured credentials, or the granted scope does not permit this operation.${detail ? ` Google said: ${detail}` : ""}`,
         );
       }
       if (response.status === 400 || response.status === 404 || response.status === 410) {
         throw new CalendarClientError(
           "INVALID_INPUT",
-          "The requested calendar event was invalid or not found.",
+          `The requested calendar event was invalid or not found.${detail ? ` Google said: ${detail}` : ""}`,
         );
       }
       throw new CalendarClientError(
         "UNAVAILABLE",
-        `Google Calendar returned HTTP status ${response.status}.`,
+        `Google Calendar returned HTTP status ${response.status}.${detail ? ` Google said: ${detail}` : ""}`,
       );
     }
     if (allowEmptyResponse) {
@@ -431,6 +431,33 @@ function readEventList(payload: unknown): readonly CalendarEvent[] {
     );
   }
   return payload.items.map((item) => readEvent(item));
+}
+
+const MAX_ERROR_DETAIL_LENGTH = 500;
+
+/**
+ * Google's error responses are `{"error":{"message":"...","status":"..."}}`.
+ * Surfacing that real reason (invalid scope vs. API not enabled vs. bad
+ * grant, etc.) instead of discarding the body is the difference between an
+ * actionable failure and an unexplained one classified only by HTTP status.
+ */
+async function readErrorDetail(response: Response): Promise<string | undefined> {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    return undefined;
+  }
+  if (!text) return undefined;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (isRecord(parsed) && isRecord(parsed.error) && typeof parsed.error.message === "string") {
+      return parsed.error.message.slice(0, MAX_ERROR_DETAIL_LENGTH);
+    }
+  } catch {
+    // Not JSON; fall through to raw text below.
+  }
+  return text.slice(0, MAX_ERROR_DETAIL_LENGTH);
 }
 
 async function discardBody(response: Response): Promise<void> {

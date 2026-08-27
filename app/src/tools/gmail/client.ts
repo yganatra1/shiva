@@ -247,22 +247,22 @@ export class GoogleGmailClient {
       signal,
     });
     if (!response.ok) {
-      await discardBody(response);
+      const detail = await readErrorDetail(response);
       if (response.status === 401 || response.status === 403) {
         throw new GmailClientError(
           "AUTH",
-          "Gmail rejected the configured credentials, or the granted scope does not permit this operation.",
+          `Gmail rejected the configured credentials, or the granted scope does not permit this operation.${detail ? ` Google said: ${detail}` : ""}`,
         );
       }
       if (response.status === 400 || response.status === 404) {
         throw new GmailClientError(
           "INVALID_INPUT",
-          "The requested Gmail message or query was invalid or not found.",
+          `The requested Gmail message or query was invalid or not found.${detail ? ` Google said: ${detail}` : ""}`,
         );
       }
       throw new GmailClientError(
         "UNAVAILABLE",
-        `Gmail returned HTTP status ${response.status}.`,
+        `Gmail returned HTTP status ${response.status}.${detail ? ` Google said: ${detail}` : ""}`,
       );
     }
     try {
@@ -517,10 +517,29 @@ function encodeMimeMessage(input: {
   return Buffer.from(message, "utf-8").toString("base64url");
 }
 
-async function discardBody(response: Response): Promise<void> {
+const MAX_ERROR_DETAIL_LENGTH = 500;
+
+/**
+ * Google's error responses are `{"error":{"message":"...","status":"..."}}`.
+ * Surfacing that real reason (invalid scope vs. API not enabled vs. bad
+ * grant, etc.) instead of discarding the body is the difference between an
+ * actionable failure and an unexplained one classified only by HTTP status.
+ */
+async function readErrorDetail(response: Response): Promise<string | undefined> {
+  let text: string;
   try {
-    await response.body?.cancel();
+    text = await response.text();
   } catch {
-    // Preserve the sanitized status classification.
+    return undefined;
   }
+  if (!text) return undefined;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (isRecord(parsed) && isRecord(parsed.error) && typeof parsed.error.message === "string") {
+      return parsed.error.message.slice(0, MAX_ERROR_DETAIL_LENGTH);
+    }
+  } catch {
+    // Not JSON; fall through to raw text below.
+  }
+  return text.slice(0, MAX_ERROR_DETAIL_LENGTH);
 }
