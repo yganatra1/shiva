@@ -179,6 +179,75 @@ test("agent loop blocks a write skill from succeeding more than the per-run cap,
   );
 });
 
+test("agent loop stops retrying a skill that keeps failing, even with reworded arguments each time", async () => {
+  const registry = new SkillRegistry();
+  let executionCount = 0;
+  registry.register({
+    name: "calendar_list_events",
+    description: "Lists calendar events.",
+    inputDescription: '{ "query": string }',
+    inputSchema: z.object({ query: z.string() }).strict(),
+    execution: { mutability: "read", impact: "normal" },
+    async execute() {
+      executionCount += 1;
+      return {
+        success: false,
+        error: { code: "CALENDAR_UNAVAILABLE", message: "Google Calendar could not complete the request." },
+      };
+    },
+  });
+  const contexts: AgentPlanningContext[] = [];
+  const decisions: AgentDecision[] = [
+    {
+      type: "skill_call",
+      skill: "calendar_list_events",
+      arguments: { query: "team sync" },
+      authorization: "user_authorized",
+    },
+    {
+      type: "skill_call",
+      skill: "calendar_list_events",
+      arguments: { query: "team sync meeting" },
+      authorization: "user_authorized",
+    },
+    {
+      type: "skill_call",
+      skill: "calendar_list_events",
+      arguments: { query: "sync with team" },
+      authorization: "user_authorized",
+    },
+    {
+      type: "respond",
+      message: "Google Calendar is unavailable right now, so I couldn't find that event.",
+    },
+  ];
+  const planner: AgentPlanner = {
+    async decide(context) {
+      contexts.push(context);
+      const decision = decisions.shift();
+      if (!decision) throw new Error("No fake decision available.");
+      return decision;
+    },
+  };
+  const loop = new AgentLoop(
+    planner,
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+    8,
+    () => new Date("2026-08-20T00:00:00Z"),
+    () => "30000000-0000-4000-8000-000000000003",
+  );
+
+  const result = await loop.run(request);
+
+  assert.equal(executionCount, 2, "the third, reworded call must not execute after two failures");
+  assert.equal(
+    result.response,
+    "Google Calendar is unavailable right now, so I couldn't find that event.",
+  );
+  assert.match(String(contexts[3]?.plannerFeedback), /already failed 2 time\(s\)/);
+});
+
 test("agent loop resumes only the exact action approved by a pending confirmation", async () => {
   const confirmationId = "40000000-0000-4000-8000-000000000004";
   const confirmationStore = new InMemoryConfirmationStore();

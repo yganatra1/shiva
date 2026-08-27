@@ -29,6 +29,16 @@ export const DEFAULT_AGENT_REQUEST_TIMEOUT_MS = 300_000;
  * arguments well before it reaches its step limit.
  */
 export const MAX_WRITE_SKILL_SUCCESSES_PER_RUN = 2;
+/**
+ * Caps how many times one skill may fail within a single run before the loop
+ * refuses to call it again. Without this, a planner facing a transient
+ * failure (e.g. an unavailable external API) can reword its arguments each
+ * step to dodge the exact-duplicate dedup above and keep retrying all the
+ * way to the step limit — each step being a full paid planner call. Set to 2
+ * (one retry) so a real API/core failure gets a single second chance, then
+ * the run stops instead of burning steps on a call that keeps failing.
+ */
+export const MAX_SKILL_FAILURES_PER_RUN = 2;
 
 export class AgentMaxStepsError extends Error {
   override readonly name = "AgentMaxStepsError";
@@ -106,6 +116,10 @@ export class AgentLoop {
     // own prior success — the exact-argument dedup above can't catch that
     // since the arguments genuinely differ each time.
     const writeSkillSuccessCounts = new Map<string, number>();
+    // Circuit breaker against a planner that keeps retrying the same failing
+    // skill (e.g. an API stuck returning UNAVAILABLE/TIMEOUT) with reworded
+    // arguments each step instead of giving up — see MAX_SKILL_FAILURES_PER_RUN.
+    const skillFailureCounts = new Map<string, number>();
     const startedAt = this.now();
     const monotonicStartedAt = this.monotonicNow();
     await this.audit.startAgentRun({
@@ -507,6 +521,13 @@ export class AgentLoop {
           continue;
         }
         if (
+          (skillFailureCounts.get(decision.skill) ?? 0) >=
+          MAX_SKILL_FAILURES_PER_RUN
+        ) {
+          plannerFeedback = `${decision.skill} has already failed ${MAX_SKILL_FAILURES_PER_RUN} time(s) in this run. It was not executed again. Do not retry it further; use the existing failure observation(s) to return a grounded failure response now.`;
+          continue;
+        }
+        if (
           (writeSkillSuccessCounts.get(decision.skill) ?? 0) >=
           MAX_WRITE_SKILL_SUCCESSES_PER_RUN
         ) {
@@ -556,6 +577,12 @@ export class AgentLoop {
           writeSkillSuccessCounts.set(
             decision.skill,
             (writeSkillSuccessCounts.get(decision.skill) ?? 0) + 1,
+          );
+        }
+        if (!result.success) {
+          skillFailureCounts.set(
+            decision.skill,
+            (skillFailureCounts.get(decision.skill) ?? 0) + 1,
           );
         }
         observations.push({
