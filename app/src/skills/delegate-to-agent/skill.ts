@@ -73,6 +73,8 @@ function agentErrorToFailure(
         code: "AGENT_TRANSPORT_UNAVAILABLE",
         message: "The internal agent queue is unavailable right now.",
       };
+    case "DELEGATION_LIMIT_REACHED":
+      return { code: "DELEGATION_LIMIT_REACHED", message: error.message };
     default:
       return { code: "AGENT_DELEGATION_FAILED", message: error.message };
   }

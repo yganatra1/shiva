@@ -145,7 +145,20 @@ export type OrchestrationRepositoryFailure =
   | "RESPONSE_NOT_FOUND"
   | "RESPONSE_REQUEST_MISMATCH"
   | "INVALID_INPUT"
-  | "PERSISTENCE_FAILED";
+  | "PERSISTENCE_FAILED"
+  | "DELEGATION_LIMIT_REACHED";
+
+/**
+ * Caps how many child tasks one orchestration request may chain onto the
+ * same agent. Each Core continuation after an agent response is a fresh
+ * reasoning pass with its own step budget (see MAX_SKILL_FAILURES_PER_RUN in
+ * agent-loop.ts), so nothing inside a single run stops Core from
+ * re-delegating to an agent that keeps failing (e.g. stuck auth) forever
+ * across runs — every re-delegation is itself a paid planner call plus a
+ * full agent run. Set to 2 (the original delegation plus one retry) so a
+ * real failure gets one more chance, then this chain refuses to keep going.
+ */
+export const MAX_TASKS_PER_AGENT_PER_REQUEST = 2;
 
 export class OrchestrationRepositoryError extends Error {
   override readonly name = "OrchestrationRepositoryError";
@@ -270,6 +283,35 @@ export class DrizzleOrchestrationRepository
         throw new OrchestrationRepositoryError(
           "REQUEST_COMPLETED",
           "The orchestration request is already complete.",
+        );
+      }
+
+      // Check idempotency before the cap below: a retried call for a
+      // response that already produced a child task (e.g. after a crash)
+      // must keep returning that same task, never get blocked by the cap.
+      const [existingByResponse] = await transaction
+        .select()
+        .from(agentTasks)
+        .where(
+          eq(agentTasks.createdFromResponseId, input.createdFromResponseId),
+        )
+        .limit(1);
+      if (existingByResponse) return existingByResponse;
+
+      const countRows = await transaction
+        .select({ agentTaskCount: sql<number>`count(*)::int` })
+        .from(agentTasks)
+        .where(
+          and(
+            eq(agentTasks.orchestrationRequestId, input.requestId),
+            eq(agentTasks.agentId, agentId),
+          ),
+        );
+      const agentTaskCount = countRows[0]?.agentTaskCount ?? 0;
+      if (agentTaskCount >= MAX_TASKS_PER_AGENT_PER_REQUEST) {
+        throw new OrchestrationRepositoryError(
+          "DELEGATION_LIMIT_REACHED",
+          `This orchestration request has already delegated to '${agentId}' ${MAX_TASKS_PER_AGENT_PER_REQUEST} time(s). Do not delegate to '${agentId}' again for this request; use the existing agent response(s) to return a grounded answer or failure to the user now.`,
         );
       }
 

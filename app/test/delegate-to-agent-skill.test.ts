@@ -94,6 +94,23 @@ test("an unreachable agent process maps to a skill failure", async () => {
   if (!result.success) assert.equal(result.error.code, "AGENT_UNREACHABLE");
 });
 
+test("a delegation chain that already hit its per-agent retry limit maps to a skill failure, not a thrown error", async () => {
+  const client = new FakeAgentClient();
+  client.next = new AgentDelegationError(
+    "DELEGATION_LIMIT_REACHED",
+    "This orchestration request has already delegated to 'device' 2 time(s). Do not delegate to 'device' again for this request; use the existing agent response(s) to return a grounded answer or failure to the user now.",
+  );
+  const skill = createDelegateToAgentSkill(client, registryWithDevice());
+
+  const result = await skill.execute({ agent: "device", goal: "anything" }, context);
+
+  assert.equal(result.success, false);
+  if (!result.success) {
+    assert.equal(result.error.code, "DELEGATION_LIMIT_REACHED");
+    assert.match(result.error.message, /already delegated to 'device' 2 time\(s\)/);
+  }
+});
+
 test("the input schema only accepts registered agent names", () => {
   const skill = createDelegateToAgentSkill(new FakeAgentClient(), registryWithDevice());
   assert.equal(skill.inputSchema.safeParse({ agent: "device", goal: "x" }).success, true);

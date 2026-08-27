@@ -16,6 +16,7 @@ import {
   type DurableDelegationOptions,
 } from "../../src/agents/agent-task-dispatcher.js";
 import {
+  MAX_TASKS_PER_AGENT_PER_REQUEST,
   OrchestrationRepositoryError,
   type AcceptedAgentResponse,
   type AgentResponseRecord,
@@ -310,6 +311,56 @@ test("Core continues Device to Google from prose context and then completes for 
   assert.equal(repository.requests.get("main-request")?.completedAt?.toISOString(), GOOGLE_RESPONSE_AT);
 });
 
+test("re-delegating to the same failing agent stops after its per-request retry limit instead of looping forever", async () => {
+  const repository = new InMemoryOrchestrationRepository();
+  const publisher = new InMemoryTaskPublisher(["device-agent"]);
+  const dispatcher = createDispatcher(repository, publisher, [
+    "device-task-1",
+    "retry-request",
+    "device-task-2",
+    "device-task-3",
+  ]);
+  const initial = await dispatcher.delegate(
+    "device-agent",
+    "Call Mom at +91XXXXXXXXXX. Report whether the call was answered.",
+    { orchestration: initialOrchestration() },
+  );
+  const orchestrator = new AlwaysRetrySameAgentOrchestrator(dispatcher);
+  const updates = new RecordingUpdates();
+  const processor = createResponseProcessor(repository, orchestrator, updates);
+
+  const firstFailure = plainResponse(
+    initial.taskId,
+    "Device Agent could not reach Mom: authentication failed.",
+    DEVICE_RESPONSE_AT,
+  );
+  // The first retry is allowed: this is the "one more time" the cap grants.
+  await processor.processResponse(firstFailure, "device-response-stream-1");
+  assert.equal(orchestrator.requests.length, 1);
+
+  const secondTaskId = repository.nextInputs.at(-1)?.taskId ?? "device-task-2";
+  const secondFailure = plainResponse(
+    secondTaskId,
+    "Device Agent could not reach Mom: authentication failed again.",
+    "2026-08-24T10:00:20.000Z",
+  );
+  // A third attempt at the same agent for this request must be refused, not
+  // silently retried again — this is the exact runaway loop being fixed.
+  await assert.rejects(
+    processor.processResponse(secondFailure, "device-response-stream-2"),
+    /already delegated to 'device-agent' 2 time\(s\)/,
+  );
+
+  const deviceTasks = [...repository.tasks.values()].filter(
+    (task) => task.agentId === "device-agent",
+  );
+  assert.equal(
+    deviceTasks.length,
+    2,
+    "no third device-agent task should have been created for this request",
+  );
+});
+
 test("maxProcessingAttempts permits that many real Core continuation attempts", async () => {
   const repository = new InMemoryOrchestrationRepository();
   const publisher = new InMemoryTaskPublisher(["device-agent"]);
@@ -521,6 +572,17 @@ class InMemoryOrchestrationRepository
       (task) => task.createdFromResponseId === input.createdFromResponseId,
     );
     if (existing) return existing;
+    const agentTaskCount = [...this.tasks.values()].filter(
+      (task) =>
+        task.orchestrationRequestId === input.requestId &&
+        task.agentId === input.agentId,
+    ).length;
+    if (agentTaskCount >= MAX_TASKS_PER_AGENT_PER_REQUEST) {
+      throw new OrchestrationRepositoryError(
+        "DELEGATION_LIMIT_REACHED",
+        `This orchestration request has already delegated to '${input.agentId}' ${MAX_TASKS_PER_AGENT_PER_REQUEST} time(s). Do not delegate to '${input.agentId}' again for this request; use the existing agent response(s) to return a grounded answer or failure to the user now.`,
+      );
+    }
     const task = taskRecord({
       id: input.taskId ?? `task-${this.tasks.size + 1}`,
       orchestrationRequestId: input.requestId,
@@ -838,6 +900,45 @@ class ConcurrentEchoOrchestrator implements AgentOrchestratorPort {
       kind: "response",
       runId: `run-${continuation.requestId}`,
       response: `${continuation.executionContext} Latest report: ${continuation.latestAgentResponse}`,
+      steps: 1,
+      observations: [],
+    };
+  }
+}
+
+/** Simulates a planner that keeps retrying the same failing agent on every continuation. */
+class AlwaysRetrySameAgentOrchestrator implements AgentOrchestratorPort {
+  readonly requests: AgentRequest[] = [];
+
+  constructor(private readonly dispatcher: AgentTaskDispatcher) {}
+
+  async run(request: AgentRequest): Promise<AgentRunResult> {
+    this.requests.push(request);
+    const continuation = request.delegationContinuation;
+    assert.ok(continuation);
+    const delegated = await this.dispatcher.delegate(
+      "device-agent",
+      "Try calling Mom again.",
+      {
+        orchestration: {
+          agentRunId: `continuation-run-${this.requests.length}`,
+          conversationId: request.conversationId,
+          userId: request.userId,
+          orchestrationRequestId: continuation.requestId,
+          agentResponseId: continuation.responseId,
+          userMessage: "Retrying the call to Mom.",
+          now: new Date(
+            new Date(DEVICE_RESPONSE_AT).getTime() + this.requests.length,
+          ),
+        },
+      },
+    );
+    return {
+      kind: "delegated",
+      runId: `continuation-run-${this.requests.length}`,
+      response: delegated.userMessage,
+      orchestrationRequestId: delegated.requestId,
+      taskId: delegated.taskId,
       steps: 1,
       observations: [],
     };

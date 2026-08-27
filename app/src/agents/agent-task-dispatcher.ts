@@ -5,9 +5,10 @@ import {
   type DelegateOptions,
 } from "./agent-client";
 import type { AgentRegistry } from "./agent-registry";
-import type {
-  AgentTaskRecord,
-  OrchestrationRepositoryPort,
+import {
+  OrchestrationRepositoryError,
+  type AgentTaskRecord,
+  type OrchestrationRepositoryPort,
 } from "./orchestration-repository";
 import type { AgentTask } from "./shared/protocol";
 
@@ -133,15 +134,29 @@ export class AgentTaskDispatcher {
         );
       }
       requestId = orchestration.orchestrationRequestId;
-      task = await this.repository.createNextTask({
-        taskId,
-        requestId,
-        createdFromResponseId: orchestration.agentResponseId,
-        agentId,
-        instruction,
-        now,
-        deadlineAt,
-      });
+      try {
+        task = await this.repository.createNextTask({
+          taskId,
+          requestId,
+          createdFromResponseId: orchestration.agentResponseId,
+          agentId,
+          instruction,
+          now,
+          deadlineAt,
+        });
+      } catch (error: unknown) {
+        if (
+          error instanceof OrchestrationRepositoryError &&
+          error.failure === "DELEGATION_LIMIT_REACHED"
+        ) {
+          throw new AgentDelegationError(
+            "DELEGATION_LIMIT_REACHED",
+            error.message,
+            { cause: error },
+          );
+        }
+        throw error;
+      }
     } else {
       if (
         !orchestration.sourceMessageId ||

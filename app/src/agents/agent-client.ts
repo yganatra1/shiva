@@ -13,7 +13,8 @@ export type AgentDelegationFailure =
   | "TRANSPORT_UNAVAILABLE"
   | "AGENT_TIMEOUT"
   | "AGENT_FAILED"
-  | "CANCELLED";
+  | "CANCELLED"
+  | "DELEGATION_LIMIT_REACHED";
 
 export class AgentDelegationError extends Error {
   override readonly name = "AgentDelegationError";
