@@ -204,11 +204,11 @@ test("continuation task creation is idempotent by its source response", async ()
   });
 
   assert.deepEqual(task, existing);
-  assert.equal(
-    (fake.insertedValues[0] as { createdFromResponseId: string })
-      .createdFromResponseId,
-    RESPONSE_ID,
-  );
+  // A retry for a response that already produced a task must be recognized
+  // as idempotent before any insert is attempted, and before the per-agent
+  // delegation cap is checked — otherwise a legitimate crash-recovery retry
+  // could be wrongly refused once the cap is reached.
+  assert.deepEqual(fake.insertedValues, []);
 });
 
 test("a terminal continuation confirmation completes only when no child task exists", async () => {

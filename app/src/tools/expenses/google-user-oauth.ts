@@ -62,6 +62,11 @@ export class GoogleUserOAuthAccessTokenProvider
       if (signal?.aborted) {
         throw signal.reason ?? error;
       }
+      console.error(
+        "Google OAuth token refresh failed:",
+        error instanceof Error ? error.message : error,
+        (error as { response?: { data?: unknown } })?.response?.data,
+      );
       // Do not attach the provider error as a cause: OAuth failures can contain
       // request metadata that must not reach application logs.
       throw authFailure("Google OAuth authentication failed.");
