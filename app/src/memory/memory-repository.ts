@@ -438,6 +438,38 @@ export class MemoryRepository implements MemoryRepositoryPort {
       .returning({ id: memories.id });
     return archived.length > 0;
   }
+
+  async listActiveMemories(
+    userId: string,
+    limit: number,
+  ): Promise<readonly MemoryRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(memories)
+      .where(and(eq(memories.userId, userId), eq(memories.status, "active")))
+      .orderBy(desc(memories.createdAt), desc(memories.id))
+      .limit(limit);
+    return rows.map(mapMemory);
+  }
+
+  async updateMemoryEmbedding(
+    userId: string,
+    memoryId: string,
+    embedding: readonly number[],
+  ): Promise<boolean> {
+    const updated = await this.db
+      .update(memories)
+      .set({ embedding: validatedEmbedding(embedding), updatedAt: new Date() })
+      .where(
+        and(
+          eq(memories.id, memoryId),
+          eq(memories.userId, userId),
+          eq(memories.status, "active"),
+        ),
+      )
+      .returning({ id: memories.id });
+    return updated.length > 0;
+  }
 }
 
 function validatedEmbedding(embedding: readonly number[]): number[] {

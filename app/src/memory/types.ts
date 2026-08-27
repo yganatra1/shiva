@@ -209,6 +209,14 @@ export interface MemoryRepositoryPort {
   touchMemories(memoryIds: readonly string[]): Promise<void>;
   /** Soft-deletes an active memory. Returns false if it was already inactive or not found. */
   archiveMemory(userId: string, memoryId: string): Promise<boolean>;
+  /** Every active memory for a user, newest first, capped at limit. Used for a full review/cleanup pass, never for normal retrieval. */
+  listActiveMemories(userId: string, limit: number): Promise<readonly MemoryRecord[]>;
+  /** Overwrites a memory's stored vector, e.g. after re-embedding with the current model. Returns false if inactive or not found. */
+  updateMemoryEmbedding(
+    userId: string,
+    memoryId: string,
+    embedding: readonly number[],
+  ): Promise<boolean>;
 }
 
 export interface RelevantMemoryContext {

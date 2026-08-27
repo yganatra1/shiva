@@ -5,6 +5,7 @@ import type { SkillRegistry } from "../registry";
 import { createConversationSearchSkill } from "../conversation-search/skill";
 import { createMemoryForgetSkill } from "../memory-forget/skill";
 import { createMemoryRememberSkill } from "../memory-remember/skill";
+import { createMemoryReorganizeSkill } from "../memory-reorganize/skill";
 import { createMemorySearchSkill } from "../memory-search/skill";
 
 export function registerMemorySkills(
@@ -16,5 +17,6 @@ export function registerMemorySkills(
   registry.register(createMemorySearchSkill(repository, embeddingProvider));
   registry.register(createMemoryRememberSkill(memoryService));
   registry.register(createMemoryForgetSkill(repository));
+  registry.register(createMemoryReorganizeSkill(repository, embeddingProvider));
   registry.register(createConversationSearchSkill(repository));
 }

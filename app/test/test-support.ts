@@ -418,6 +418,34 @@ export class InMemoryRepository implements MemoryRepositoryPort {
     return true;
   }
 
+  async listActiveMemories(
+    userId: string,
+    limit: number,
+  ): Promise<readonly MemoryRecord[]> {
+    return this.memories
+      .filter((memory) => memory.userId === userId && memory.status === "active")
+      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())
+      .slice(0, limit);
+  }
+
+  async updateMemoryEmbedding(
+    userId: string,
+    memoryId: string,
+    _embedding: readonly number[],
+  ): Promise<boolean> {
+    const index = this.memories.findIndex(
+      (memory) =>
+        memory.id === memoryId &&
+        memory.userId === userId &&
+        memory.status === "active",
+    );
+    if (index < 0) return false;
+    this.refreshedEmbeddingIds.push(memoryId);
+    return true;
+  }
+
+  readonly refreshedEmbeddingIds: string[] = [];
+
   private nextUuid(): string {
     const suffix = String(this.sequence++).padStart(12, "0");
     return `00000000-0000-4000-8000-${suffix}`;
