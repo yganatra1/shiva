@@ -197,19 +197,23 @@ export class ShivaChatService {
             userId: this.options.userId,
             userName: this.options.userName,
             timeZone: this.options.timeZone,
-            // The agent planner owns its system contract and has its own
-            // on-demand memory_search skill. Give it only the interaction
-            // mode and prior conversation turns (for reference resolution,
-            // e.g. "who is she?") — never the direct-chat system prompt or
-            // the retrieved-memory dump built for the direct-chat response,
-            // which would otherwise ride along on every single turn whether
-            // or not that turn's task has anything to do with it.
+            // The agent planner owns its system contract; give it only the
+            // interaction mode and prior conversation turns (for reference
+            // resolution, e.g. "who is she?"), never the direct-chat system
+            // prompt built for the direct-chat response. The same
+            // embedding-retrieved memory computed above for direct chat is
+            // still passed through (relevantMemoryContext) so every planner
+            // turn — live chat or scheduled-task execution — always has it,
+            // on top of its own on-demand memory_search for anything more.
             contextMessages: priorPlannerContext(
               recentMessages,
               interaction.mode,
               persistedMessage,
             ),
             sourceMessageId: userMessage.id,
+            ...(relevantMemory.systemMessage
+              ? { relevantMemoryContext: relevantMemory.systemMessage.content }
+              : {}),
             ...(interaction.trigger ? { trigger: interaction.trigger } : {}),
             ...(attachedImages.length > 0 ? { images: attachedImages } : {}),
             ...(signal ? { signal } : {}),

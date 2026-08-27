@@ -2280,6 +2280,59 @@ test("the current corrective task follows reference history in planner input", a
   assert.ok(iteration.indexOf("Expense 2026 sorry") > iteration.indexOf("Expenses 2026"));
 });
 
+test("planner system prompt states current time in the user's own zone/offset, not raw UTC", async () => {
+  const inputs: ChatInput[] = [];
+  const planner = new ShivaAgentPlanner({
+    async chat(input) {
+      inputs.push(input);
+      return { content: '{"type":"direct_chat"}' };
+    },
+    async *streamChat() {
+      throw new Error("Planner decisions must use structured chat().");
+    },
+  });
+  await planner.decide({
+    request: { ...request, timeZone: "Asia/Kolkata" },
+    skills: [],
+    observations: [],
+    step: 1,
+    maxSteps: 12,
+    now: new Date("2026-08-20T00:00:00Z"),
+  });
+
+  const systemPrompt = String(inputs[0]?.messages[0]?.content ?? "");
+  assert.match(systemPrompt, /2026-08-20T05:30:00\+05:30/);
+  assert.doesNotMatch(systemPrompt, /2026-08-20T00:00:00Z/);
+});
+
+test("planner system prompt includes relevantMemoryContext when the request carries it", async () => {
+  const inputs: ChatInput[] = [];
+  const planner = new ShivaAgentPlanner({
+    async chat(input) {
+      inputs.push(input);
+      return { content: '{"type":"direct_chat"}' };
+    },
+    async *streamChat() {
+      throw new Error("Planner decisions must use structured chat().");
+    },
+  });
+  await planner.decide({
+    request: {
+      ...request,
+      relevantMemoryContext:
+        "Relevant Shiva memory follows.\n\n- [semantic/relationship] The user's wife's name is Charmi.",
+    },
+    skills: [],
+    observations: [],
+    step: 1,
+    maxSteps: 12,
+    now: new Date("2026-08-20T00:00:00Z"),
+  });
+
+  const systemPrompt = String(inputs[0]?.messages[0]?.content ?? "");
+  assert.match(systemPrompt, /wife's name is Charmi/);
+});
+
 function decisionQueue(decisions: AgentDecision[]): AgentPlanner {
   const remaining = [...decisions];
   return {

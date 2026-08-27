@@ -151,7 +151,7 @@ test("agent cancellation uses the existing public cancellation contract", async 
   });
 });
 
-test("retrieved memory reaches the direct-chat response but never rides along into the planner's context", async (context) => {
+test("retrieved memory reaches both the direct-chat response and the planner, via separate channels", async (context) => {
   const repository = new InMemoryRepository();
   repository.semanticSearchResults = [
     memoryResult({ content: "The user's wife's name is Charmi." }),
@@ -200,6 +200,7 @@ test("retrieved memory reaches the direct-chat response but never rides along in
     plannerRequest?.contextMessages.some((message) => /Charmi/.test(message.content)),
     false,
   );
+  assert.match(plannerRequest?.relevantMemoryContext ?? "", /Charmi/);
 });
 
 test("a corrective follow-up is the sole current task and is not duplicated into reference context", async (context) => {

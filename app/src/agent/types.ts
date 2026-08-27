@@ -49,6 +49,13 @@ export interface AgentRequest {
   readonly userName: string;
   readonly timeZone: string;
   readonly contextMessages: readonly ChatMessage[];
+  /**
+   * Pre-formatted embedding-retrieved memory relevant to this turn's message
+   * (see MemoryRetriever), included on every planner decision so the planner
+   * always has the user's stored context without needing to call
+   * memory_search itself first.
+   */
+  readonly relevantMemoryContext?: string;
   /** Base64 images attached to this chat turn (no data: URI prefix). */
   readonly images?: readonly string[];
   readonly allowedSkills?: readonly string[];

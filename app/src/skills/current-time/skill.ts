@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { formatIsoWithOffset } from "../../types/time";
 import { defineSkill } from "../define-skill";
 
 const inputSchema = z
@@ -22,12 +23,14 @@ export function createCurrentTimeSkill() {
       const timezone = input.timezone ?? context.timeZone;
       const now = context.now();
       let formatted: string;
+      let iso: string;
       try {
         formatted = new Intl.DateTimeFormat("en-US", {
           timeZone: timezone,
           dateStyle: "full",
           timeStyle: "long",
         }).format(now);
+        iso = formatIsoWithOffset(now, timezone);
       } catch {
         return {
           success: false,
@@ -39,7 +42,7 @@ export function createCurrentTimeSkill() {
       }
       return {
         success: true,
-        data: { iso: now.toISOString(), timezone, formatted },
+        data: { iso, timezone, formatted },
       };
     },
   });
