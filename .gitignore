@@ -13,6 +13,7 @@ __pycache__/
 !.env.example
 !.env.device-agent.example
 !.env.google-agent.example
+!.env.developer-agent.example
 !.env.scheduler.example
 
 # Runtime data

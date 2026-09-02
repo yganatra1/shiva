@@ -1,0 +1,91 @@
+import { z } from "zod";
+
+import { defineSkill } from "../define-skill";
+import type { SkillContext, SkillResult } from "../types";
+import {
+  ClaudeCodeRunner,
+  claudeCodeRunnerErrorToFailure,
+} from "../../tools/developer/claude-code-runner";
+
+export interface DeveloperExecuteOutput {
+  readonly repo: string;
+  readonly sessionId?: string;
+  readonly result: string;
+  readonly isError: boolean;
+  readonly exitCode: number;
+  readonly durationMs: number;
+  readonly truncated: boolean;
+}
+
+export function createDeveloperExecuteSkill(
+  repos: Readonly<Record<string, string>>,
+  runner?: ClaudeCodeRunner,
+) {
+  const repoNames = Object.keys(repos);
+  const inputSchema = z.object({
+    repo:
+      repoNames.length > 0
+        ? z.enum(repoNames as [string, ...string[]])
+        : z.string(),
+    instruction: z.string().trim().min(1).max(8_000),
+  });
+  type DeveloperExecuteInput = z.infer<typeof inputSchema>;
+
+  return defineSkill<DeveloperExecuteInput, DeveloperExecuteOutput>({
+    name: "developer_execute",
+    description:
+      `Runs Claude Code (a full autonomous coding agent) against one configured repository to inspect, debug, modify, or test it. Configured repositories: ${
+        repoNames.length > 0 ? repoNames.join(", ") : "(none)"
+      }. Claude Code has full read/write file and shell access inside that repository (runs with --dangerously-skip-permissions) — it can create, edit, or delete files and run arbitrary commands including git. Give it exactly one well-scoped instruction; never ask it to push, deploy, restart, or reboot any service unless the user's original request explicitly asked for that. Its result is Claude Code's own report of what it did, not independently verified — relay it honestly rather than claiming the requested change is correct beyond what that report says.`,
+    inputDescription: `{ "repo": ${
+      repoNames.length > 0
+        ? repoNames.map((name) => `"${name}"`).join(" | ")
+        : "string"
+    }, "instruction": string (one well-scoped task for Claude Code) }`,
+    inputSchema,
+    execution: {
+      mutability: "write",
+      impact: "sensitive",
+      confirmationReason:
+        "Runs Claude Code against a real repository with full file/shell access (--dangerously-skip-permissions); it can modify, run, or delete anything in that repo, including Shiva's own code if the shiva repo is targeted.",
+    },
+    configured: repoNames.length > 0 && runner !== undefined,
+    async execute(
+      input: DeveloperExecuteInput,
+      context: SkillContext,
+    ): Promise<SkillResult<DeveloperExecuteOutput>> {
+      const repoPath = repos[input.repo];
+      if (!runner || !repoPath) {
+        return {
+          success: false,
+          error: {
+            code: "DEVELOPER_AGENT_UNAVAILABLE",
+            message: "Developer Agent is not configured for that repository.",
+          },
+        };
+      }
+      try {
+        const result = await runner.run({
+          repoPath,
+          instruction: input.instruction,
+          ...(context.signal ? { signal: context.signal } : {}),
+        });
+        return {
+          success: true,
+          data: {
+            repo: input.repo,
+            ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+            result: result.result,
+            isError: result.isError,
+            exitCode: result.exitCode,
+            durationMs: result.durationMs,
+            truncated: result.truncated,
+          },
+        };
+      } catch (error: unknown) {
+        if (context.signal?.aborted) throw error;
+        return { success: false, error: claudeCodeRunnerErrorToFailure(error) };
+      }
+    },
+  });
+}

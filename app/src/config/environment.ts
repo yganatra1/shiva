@@ -16,6 +16,9 @@ const deviceAgentEnvironmentPath = fileURLToPath(
 const googleAgentEnvironmentPath = fileURLToPath(
   new URL("../../../.env.google-agent", import.meta.url),
 );
+const developerAgentEnvironmentPath = fileURLToPath(
+  new URL("../../../.env.developer-agent", import.meta.url),
+);
 const schedulerEnvironmentPath = fileURLToPath(
   new URL("../../../.env.scheduler", import.meta.url),
 );
@@ -138,6 +141,52 @@ const ollamaKeepAliveSchema = z
   .transform((value): string | number =>
     numericEnvironmentValue.test(value) ? Number(value) : value,
   );
+
+const DEVELOPER_AGENT_REPO_NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+/** Parses "name:path,name:path" into a repo allowlist; the model can only ever select a name from this map, never supply a path. */
+const developerAgentReposSchema = z
+  .string()
+  .default("")
+  .transform((value, ctx): Readonly<Record<string, string>> => {
+    const repos: Record<string, string> = {};
+    for (const rawEntry of value.split(",")) {
+      const entry = rawEntry.trim();
+      if (!entry) continue;
+      const separatorIndex = entry.indexOf(":");
+      if (separatorIndex <= 0 || separatorIndex === entry.length - 1) {
+        ctx.addIssue({
+          code: "custom",
+          message: `must list entries as name:path (got "${entry}")`,
+        });
+        return z.NEVER;
+      }
+      const name = entry.slice(0, separatorIndex).trim();
+      const repoPath = entry.slice(separatorIndex + 1).trim();
+      if (!DEVELOPER_AGENT_REPO_NAME_PATTERN.test(name)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `repo name "${name}" must be lowercase kebab-case`,
+        });
+        return z.NEVER;
+      }
+      if (!repoPath.startsWith("/")) {
+        ctx.addIssue({
+          code: "custom",
+          message: `repo "${name}" path must be an absolute path`,
+        });
+        return z.NEVER;
+      }
+      if (repos[name] !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          message: `repo name "${name}" is listed more than once`,
+        });
+        return z.NEVER;
+      }
+      repos[name] = repoPath;
+    }
+    return repos;
+  });
 
 const environmentSchema = z
   .object({
@@ -289,6 +338,14 @@ const environmentSchema = z
   GOOGLE_OAUTH_CLIENT_ID: optionalSecretSchema,
   GOOGLE_OAUTH_CLIENT_SECRET: optionalSecretSchema,
   GOOGLE_OAUTH_REFRESH_TOKEN: optionalSecretSchema,
+  DEVELOPER_AGENT_REPOS: developerAgentReposSchema,
+  DEVELOPER_AGENT_EXECUTION_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(60_000)
+    .max(1_800_000)
+    .default(1_500_000),
+  DEVELOPER_AGENT_MAX_TURNS: z.coerce.number().int().min(1).max(200).default(60),
   BRAVE_SEARCH_API_KEY: optionalSecretSchema,
   BRAVE_SEARCH_URL: braveSearchUrlSchema.default("https://api.search.brave.com"),
   WEB_REQUEST_TIMEOUT_MS: z.coerce
@@ -498,6 +555,11 @@ export interface AppConfig {
     readonly clientSecret: string;
     readonly refreshToken: string;
   };
+  /** name -> absolute repo path; the model may only select a name, never a path. */
+  readonly developerAgentRepos: Readonly<Record<string, string>>;
+  /** Wall-clock cap enforced by ClaudeCodeRunner itself, since the CLI has no built-in timeout. */
+  readonly developerAgentExecutionTimeoutMs: number;
+  readonly developerAgentMaxTurns: number;
   readonly braveSearchApiKey?: string;
   readonly braveSearchUrl: string;
   readonly webRequestTimeoutMs: number;
@@ -609,6 +671,37 @@ export type GoogleAgentConfig = Pick<
   | "nodeEnv"
 >;
 
+/** Developer workers need no Core database, device bridge, web, or Google config. */
+export type DeveloperAgentConfig = Pick<
+  AppConfig,
+  | "brainProvider"
+  | "ollamaUrl"
+  | "model"
+  | "geminiApiKey"
+  | "openaiApiKey"
+  | "awsBearerTokenBedrock"
+  | "awsAccessKeyId"
+  | "awsSecretAccessKey"
+  | "awsSessionToken"
+  | "awsRegion"
+  | "contextLength"
+  | "keepAlive"
+  | "ollamaRequestTimeoutMs"
+  | "redisUrl"
+  | "userId"
+  | "userName"
+  | "timeZone"
+  | "agentMaxSteps"
+  | "agentRequestTimeoutMs"
+  | "agentReclaimIdleMs"
+  | "agentMaxDeliveryAttempts"
+  | "agentHeartbeatTtlSeconds"
+  | "developerAgentRepos"
+  | "developerAgentExecutionTimeoutMs"
+  | "developerAgentMaxTurns"
+  | "nodeEnv"
+>;
+
 export class ConfigurationError extends Error {
   override readonly name = "ConfigurationError";
 }
@@ -684,6 +777,35 @@ const GOOGLE_AGENT_ENVIRONMENT_KEYS = [
   "GOOGLE_OAUTH_CLIENT_ID",
   "GOOGLE_OAUTH_CLIENT_SECRET",
   "GOOGLE_OAUTH_REFRESH_TOKEN",
+  "NODE_ENV",
+] as const;
+
+const DEVELOPER_AGENT_ENVIRONMENT_KEYS = [
+  "SHIVA_BRAIN_PROVIDER",
+  "OLLAMA_URL",
+  "SHIVA_MODEL",
+  "GEMINI_API_KEY",
+  "OPENAI_API_KEY",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_REGION",
+  "SHIVA_CONTEXT_LENGTH",
+  "SHIVA_KEEP_ALIVE",
+  "OLLAMA_REQUEST_TIMEOUT_MS",
+  "REDIS_URL",
+  "SHIVA_USER_ID",
+  "SHIVA_USER_NAME",
+  "SHIVA_TIME_ZONE",
+  "AGENT_MAX_STEPS",
+  "AGENT_REQUEST_TIMEOUT_MS",
+  "AGENT_RECLAIM_IDLE_MS",
+  "AGENT_MAX_DELIVERY_ATTEMPTS",
+  "AGENT_HEARTBEAT_TTL_SECONDS",
+  "DEVELOPER_AGENT_REPOS",
+  "DEVELOPER_AGENT_EXECUTION_TIMEOUT_MS",
+  "DEVELOPER_AGENT_MAX_TURNS",
   "NODE_ENV",
 ] as const;
 
@@ -823,6 +945,49 @@ export function loadGoogleAgentConfig(
     ...(config.googleUserOAuth
       ? { googleUserOAuth: config.googleUserOAuth }
       : {}),
+    nodeEnv: config.nodeEnv,
+  };
+}
+
+/** Loads only Redis/Ollama/repo-allowlist values; it never opens Core's root .env. */
+export function loadDeveloperAgentConfig(
+  options: AgentEnvironmentLoadOptions = {},
+): DeveloperAgentConfig {
+  const config = loadScopedAgentConfig(
+    DEVELOPER_AGENT_ENVIRONMENT_KEYS,
+    developerAgentEnvironmentPath,
+    options,
+  );
+  return {
+    brainProvider: config.brainProvider,
+    ollamaUrl: config.ollamaUrl,
+    model: config.model,
+    ...(config.geminiApiKey ? { geminiApiKey: config.geminiApiKey } : {}),
+    ...(config.openaiApiKey ? { openaiApiKey: config.openaiApiKey } : {}),
+    ...(config.awsBearerTokenBedrock
+      ? { awsBearerTokenBedrock: config.awsBearerTokenBedrock }
+      : {}),
+    ...(config.awsAccessKeyId ? { awsAccessKeyId: config.awsAccessKeyId } : {}),
+    ...(config.awsSecretAccessKey
+      ? { awsSecretAccessKey: config.awsSecretAccessKey }
+      : {}),
+    ...(config.awsSessionToken ? { awsSessionToken: config.awsSessionToken } : {}),
+    awsRegion: config.awsRegion,
+    contextLength: config.contextLength,
+    keepAlive: config.keepAlive,
+    ollamaRequestTimeoutMs: config.ollamaRequestTimeoutMs,
+    redisUrl: config.redisUrl,
+    userId: config.userId,
+    userName: config.userName,
+    timeZone: config.timeZone,
+    agentMaxSteps: config.agentMaxSteps,
+    agentRequestTimeoutMs: config.agentRequestTimeoutMs,
+    agentReclaimIdleMs: config.agentReclaimIdleMs,
+    agentMaxDeliveryAttempts: config.agentMaxDeliveryAttempts,
+    agentHeartbeatTtlSeconds: config.agentHeartbeatTtlSeconds,
+    developerAgentRepos: config.developerAgentRepos,
+    developerAgentExecutionTimeoutMs: config.developerAgentExecutionTimeoutMs,
+    developerAgentMaxTurns: config.developerAgentMaxTurns,
     nodeEnv: config.nodeEnv,
   };
 }
@@ -1020,6 +1185,10 @@ function parseConfig(environment: NodeJS.ProcessEnv | Record<string, string>): A
           },
         }
       : {}),
+    developerAgentRepos: result.data.DEVELOPER_AGENT_REPOS,
+    developerAgentExecutionTimeoutMs:
+      result.data.DEVELOPER_AGENT_EXECUTION_TIMEOUT_MS,
+    developerAgentMaxTurns: result.data.DEVELOPER_AGENT_MAX_TURNS,
     ...(result.data.BRAVE_SEARCH_API_KEY
       ? { braveSearchApiKey: result.data.BRAVE_SEARCH_API_KEY }
       : {}),

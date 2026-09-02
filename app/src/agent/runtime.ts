@@ -130,6 +130,17 @@ export function createAgentRuntime(
       "read, create, update, and delete Google Calendar events",
     ],
   });
+  agentRegistry.register({
+    id: "developer-agent",
+    name: "Developer Agent",
+    description:
+      "Runs Claude Code against a configured repository to inspect, debug, or modify it.",
+    capabilities: [
+      "inspect and explain a repository's code/architecture",
+      "debug and fix issues in a repository",
+      "make code changes and run tests in a repository",
+    ],
+  });
   const transport = new RedisAgentTransport({
     redisUrl: config.redisUrl,
     onRedisError: onAuditError,
