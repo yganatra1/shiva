@@ -124,6 +124,7 @@ export function createAgentRuntime(
     capabilities: [
       "browse and search Google Drive",
       "read and update Google Sheets",
+      "create, update, and search Google Docs",
       "manage expense data stored in Google Sheets",
       "search, read, send, and reply to Gmail",
       "read, create, update, and delete Google Calendar events",

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -29,7 +30,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Send
@@ -58,11 +58,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -194,11 +196,14 @@ fun ChatScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                    .padding(start = 8.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     IconButton(onClick = { scope.launch { drawerState.open() } }) {
                         Icon(
                             Icons.Outlined.Menu,
@@ -206,16 +211,20 @@ fun ChatScreen(
                             tint = palette.text,
                         )
                     }
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text("Shiva", style = ShivaTypography.headlineSmall, color = palette.text)
                         Text(
-                            text = conversations
-                                .firstOrNull { it.localId == activeConversationId }
-                                ?.title
-                                ?: settings.identity.deviceName,
+                            text = croppedChatTitle(
+                                conversations
+                                    .firstOrNull { it.localId == activeConversationId }
+                                    ?.title
+                                    ?: settings.identity.deviceName,
+                            ),
                             style = ShivaTypography.bodySmall,
                             color = palette.muted,
                             maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            softWrap = false,
                         )
                     }
                 }
@@ -441,6 +450,8 @@ private fun MessageBubble(
     }
 }
 
+internal const val COMPOSER_MAX_LINES = 6
+
 @Composable
 private fun ComposerBar(
     value: String,
@@ -454,11 +465,12 @@ private fun ComposerBar(
     onMic: () -> Unit,
 ) {
     val palette = LocalShivaPalette.current
+    var composerFocused by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Bottom,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         IconButton(
@@ -469,21 +481,27 @@ private fun ComposerBar(
         ) {
             Icon(Icons.Outlined.Add, contentDescription = "New conversation", tint = palette.text)
         }
-        IconButton(onClick = onAttach, enabled = !sending) {
-            Icon(Icons.Outlined.Image, contentDescription = "Attach photo", tint = palette.text)
-        }
-        IconButton(onClick = onCamera, enabled = !sending) {
-            Icon(Icons.Outlined.PhotoCamera, contentDescription = "Take photo", tint = palette.text)
+        AnimatedVisibility(visible = !composerFocused) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                IconButton(onClick = onAttach, enabled = !sending) {
+                    Icon(Icons.Outlined.Image, contentDescription = "Attach photo", tint = palette.text)
+                }
+                IconButton(onClick = onCamera, enabled = !sending) {
+                    Icon(Icons.Outlined.PhotoCamera, contentDescription = "Take photo", tint = palette.text)
+                }
+            }
         }
         TextField(
             value = value,
             onValueChange = onValueChange,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 48.dp)
+                .onFocusChanged { composerFocused = it.isFocused },
             placeholder = { Text("Message Shiva", color = palette.dim) },
-            singleLine = false,
-            maxLines = 5,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { if (canSend) onSend() }),
+            minLines = 1,
+            maxLines = COMPOSER_MAX_LINES,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
             shape = RoundedCornerShape(24.dp),
             colors = TextFieldDefaults.colors(
                 focusedContainerColor = palette.surface,
@@ -512,6 +530,18 @@ private fun ComposerBar(
             )
         }
     }
+}
+
+internal const val CHAT_TITLE_DISPLAY_MAX_CHARS = 22
+internal const val DRAWER_TITLE_DISPLAY_MAX_CHARS = 28
+
+internal fun croppedChatTitle(
+    title: String,
+    maxChars: Int = CHAT_TITLE_DISPLAY_MAX_CHARS,
+): String {
+    val normalized = title.trim()
+    if (normalized.length <= maxChars) return normalized
+    return normalized.take(maxChars).trimEnd() + "…"
 }
 
 private val TIME = DateTimeFormatter.ofPattern("h:mm a")

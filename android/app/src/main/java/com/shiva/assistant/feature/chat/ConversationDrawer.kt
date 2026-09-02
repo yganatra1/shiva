@@ -39,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.shiva.assistant.core.design.LocalShivaPalette
 import com.shiva.assistant.core.design.ShivaTypography
@@ -212,10 +213,12 @@ private fun ConversationRow(
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = conversation.title,
+                text = croppedChatTitle(conversation.title, DRAWER_TITLE_DISPLAY_MAX_CHARS),
                 style = ShivaTypography.bodyMedium,
                 color = if (enabled) palette.text else palette.dim,
-                maxLines = 2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                softWrap = false,
             )
             Text(
                 text = formatConversationDate(conversation.updatedAtEpochMs),

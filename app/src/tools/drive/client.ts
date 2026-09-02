@@ -39,6 +39,12 @@ export interface FindSpreadsheetsInput {
   readonly signal?: AbortSignal;
 }
 
+export interface FindDocumentsInput {
+  readonly query: string;
+  readonly maxResults?: number;
+  readonly signal?: AbortSignal;
+}
+
 export interface ListFilesInput {
   /** When given, only files whose name matches this query are returned. Omit to browse the whole Drive. */
   readonly query?: string;
@@ -138,6 +144,41 @@ export class GoogleDriveClient {
       url.searchParams.set(
         "q",
         `mimeType='application/vnd.google-apps.spreadsheet' and ${buildDriveQuery(input.query)}`,
+      );
+      url.searchParams.set(
+        "fields",
+        "files(id,name,mimeType,webViewLink,modifiedTime)",
+      );
+      url.searchParams.set("orderBy", "modifiedTime desc");
+      url.searchParams.set("pageSize", String(maxResults));
+      const payload = await this.requestJson(url, token, signal);
+      return readDriveFiles(payload);
+    });
+  }
+
+  /**
+   * Finds a user's own Google Docs by name, the same way findSpreadsheets
+   * finds spreadsheets — always restricted to the Docs mimeType and always
+   * requires a query.
+   */
+  async findDocuments(input: FindDocumentsInput): Promise<readonly DriveFile[]> {
+    if (input.query.trim().length === 0 || input.query.length > MAX_QUERY_LENGTH) {
+      throw new DriveClientError(
+        "INVALID_INPUT",
+        "query must be non-empty and within bounds.",
+      );
+    }
+    const maxResults = clamp(
+      input.maxResults ?? DEFAULT_MAX_RESULTS,
+      1,
+      MAX_RESULTS_CAP,
+    );
+    return this.withDeadline(input.signal, async (signal) => {
+      const token = await this.getAccessToken(signal);
+      const url = new URL("/drive/v3/files", this.apiBaseUrl);
+      url.searchParams.set(
+        "q",
+        `mimeType='application/vnd.google-apps.document' and ${buildDriveQuery(input.query)}`,
       );
       url.searchParams.set(
         "fields",
@@ -403,18 +444,27 @@ function readDriveFiles(payload: unknown): readonly DriveFile[] {
         "Google Drive returned an invalid file entry.",
       );
     }
+    const mimeType = typeof file.mimeType === "string" ? file.mimeType : "";
     return {
       id: file.id,
       name: file.name,
-      mimeType: typeof file.mimeType === "string" ? file.mimeType : "",
+      mimeType,
       url:
         typeof file.webViewLink === "string"
           ? file.webViewLink
-          : `https://docs.google.com/spreadsheets/d/${file.id}`,
+          : fallbackDriveFileUrl(file.id, mimeType),
       modifiedTime:
         typeof file.modifiedTime === "string" ? file.modifiedTime : "",
     };
   });
+}
+
+/** Used only when Drive omits webViewLink, which the requested fields always include in practice. */
+function fallbackDriveFileUrl(fileId: string, mimeType: string): string {
+  if (mimeType === "application/vnd.google-apps.document") {
+    return `https://docs.google.com/document/d/${fileId}`;
+  }
+  return `https://docs.google.com/spreadsheets/d/${fileId}`;
 }
 
 function readDriveFileList(payload: unknown): DriveFileListResult {

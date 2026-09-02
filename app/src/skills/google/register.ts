@@ -1,5 +1,6 @@
 import type { AppConfig } from "../../config/environment";
 import { GoogleCalendarClient } from "../../tools/calendar/client";
+import { GoogleDocsClient } from "../../tools/docs/client";
 import { GoogleDriveClient } from "../../tools/drive/client";
 import { GoogleUserOAuthAccessTokenProvider } from "../../tools/expenses/google-user-oauth";
 import { GoogleGmailClient } from "../../tools/gmail/client";
@@ -9,6 +10,9 @@ import { createCalendarCreateSkill } from "../calendar-create/skill";
 import { createCalendarDeleteSkill } from "../calendar-delete/skill";
 import { createCalendarReadSkill } from "../calendar-read/skill";
 import { createCalendarUpdateSkill } from "../calendar-update/skill";
+import { createDocsCreateSkill } from "../docs-create/skill";
+import { createDocsFindSkill } from "../docs-find/skill";
+import { createDocsUpdateSkill } from "../docs-update/skill";
 import { createDriveListSkill } from "../drive-list/skill";
 import { createDriveReadSkill } from "../drive-read/skill";
 import { createGmailReadSkill } from "../gmail-read/skill";
@@ -62,12 +66,21 @@ export function registerGoogleSkills(
         requestTimeoutMs: config.expenseSheetRequestTimeoutMs,
       })
     : undefined;
+  const docsClient = tokenProvider
+    ? new GoogleDocsClient({
+        accessTokenProvider: tokenProvider,
+        requestTimeoutMs: config.expenseSheetRequestTimeoutMs,
+      })
+    : undefined;
 
   registry.register(createSheetsCreateSkill(sheetsClient));
   registry.register(createSheetsReadSkill(sheetsClient));
   registry.register(createSheetsUpdateSkill(sheetsClient));
   registry.register(createSheetsAddTabSkill(sheetsClient));
   registry.register(createSheetsFindSkill(driveClient));
+  registry.register(createDocsCreateSkill(docsClient));
+  registry.register(createDocsUpdateSkill(docsClient));
+  registry.register(createDocsFindSkill(driveClient));
   registry.register(createDriveListSkill(driveClient));
   registry.register(createDriveReadSkill(driveClient));
   registry.register(createGmailSearchSkill(gmailClient));

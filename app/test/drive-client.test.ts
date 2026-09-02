@@ -49,3 +49,12 @@ test("findSpreadsheets never leaks an unescaped quote into the query", async () 
   assert.match(q, /name contains 'Brien'/);
   assert.match(q, /name contains 'sheet'/);
 });
+
+test("findDocuments filters to the Google Docs mimeType", async () => {
+  const capture: { url?: URL } = {};
+  await client(capture).findDocuments({ query: "meeting notes" });
+  const q = capture.url?.searchParams.get("q") ?? "";
+  assert.match(q, /mimeType='application\/vnd\.google-apps\.document'/);
+  assert.match(q, /name contains 'meeting'/);
+  assert.match(q, /name contains 'notes'/);
+});

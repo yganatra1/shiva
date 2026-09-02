@@ -49,6 +49,10 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
           input: input.text,
           dimensions: EMBEDDING_DIMENSIONS,
           truncate: true,
+          // Every user turn embeds at least one memory-search query, so keep
+          // the embedding model resident instead of paying reload latency
+          // after Ollama's default idle unload.
+          keep_alive: -1,
           // Embeddings run on CPU so the GPU stays free for other work.
           options: { num_gpu: 0 },
         }),
