@@ -6,7 +6,6 @@ export interface GoogleAgentTaskHandlerOptions {
   readonly userId: string;
   readonly userName: string;
   readonly timeZone: string;
-  readonly allowedSkills: readonly string[];
 }
 
 /**
@@ -25,7 +24,6 @@ export function createGoogleAgentTaskHandler(
       userName: options.userName,
       timeZone: options.timeZone,
       contextMessages: [],
-      allowedSkills: options.allowedSkills,
       signal: context.signal,
     });
 

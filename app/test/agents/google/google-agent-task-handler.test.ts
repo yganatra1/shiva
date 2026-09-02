@@ -35,7 +35,6 @@ test("Google task handler passes only Core's minimal instruction and returns pla
     userId: "primary-user",
     userName: "Himaxi",
     timeZone: "Asia/Kolkata",
-    allowedSkills: ["sheets_find", "sheets_update"],
   });
   const signal = new AbortController().signal;
 
@@ -52,7 +51,7 @@ test("Google task handler passes only Core's minimal instruction and returns pla
   assert.equal(received?.userMessage, task.instruction);
   assert.equal(received?.conversationId, task.conversationId);
   assert.deepEqual(received?.contextMessages, []);
-  assert.deepEqual(received?.allowedSkills, ["sheets_find", "sheets_update"]);
+  assert.equal(received?.allowedSkills, undefined);
   assert.equal(received?.signal, signal);
   assert.equal(received?.delegationContinuation, undefined);
   assert.equal(received?.sourceMessageId, undefined);
@@ -76,7 +75,6 @@ test("Google task handler reports a grounded no-change message if its loop canno
     userId: "primary-user",
     userName: "Himaxi",
     timeZone: "Asia/Kolkata",
-    allowedSkills: ["sheets_update"],
   });
 
   assert.equal(

@@ -113,6 +113,52 @@ test("agent loop executes a skill, observes confirmed output, then responds", as
   });
 });
 
+test("agent loop does not reject an unrestricted request just because the registry holds more than 16 skills", async () => {
+  // Regression test: a specialized worker's own registry (e.g. google-agent's
+  // full Sheets/Drive/Gmail/Calendar/Docs catalog) can exceed 16 skills.
+  // normalizeSkillScope's cap only applies to an explicitly *declared*
+  // request.allowedSkills; leaving it undefined must fall through to the
+  // full registry regardless of its size.
+  const registry = new SkillRegistry();
+  for (let index = 0; index < 20; index += 1) {
+    registry.register({
+      name: `skill_${index}`,
+      description: `Test skill ${index}.`,
+      inputDescription: "{}",
+      inputSchema: z.object({}).strict(),
+      execution: { mutability: "read", impact: "normal" },
+      async execute() {
+        return { success: true, data: {} };
+      },
+    });
+  }
+  const decisions: AgentDecision[] = [
+    {
+      type: "skill_call",
+      skill: "skill_5",
+      arguments: {},
+      authorization: "user_authorized",
+    },
+    { type: "respond", message: "Done." },
+  ];
+  const planner: AgentPlanner = {
+    async decide() {
+      const decision = decisions.shift();
+      if (!decision) throw new Error("No fake decision available.");
+      return decision;
+    },
+  };
+  const loop = new AgentLoop(
+    planner,
+    new SkillExecutor(registry, new ExecutionPolicyEngine()),
+    registry,
+  );
+
+  const result = await loop.run(request);
+
+  assert.equal(result.response, "Done.");
+});
+
 test("agent loop blocks a write skill from succeeding more than the per-run cap, even with reworded arguments each time", async () => {
   const registry = new SkillRegistry();
   let executionCount = 0;

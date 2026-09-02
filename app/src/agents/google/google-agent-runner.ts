@@ -43,7 +43,6 @@ async function start(): Promise<void> {
       reportError,
       config.agentRequestTimeoutMs,
     );
-    const allowedSkills = registry.list().map((skill) => skill.name);
     const transport = new RedisAgentTransport({
       redisUrl: config.redisUrl,
       onRedisError: reportError,
@@ -65,7 +64,6 @@ async function start(): Promise<void> {
         userId: config.userId,
         userName: config.userName,
         timeZone: config.timeZone,
-        allowedSkills,
       }),
     });
     const shutdownController = new AbortController();
