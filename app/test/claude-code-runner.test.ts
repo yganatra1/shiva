@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -154,6 +155,47 @@ test("run() rejects with UNAVAILABLE when the claude binary cannot be spawned at
     (error: unknown) =>
       error instanceof ClaudeCodeRunnerError && error.failure === "UNAVAILABLE",
   );
+});
+
+test("run() rejects a second concurrent run against the same repo instead of launching a duplicate session", async () => {
+  const shared = runner();
+  const repoPath = process.cwd();
+
+  const first = shared.run({ repoPath, instruction: "SLOW_SUCCESS" });
+  // Give the first run a moment to actually register as in-flight before
+  // firing the second — the guard is set synchronously inside run(), so any
+  // delay here just makes the race deterministic in a slow CI environment.
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+
+  await assert.rejects(
+    () => shared.run({ repoPath, instruction: "SUCCESS" }),
+    (error: unknown) =>
+      error instanceof ClaudeCodeRunnerError &&
+      error.failure === "ALREADY_RUNNING",
+  );
+
+  const result = await first;
+  assert.equal(result.result, "did the slow thing");
+});
+
+test("run() allows a new run against the same repo once the previous one finished", async () => {
+  const shared = runner();
+  const repoPath = process.cwd();
+
+  await shared.run({ repoPath, instruction: "SUCCESS" });
+  const second = await shared.run({ repoPath, instruction: "SUCCESS" });
+  assert.equal(second.result, "did the thing");
+});
+
+test("run() allows concurrent runs against different repos", async () => {
+  const shared = runner();
+
+  const [a, b] = await Promise.all([
+    shared.run({ repoPath: process.cwd(), instruction: "SUCCESS" }),
+    shared.run({ repoPath: tmpdir(), instruction: "SUCCESS" }),
+  ]);
+  assert.equal(a.result, "did the thing");
+  assert.equal(b.result, "did the thing");
 });
 
 test("claudeCodeRunnerErrorToFailure maps every failure kind and rethrows anything else", () => {

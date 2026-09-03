@@ -46,6 +46,17 @@ switch (instruction) {
     });
     process.exit(0);
     break;
+  case "SLOW_SUCCESS":
+    setTimeout(() => {
+      writeLine({
+        type: "result",
+        session_id: "sess-slow",
+        result: "did the slow thing",
+        is_error: false,
+      });
+      process.exit(0);
+    }, 150);
+    break;
   case "IS_ERROR":
     writeLine({
       type: "result",

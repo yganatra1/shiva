@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 
 import { z } from "zod";
 
@@ -7,7 +8,8 @@ export type ClaudeCodeRunnerFailure =
   | "UNAVAILABLE"
   | "INVALID_RESPONSE"
   | "EXECUTION_FAILED"
-  | "CANCELLED";
+  | "CANCELLED"
+  | "ALREADY_RUNNING";
 
 export class ClaudeCodeRunnerError extends Error {
   override readonly name = "ClaudeCodeRunnerError";
@@ -105,6 +107,14 @@ export class ClaudeCodeRunner {
   private readonly allowedTools: readonly string[];
   private readonly command: string;
   private readonly env: NodeJS.ProcessEnv;
+  /**
+   * repoPath -> when the currently in-flight run against it started. Guards
+   * against a second developer_execute call (e.g. Core giving up early on
+   * its own wait and retrying, or the user saying "try again") launching a
+   * concurrent, conflicting Claude Code session against the same repo while
+   * the first is still genuinely working — this rejects fast instead.
+   */
+  private readonly activeRuns = new Map<string, number>();
 
   constructor(options: ClaudeCodeRunnerOptions) {
     this.timeoutMs = options.timeoutMs;
@@ -126,41 +136,55 @@ export class ClaudeCodeRunner {
 
   async run(input: ClaudeCodeRunInput): Promise<ClaudeCodeRunResult> {
     input.signal?.throwIfAborted();
-    const startedAt = performance.now();
-    const spawned = await this.spawn(
-      input.repoPath,
-      input.instruction,
-      input.signal,
-    );
-    const durationMs = Math.max(0, performance.now() - startedAt);
-
-    if (spawned.exitCode !== 0) {
+    const repoKey = resolve(input.repoPath);
+    const existingStartedAt = this.activeRuns.get(repoKey);
+    if (existingStartedAt !== undefined) {
+      const elapsedSeconds = Math.round((Date.now() - existingStartedAt) / 1_000);
       throw new ClaudeCodeRunnerError(
-        "EXECUTION_FAILED",
-        `Claude Code exited with status ${spawned.exitCode}.${
-          spawned.stderr ? ` stderr: ${spawned.stderr.slice(0, 2_000)}` : ""
-        }`,
+        "ALREADY_RUNNING",
+        `A Claude Code session is already running against this repository (started ${elapsedSeconds}s ago); refusing to start a second, concurrent one. Wait for it to finish rather than retrying.`,
       );
     }
-
-    const parsed = claudeCodeJsonResultSchema.safeParse(
-      lastResultEvent(spawned.stdout),
-    );
-    if (!parsed.success) {
-      throw new ClaudeCodeRunnerError(
-        "INVALID_RESPONSE",
-        "Claude Code returned a response that did not match the expected JSON result shape.",
+    this.activeRuns.set(repoKey, Date.now());
+    try {
+      const startedAt = performance.now();
+      const spawned = await this.spawn(
+        input.repoPath,
+        input.instruction,
+        input.signal,
       );
-    }
+      const durationMs = Math.max(0, performance.now() - startedAt);
 
-    return {
-      ...(parsed.data.session_id ? { sessionId: parsed.data.session_id } : {}),
-      result: parsed.data.result,
-      isError: parsed.data.is_error ?? false,
-      exitCode: spawned.exitCode,
-      durationMs,
-      truncated: spawned.truncated,
-    };
+      if (spawned.exitCode !== 0) {
+        throw new ClaudeCodeRunnerError(
+          "EXECUTION_FAILED",
+          `Claude Code exited with status ${spawned.exitCode}.${
+            spawned.stderr ? ` stderr: ${spawned.stderr.slice(0, 2_000)}` : ""
+          }`,
+        );
+      }
+
+      const parsed = claudeCodeJsonResultSchema.safeParse(
+        lastResultEvent(spawned.stdout),
+      );
+      if (!parsed.success) {
+        throw new ClaudeCodeRunnerError(
+          "INVALID_RESPONSE",
+          "Claude Code returned a response that did not match the expected JSON result shape.",
+        );
+      }
+
+      return {
+        ...(parsed.data.session_id ? { sessionId: parsed.data.session_id } : {}),
+        result: parsed.data.result,
+        isError: parsed.data.is_error ?? false,
+        exitCode: spawned.exitCode,
+        durationMs,
+        truncated: spawned.truncated,
+      };
+    } finally {
+      this.activeRuns.delete(repoKey);
+    }
   }
 
   private spawn(
@@ -321,6 +345,8 @@ export function claudeCodeRunnerErrorToFailure(
         code: "DEVELOPER_EXECUTE_CANCELLED",
         message: "The Claude Code run was cancelled.",
       };
+    case "ALREADY_RUNNING":
+      return { code: "DEVELOPER_EXECUTE_ALREADY_RUNNING", message: error.message };
     default:
       return {
         code: "DEVELOPER_EXECUTE_UNAVAILABLE",
