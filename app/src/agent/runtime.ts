@@ -151,6 +151,9 @@ export function createAgentRuntime(
     transport,
     {
       taskTimeoutMs: config.agentTaskTimeoutMs,
+      taskTimeoutMsByAgent: {
+        "developer-agent": config.developerAgentTaskTimeoutMs,
+      },
       onPublishError: (error, task) => {
         onAuditError(
           new Error(`Agent task ${task.id} could not be published yet.`, {

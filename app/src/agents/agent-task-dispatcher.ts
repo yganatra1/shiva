@@ -41,6 +41,8 @@ export interface QueuedAgentTask {
 
 export interface AgentTaskDispatcherOptions {
   readonly taskTimeoutMs: number;
+  /** Agent-specific deadlines for work that legitimately exceeds the default. */
+  readonly taskTimeoutMsByAgent?: Readonly<Record<string, number>>;
   readonly requireHeartbeat?: boolean;
   readonly createId?: () => string;
   readonly onPublishError?: (error: unknown, task: AgentTaskRecord) => void;
@@ -53,6 +55,7 @@ export interface AgentTaskDispatcherOptions {
  */
 export class AgentTaskDispatcher {
   private readonly taskTimeoutMs: number;
+  private readonly taskTimeoutMsByAgent: ReadonlyMap<string, number>;
   private readonly requireHeartbeat: boolean;
   private readonly createId: () => string;
   private readonly onPublishError: (
@@ -66,16 +69,24 @@ export class AgentTaskDispatcher {
     private readonly transport: AgentTaskPublisher,
     options: AgentTaskDispatcherOptions,
   ) {
-    if (
-      !Number.isInteger(options.taskTimeoutMs) ||
-      options.taskTimeoutMs < 5_000 ||
-      options.taskTimeoutMs > 86_400_000
-    ) {
-      throw new RangeError(
-        "Agent task timeout must be an integer from 5000 to 86400000 milliseconds.",
-      );
-    }
+    validateTaskTimeout(options.taskTimeoutMs, "Agent task timeout");
     this.taskTimeoutMs = options.taskTimeoutMs;
+    const taskTimeoutMsByAgent = new Map<string, number>();
+    for (const [agentId, timeoutMs] of Object.entries(
+      options.taskTimeoutMsByAgent ?? {},
+    )) {
+      if (!this.registry.has(agentId)) {
+        throw new RangeError(
+          `Agent task timeout override references unknown agent '${agentId}'.`,
+        );
+      }
+      validateTaskTimeout(
+        timeoutMs,
+        `Agent task timeout override for '${agentId}'`,
+      );
+      taskTimeoutMsByAgent.set(agentId, timeoutMs);
+    }
+    this.taskTimeoutMsByAgent = taskTimeoutMsByAgent;
     this.requireHeartbeat = options.requireHeartbeat ?? true;
     this.createId = options.createId ?? randomUUID;
     this.onPublishError = options.onPublishError ?? (() => {});
@@ -121,7 +132,9 @@ export class AgentTaskDispatcher {
       );
     }
     const now = orchestration.now;
-    const deadlineAt = new Date(now.getTime() + this.taskTimeoutMs);
+    const taskTimeoutMs =
+      this.taskTimeoutMsByAgent.get(descriptor.id) ?? this.taskTimeoutMs;
+    const deadlineAt = new Date(now.getTime() + taskTimeoutMs);
     const taskId = this.createId();
     let requestId: string;
     let task: AgentTaskRecord;
@@ -247,5 +260,17 @@ export class AgentTaskDispatcher {
       );
     }
     return request.conversationId;
+  }
+}
+
+function validateTaskTimeout(timeoutMs: number, label: string): void {
+  if (
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs < 5_000 ||
+    timeoutMs > 86_400_000
+  ) {
+    throw new RangeError(
+      `${label} must be an integer from 5000 to 86400000 milliseconds.`,
+    );
   }
 }

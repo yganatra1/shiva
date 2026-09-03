@@ -1,5 +1,5 @@
 import fastifyWebsocket from "@fastify/websocket";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { LogController, type FastifyInstance } from "fastify";
 
 import { createAgentRuntime } from "./agent/runtime";
 import type { AgentOrchestratorPort } from "./agent/types";
@@ -100,6 +100,7 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
   const app = Fastify({
     bodyLimit: API_BODY_LIMIT_BYTES,
     requestTimeout: API_REQUEST_TIMEOUT_MS,
+    logController: new LogController({ disableRequestLogging: true }),
     logger: {
       level: config.nodeEnv === "development" ? "debug" : "info",
       redact: {

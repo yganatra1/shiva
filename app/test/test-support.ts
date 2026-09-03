@@ -58,6 +58,7 @@ export const testConfig: AppConfig = {
   agentMaxSteps: 8,
   agentRequestTimeoutMs: 300_000,
   agentTaskTimeoutMs: 300_000,
+  developerAgentTaskTimeoutMs: 2_100_000,
   agentReclaimIdleMs: 30_000,
   agentMaxDeliveryAttempts: 3,
   agentHeartbeatTtlSeconds: 15,

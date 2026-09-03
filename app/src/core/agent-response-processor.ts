@@ -136,6 +136,25 @@ export class CoreAgentResponseProcessor {
         await this.finishAfterBoundedFailure(accepted, claimedAt);
         return;
       }
+      const terminalFailureMessage = terminalTaskFailureMessage(accepted);
+      if (terminalFailureMessage) {
+        const now = this.now();
+        const stored = await this.options.repository.finishResponseWithMessage({
+          requestId: accepted.request.id,
+          responseId: accepted.response.id,
+          message: terminalFailureMessage,
+          complete: true,
+          claimedAt,
+          now,
+        });
+        this.options.updates.publish({
+          messageId: stored.id,
+          conversationId: accepted.request.conversationId,
+          message: stored.content,
+          timestamp: stored.createdAt.toISOString(),
+        });
+        return;
+      }
       await this.continueRequest(accepted, claimedAt);
     } catch (error: unknown) {
       if (
@@ -323,6 +342,20 @@ function continuationOutcome(result: AgentRunResult): {
       "I received the agent's response, but I couldn't determine a safe next action from the saved execution context.",
     complete: true,
   };
+}
+
+function terminalTaskFailureMessage(
+  accepted: AcceptedAgentResponse,
+): string | undefined {
+  const transportFailure = accepted.response.metadata.transportFailure;
+  if (
+    transportFailure !== "AGENT_TASK_DEADLINE" &&
+    transportFailure !== "AGENT_RESPONSE_TIMEOUT"
+  ) {
+    return undefined;
+  }
+  const agentName = accepted.task.agentId.replaceAll("-", " ");
+  return `The ${agentName} did not finish before its deadline. I stopped without retrying it because it may have made partial changes. Check the current state before trying again.`;
 }
 
 function isPermanentCorrelationFailure(error: unknown): boolean {

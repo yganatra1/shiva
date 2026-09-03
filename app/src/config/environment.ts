@@ -369,6 +369,12 @@ const environmentSchema = z
     .min(5_000)
     .max(86_400_000)
     .default(300_000),
+  DEVELOPER_AGENT_TASK_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(60_000)
+    .max(86_400_000)
+    .default(2_100_000),
   AGENT_RECLAIM_IDLE_MS: z.coerce
     .number()
     .int()
@@ -630,6 +636,8 @@ export interface AppConfig {
   readonly agentMaxSteps: number;
   readonly agentRequestTimeoutMs: number;
   readonly agentTaskTimeoutMs: number;
+  /** Core's longer durable deadline for developer-agent tasks. */
+  readonly developerAgentTaskTimeoutMs: number;
   readonly agentReclaimIdleMs: number;
   readonly agentMaxDeliveryAttempts: number;
   readonly agentHeartbeatTtlSeconds: number;
@@ -1277,6 +1285,8 @@ function parseConfig(environment: NodeJS.ProcessEnv | Record<string, string>): A
     agentMaxSteps: result.data.AGENT_MAX_STEPS,
     agentRequestTimeoutMs: result.data.AGENT_REQUEST_TIMEOUT_MS,
     agentTaskTimeoutMs: result.data.AGENT_TASK_TIMEOUT_MS,
+    developerAgentTaskTimeoutMs:
+      result.data.DEVELOPER_AGENT_TASK_TIMEOUT_MS,
     agentReclaimIdleMs: result.data.AGENT_RECLAIM_IDLE_MS,
     agentMaxDeliveryAttempts: result.data.AGENT_MAX_DELIVERY_ATTEMPTS,
     agentHeartbeatTtlSeconds: result.data.AGENT_HEARTBEAT_TTL_SECONDS,

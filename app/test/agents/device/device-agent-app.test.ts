@@ -41,6 +41,10 @@ class DeviceSocketRecorder {
     this.socket.send(JSON.stringify(message));
   }
 
+  terminate(): void {
+    (this.socket as unknown as { terminate(): void }).terminate();
+  }
+
   async waitFor(predicate: () => boolean, label: string): Promise<void> {
     const deadline = Date.now() + 2_000;
     while (!predicate()) {
@@ -70,11 +74,15 @@ async function listen(
 test("a connected device receives dispatched commands and its result resolves the dispatch", async (context) => {
   const dispatcher = new DeviceCommandDispatcher({ createCommandId: () => "cmd-1" });
   const app = createDeviceAgentApp(testConfig, { dispatcher });
-  context.after(() => app.close());
+  let socket: DeviceSocketRecorder | undefined;
+  context.after(async () => {
+    socket?.terminate();
+    await app.close();
+  });
   await app.ready();
 
   assert.equal(dispatcher.isConnected(), false);
-  const socket = await openDeviceSocket(app);
+  socket = await openDeviceSocket(app);
   assert.equal(dispatcher.isConnected(), true);
 
   const pending = dispatcher.dispatch("device.contacts.search", { query: "Charmi" });
@@ -107,20 +115,28 @@ test("a plain GET on the device endpoint asks for an upgrade", async (context) =
 test("a configured auth token rejects a connection without a matching token", async (context) => {
   const dispatcher = new DeviceCommandDispatcher();
   const app = createDeviceAgentApp({ ...testConfig, deviceWsToken: "correct-token" }, { dispatcher });
-  context.after(() => app.close());
+  let socket: DeviceSocketRecorder | undefined;
+  context.after(async () => {
+    socket?.terminate();
+    await app.close();
+  });
   await app.ready();
 
-  await openDeviceSocket(app, "?token=wrong-token");
+  socket = await openDeviceSocket(app, "?token=wrong-token");
   assert.equal(dispatcher.isConnected(), false);
 });
 
 test("a configured auth token accepts a connection with the matching token", async (context) => {
   const dispatcher = new DeviceCommandDispatcher();
   const app = createDeviceAgentApp({ ...testConfig, deviceWsToken: "correct-token" }, { dispatcher });
-  context.after(() => app.close());
+  let socket: DeviceSocketRecorder | undefined;
+  context.after(async () => {
+    socket?.terminate();
+    await app.close();
+  });
   await app.ready();
 
-  await openDeviceSocket(app, "?token=correct-token");
+  socket = await openDeviceSocket(app, "?token=correct-token");
   assert.equal(dispatcher.isConnected(), true);
 });
 

@@ -108,6 +108,28 @@ test("dispatcher persists executionContext verbatim before publishing a minimal 
   assert.equal("status" in (publisher.published[0] ?? {}), false);
 });
 
+test("dispatcher gives developer work its configured longer task deadline", async () => {
+  const repository = new InMemoryOrchestrationRepository();
+  const publisher = new InMemoryTaskPublisher(["developer-agent"]);
+  const dispatcher = createDispatcher(
+    repository,
+    publisher,
+    ["developer-task-1", "request-1"],
+    { "developer-agent": 2_100_000 },
+  );
+
+  await dispatcher.delegate(
+    "developer-agent",
+    "Implement and validate the requested repository change.",
+    { orchestration: initialOrchestration() },
+  );
+
+  assert.equal(
+    publisher.published[0]?.deadlineAt,
+    new Date(NOW.getTime() + 2_100_000).toISOString(),
+  );
+});
+
 test("unknown and offline agents fail with controlled delegation errors", async () => {
   const repository = new InMemoryOrchestrationRepository();
   const publisher = new InMemoryTaskPublisher();
@@ -359,6 +381,55 @@ test("re-delegating to the same failing agent stops after its per-request retry 
     2,
     "no third device-agent task should have been created for this request",
   );
+});
+
+test("deadline responses complete the request without asking Core to retry uncertain work", async () => {
+  for (const transportFailure of [
+    "AGENT_TASK_DEADLINE",
+    "AGENT_RESPONSE_TIMEOUT",
+  ] as const) {
+    const repository = new InMemoryOrchestrationRepository();
+    const publisher = new InMemoryTaskPublisher(["developer-agent"]);
+    const dispatcher = createDispatcher(repository, publisher, [
+      `task-${transportFailure}`,
+      `request-${transportFailure}`,
+    ]);
+    const delegated = await dispatcher.delegate(
+      "developer-agent",
+      "Implement and validate the requested repository change.",
+      { orchestration: initialOrchestration() },
+    );
+    let continuationCalls = 0;
+    const processor = createResponseProcessor(
+      repository,
+      {
+        async run() {
+          continuationCalls += 1;
+          throw new Error("Core must not plan a retry after a task deadline.");
+        },
+      },
+      new RecordingUpdates(),
+    );
+
+    await processor.processResponse(
+      {
+        taskId: delegated.taskId,
+        agentId: "developer-agent",
+        message: "developer-agent did not finish before its deadline.",
+        metadata: { transportFailure },
+        timestamp: DEVICE_RESPONSE_AT,
+      },
+      `response-${transportFailure}`,
+    );
+
+    assert.equal(continuationCalls, 0, transportFailure);
+    assert.equal(repository.tasks.size, 1, transportFailure);
+    assert.equal(repository.finishInputs.at(-1)?.complete, true);
+    assert.match(
+      repository.messages.at(-1)?.content ?? "",
+      /stopped without retrying.*partial changes/i,
+    );
+  }
 });
 
 test("maxProcessingAttempts permits that many real Core continuation attempts", async () => {
@@ -1002,6 +1073,7 @@ function createDispatcher(
   repository: OrchestrationRepositoryPort,
   publisher: AgentTaskPublisher,
   ids: readonly string[],
+  taskTimeoutMsByAgent: Readonly<Record<string, number>> = {},
 ): AgentTaskDispatcher {
   const registry = new AgentRegistry();
   registry.register({
@@ -1016,9 +1088,16 @@ function createDispatcher(
     description: "Handles Google account operations.",
     capabilities: ["read and update Google Sheets"],
   });
+  registry.register({
+    id: "developer-agent",
+    name: "Developer Agent",
+    description: "Handles repository changes.",
+    capabilities: ["inspect and modify repositories"],
+  });
   const remainingIds = [...ids];
   return new AgentTaskDispatcher(registry, repository, publisher, {
     taskTimeoutMs: 30_000,
+    taskTimeoutMsByAgent,
     createId: () => {
       const id = remainingIds.shift();
       assert.ok(id, "The test exhausted its deterministic ids.");
