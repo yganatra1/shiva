@@ -13,6 +13,7 @@ import {
   type ChatPerformanceLogSink,
   type ChatPerformanceOutcome,
 } from "../observability/chat-performance";
+import { sanitizeAuditText } from "../security/audit-sanitizer";
 import { ApiError } from "./api-error";
 
 const MAX_MESSAGE_CHARACTERS = 20_000;
@@ -116,6 +117,11 @@ function registerStreamingChatRoute(
           `Request body must contain a message (text and/or images) of at most ${MAX_MESSAGE_CHARACTERS.toLocaleString("en-US")} characters.`,
         );
       }
+
+      request.log.info(
+        { message: sanitizeAuditText(parsedRequest.data.message) },
+        "Chat message received",
+      );
 
       const clientDisconnectController = new AbortController();
       const abortOnPrematureClose = (): void => {
