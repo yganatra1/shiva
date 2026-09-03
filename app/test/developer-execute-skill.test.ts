@@ -36,7 +36,12 @@ class FakeClaudeCodeRunner extends ClaudeCodeRunner {
   };
 
   constructor() {
-    super({ timeoutMs: 1_000, maxTurns: 5, env: process.env });
+    super({
+      timeoutMs: 1_000,
+      maxTurns: 5,
+      permissionMode: "acceptEdits",
+      env: process.env,
+    });
   }
 
   override async run(input: ClaudeCodeRunInput): Promise<ClaudeCodeRunResult> {
@@ -49,7 +54,7 @@ test("developer_execute resolves the repo key to its configured path and reports
   const runner = new FakeClaudeCodeRunner();
   const registry = new SkillRegistry();
   registry.register(
-    createDeveloperExecuteSkill({ shiva: "/repos/shiva" }, runner),
+    createDeveloperExecuteSkill({ shiva: "/repos/shiva" }, "acceptEdits", runner),
   );
   const executor = new SkillExecutor(registry, new CoreAuthorizedAgentExecutionPolicy());
 
@@ -86,7 +91,7 @@ test("developer_execute's repo input is a fixed enum — an unconfigured repo na
   const runner = new FakeClaudeCodeRunner();
   const registry = new SkillRegistry();
   registry.register(
-    createDeveloperExecuteSkill({ shiva: "/repos/shiva" }, runner),
+    createDeveloperExecuteSkill({ shiva: "/repos/shiva" }, "acceptEdits", runner),
   );
   const executor = new SkillExecutor(registry, new CoreAuthorizedAgentExecutionPolicy());
 
@@ -103,7 +108,7 @@ test("developer_execute's repo input is a fixed enum — an unconfigured repo na
 
 test("developer_execute reports unavailable and configured=false when no repo is set up", async () => {
   const registry = new SkillRegistry();
-  registry.register(createDeveloperExecuteSkill({}, undefined));
+  registry.register(createDeveloperExecuteSkill({}, "acceptEdits", undefined));
   const executor = new SkillExecutor(registry, new CoreAuthorizedAgentExecutionPolicy());
 
   const summary = registry.list().find((entry) => entry.name === "developer_execute");
@@ -132,7 +137,7 @@ test("developer_execute surfaces isError:true from a completed-but-failed sessio
   };
   const registry = new SkillRegistry();
   registry.register(
-    createDeveloperExecuteSkill({ shiva: "/repos/shiva" }, runner),
+    createDeveloperExecuteSkill({ shiva: "/repos/shiva" }, "acceptEdits", runner),
   );
   const executor = new SkillExecutor(registry, new CoreAuthorizedAgentExecutionPolicy());
 

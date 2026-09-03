@@ -346,6 +346,12 @@ const environmentSchema = z
     .max(1_800_000)
     .default(1_500_000),
   DEVELOPER_AGENT_MAX_TURNS: z.coerce.number().int().min(1).max(200).default(60),
+  // "bypassPermissions" (--dangerously-skip-permissions) refuses to start
+  // when the process runs as root; the other modes tolerate root but
+  // auto-deny (never prompt — headless has no TTY) anything not covered.
+  DEVELOPER_AGENT_PERMISSION_MODE: z
+    .enum(["bypassPermissions", "acceptEdits", "plan", "default"])
+    .default("acceptEdits"),
   BRAVE_SEARCH_API_KEY: optionalSecretSchema,
   BRAVE_SEARCH_URL: braveSearchUrlSchema.default("https://api.search.brave.com"),
   WEB_REQUEST_TIMEOUT_MS: z.coerce
@@ -560,6 +566,11 @@ export interface AppConfig {
   /** Wall-clock cap enforced by ClaudeCodeRunner itself, since the CLI has no built-in timeout. */
   readonly developerAgentExecutionTimeoutMs: number;
   readonly developerAgentMaxTurns: number;
+  readonly developerAgentPermissionMode:
+    | "bypassPermissions"
+    | "acceptEdits"
+    | "plan"
+    | "default";
   readonly braveSearchApiKey?: string;
   readonly braveSearchUrl: string;
   readonly webRequestTimeoutMs: number;
@@ -699,6 +710,7 @@ export type DeveloperAgentConfig = Pick<
   | "developerAgentRepos"
   | "developerAgentExecutionTimeoutMs"
   | "developerAgentMaxTurns"
+  | "developerAgentPermissionMode"
   | "nodeEnv"
 >;
 
@@ -806,6 +818,7 @@ const DEVELOPER_AGENT_ENVIRONMENT_KEYS = [
   "DEVELOPER_AGENT_REPOS",
   "DEVELOPER_AGENT_EXECUTION_TIMEOUT_MS",
   "DEVELOPER_AGENT_MAX_TURNS",
+  "DEVELOPER_AGENT_PERMISSION_MODE",
   "NODE_ENV",
 ] as const;
 
@@ -988,6 +1001,7 @@ export function loadDeveloperAgentConfig(
     developerAgentRepos: config.developerAgentRepos,
     developerAgentExecutionTimeoutMs: config.developerAgentExecutionTimeoutMs,
     developerAgentMaxTurns: config.developerAgentMaxTurns,
+    developerAgentPermissionMode: config.developerAgentPermissionMode,
     nodeEnv: config.nodeEnv,
   };
 }
@@ -1189,6 +1203,7 @@ function parseConfig(environment: NodeJS.ProcessEnv | Record<string, string>): A
     developerAgentExecutionTimeoutMs:
       result.data.DEVELOPER_AGENT_EXECUTION_TIMEOUT_MS,
     developerAgentMaxTurns: result.data.DEVELOPER_AGENT_MAX_TURNS,
+    developerAgentPermissionMode: result.data.DEVELOPER_AGENT_PERMISSION_MODE,
     ...(result.data.BRAVE_SEARCH_API_KEY
       ? { braveSearchApiKey: result.data.BRAVE_SEARCH_API_KEY }
       : {}),

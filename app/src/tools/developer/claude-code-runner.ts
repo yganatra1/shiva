@@ -21,6 +21,21 @@ export class ClaudeCodeRunnerError extends Error {
   }
 }
 
+/**
+ * "bypassPermissions" (--dangerously-skip-permissions) refuses to start when
+ * the process's effective user is root — the other modes tolerate root.
+ * There is no TTY in headless (-p) mode, so any mode other than
+ * bypassPermissions auto-denies a tool call it hasn't been pre-approved for
+ * rather than prompting anyone; "acceptEdits" auto-approves file
+ * read/write/edit tools specifically, which covers most repo-inspection and
+ * simple-change instructions without needing root.
+ */
+export type ClaudeCodePermissionMode =
+  | "bypassPermissions"
+  | "acceptEdits"
+  | "plan"
+  | "default";
+
 export interface ClaudeCodeRunInput {
   readonly repoPath: string;
   readonly instruction: string;
@@ -44,6 +59,7 @@ export interface ClaudeCodeRunnerOptions {
   readonly timeoutMs: number;
   readonly maxTurns: number;
   readonly maxOutputBytes?: number;
+  readonly permissionMode: ClaudeCodePermissionMode;
   /** Test seam; production always spawns the real "claude" binary on PATH. */
   readonly command?: string;
   /**
@@ -77,6 +93,7 @@ export class ClaudeCodeRunner {
   private readonly timeoutMs: number;
   private readonly maxTurns: number;
   private readonly maxOutputBytes: number;
+  private readonly permissionMode: ClaudeCodePermissionMode;
   private readonly command: string;
   private readonly env: NodeJS.ProcessEnv;
 
@@ -84,6 +101,7 @@ export class ClaudeCodeRunner {
     this.timeoutMs = options.timeoutMs;
     this.maxTurns = options.maxTurns;
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    this.permissionMode = options.permissionMode;
     this.command = options.command ?? "claude";
     this.env = options.env;
     if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 1_000) {
@@ -158,7 +176,9 @@ export class ClaudeCodeRunner {
           instruction,
           "--output-format",
           "json",
-          "--dangerously-skip-permissions",
+          ...(this.permissionMode === "bypassPermissions"
+            ? ["--dangerously-skip-permissions"]
+            : ["--permission-mode", this.permissionMode]),
           "--max-turns",
           String(this.maxTurns),
         ],

@@ -16,11 +16,34 @@ function runner(overrides: Partial<ConstructorParameters<typeof ClaudeCodeRunner
   return new ClaudeCodeRunner({
     timeoutMs: 5_000,
     maxTurns: 10,
+    permissionMode: "bypassPermissions",
     command: fixtureCommand,
     env: process.env,
     ...overrides,
   });
 }
+
+test("run() passes --dangerously-skip-permissions only for permissionMode bypassPermissions", async () => {
+  const result = await runner({ permissionMode: "bypassPermissions" }).run({
+    repoPath: process.cwd(),
+    instruction: "ECHO_ARGV",
+  });
+  const argv = JSON.parse(result.result) as string[];
+  assert.ok(argv.includes("--dangerously-skip-permissions"));
+  assert.ok(!argv.includes("--permission-mode"));
+});
+
+test("run() translates any other permissionMode into --permission-mode <value>", async () => {
+  const result = await runner({ permissionMode: "acceptEdits" }).run({
+    repoPath: process.cwd(),
+    instruction: "ECHO_ARGV",
+  });
+  const argv = JSON.parse(result.result) as string[];
+  assert.ok(!argv.includes("--dangerously-skip-permissions"));
+  const modeIndex = argv.indexOf("--permission-mode");
+  assert.ok(modeIndex >= 0);
+  assert.equal(argv[modeIndex + 1], "acceptEdits");
+});
 
 test("run() parses a successful JSON result", async () => {
   const result = await runner().run({

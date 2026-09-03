@@ -6,6 +6,12 @@
 const instruction = process.argv[3] ?? "";
 
 switch (instruction) {
+  case "ECHO_ARGV":
+    process.stdout.write(
+      JSON.stringify({ result: JSON.stringify(process.argv.slice(2)) }),
+    );
+    process.exit(0);
+    break;
   case "SUCCESS":
     process.stdout.write(
       JSON.stringify({

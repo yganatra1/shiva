@@ -10,6 +10,7 @@ export function registerDeveloperSkills(
     | "developerAgentRepos"
     | "developerAgentExecutionTimeoutMs"
     | "developerAgentMaxTurns"
+    | "developerAgentPermissionMode"
   >,
 ): void {
   const runner =
@@ -17,11 +18,16 @@ export function registerDeveloperSkills(
       ? new ClaudeCodeRunner({
           timeoutMs: config.developerAgentExecutionTimeoutMs,
           maxTurns: config.developerAgentMaxTurns,
+          permissionMode: config.developerAgentPermissionMode,
           env: process.env,
         })
       : undefined;
 
   registry.register(
-    createDeveloperExecuteSkill(config.developerAgentRepos, runner),
+    createDeveloperExecuteSkill(
+      config.developerAgentRepos,
+      config.developerAgentPermissionMode,
+      runner,
+    ),
   );
 }
