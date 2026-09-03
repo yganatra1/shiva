@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 
+import { sanitizeAuditPayload } from "../../security/audit-sanitizer";
 import {
   KiteClientError,
   type KiteCandleRow,
   type KiteClientPort,
   type KiteHolding,
   type KiteInstrumentRecord,
+  type KiteLogSink,
   type KiteOrder,
   type KitePlaceOrderParams,
   type KitePosition,
@@ -18,7 +20,19 @@ export interface KiteClientOptions {
   readonly baseUrl?: string;
   readonly requestTimeoutMs: number;
   readonly fetchFunction?: typeof fetch;
+  /** Diagnostic sink for portfolio holdings/positions requests only (see request()'s `diagnostics` param); other Kite calls are unaffected. */
+  readonly logger?: KiteLogSink;
 }
+
+/** Headers safe to log verbatim — no auth/session/cookie material is ever in this list. */
+const SAFE_RESPONSE_HEADER_ALLOWLIST = [
+  "content-type",
+  "content-length",
+  "date",
+  "x-request-id",
+  "request-id",
+  "retry-after",
+] as const;
 
 const DEFAULT_BASE_URL = "https://api.kite.trade";
 
@@ -105,7 +119,7 @@ export class KiteClient implements KiteClientPort {
 
   async getHoldings(): Promise<readonly KiteHolding[]> {
     const url = new URL(`${this.baseUrl}/portfolio/holdings`);
-    const response = await this.request(url);
+    const response = await this.request(url, undefined, { endpoint: "portfolio/holdings" });
     const payload = await readJson(response);
     const rows = (payload as { data?: unknown[] }).data ?? [];
     return (rows as Record<string, unknown>[]).map((row) => ({
@@ -125,7 +139,7 @@ export class KiteClient implements KiteClientPort {
     readonly day: readonly KitePosition[];
   }> {
     const url = new URL(`${this.baseUrl}/portfolio/positions`);
-    const response = await this.request(url);
+    const response = await this.request(url, undefined, { endpoint: "portfolio/positions" });
     const payload = await readJson(response);
     const data = (payload as { data?: { net?: unknown[]; day?: unknown[] } }).data ?? {};
     return { net: mapPositions(data.net), day: mapPositions(data.day) };
@@ -190,10 +204,12 @@ export class KiteClient implements KiteClientPort {
   private async request(
     url: URL,
     init?: { readonly method?: string; readonly body?: string; readonly headers?: Record<string, string> },
+    diagnostics?: { readonly endpoint: string },
   ): Promise<Response> {
     const deadline = new AbortController();
     const timeout = setTimeout(() => deadline.abort(), this.options.requestTimeoutMs);
     timeout.unref();
+    const startedAt = Date.now();
     try {
       const response = await this.fetchFunction(url, {
         method: init?.method ?? "GET",
@@ -205,6 +221,9 @@ export class KiteClient implements KiteClientPort {
         },
         signal: deadline.signal,
       });
+      if (diagnostics) {
+        await this.logResponse(diagnostics.endpoint, init?.method ?? "GET", response, startedAt);
+      }
       if (response.status === 403 || response.status === 401) {
         await discardBody(response);
         throw new KiteClientError(
@@ -234,6 +253,42 @@ export class KiteClient implements KiteClientPort {
       });
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Logs the raw Kite response for portfolio holdings/positions calls, cloning the
+   * response so the caller's own body read (readJson/discardBody) is unaffected.
+   * Successful bodies are summarized (record counts only) rather than logged verbatim
+   * because holdings/positions payloads are the user's personal financial data
+   * (ISIN, quantities, P&L); error bodies are logged through sanitizeAuditPayload
+   * since Kite error payloads are just {status,error_type,message} with no PII, and
+   * the sanitizer strips any secret-looking fields as a safety net.
+   */
+  private async logResponse(
+    endpoint: string,
+    method: string,
+    response: Response,
+    startedAt: number,
+  ): Promise<void> {
+    if (!this.options.logger) return;
+    const elapsedMs = Date.now() - startedAt;
+    const headers = safeResponseHeaders(response.headers);
+    const body = await summarizeResponseBody(response);
+    const fields = {
+      tool: "kite_connect",
+      endpoint,
+      method,
+      status: response.status,
+      ok: response.ok,
+      elapsedMs,
+      headers,
+      body,
+    };
+    if (response.ok) {
+      this.options.logger.info(fields, `Kite Connect ${endpoint} responded`);
+    } else {
+      this.options.logger.warn(fields, `Kite Connect ${endpoint} returned an error response`);
     }
   }
 }
@@ -356,5 +411,51 @@ async function discardBody(response: Response): Promise<void> {
     await response.body?.cancel();
   } catch {
     // The sanitized upstream status is already the actionable failure.
+  }
+}
+
+function safeResponseHeaders(headers: Headers): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const name of SAFE_RESPONSE_HEADER_ALLOWLIST) {
+    const value = headers.get(name);
+    if (value !== null) result[name] = value;
+  }
+  return result;
+}
+
+/**
+ * On error, logs the sanitized body verbatim (Kite error payloads are just
+ * {status,error_type,message}). On success, logs record counts only — the
+ * body is the user's actual portfolio data and must not be logged raw.
+ */
+async function summarizeResponseBody(response: Response): Promise<unknown> {
+  let text: string;
+  try {
+    text = await response.clone().text();
+  } catch {
+    return { readError: true };
+  }
+  if (!response.ok) {
+    return sanitizeAuditPayload(safeJsonParse(text) ?? text);
+  }
+  const parsed = safeJsonParse(text);
+  const data = (parsed as { data?: unknown } | undefined)?.data;
+  if (Array.isArray(data)) return { recordCount: data.length };
+  if (data && typeof data === "object") {
+    return Object.fromEntries(
+      Object.entries(data as Record<string, unknown>).map(([key, value]) => [
+        key,
+        Array.isArray(value) ? { recordCount: value.length } : "[REDACTED]",
+      ]),
+    );
+  }
+  return { bytes: text.length };
+}
+
+function safeJsonParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
   }
 }

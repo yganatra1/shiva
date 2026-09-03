@@ -155,6 +155,74 @@ test("restart() succeeds without running a build", async () => {
   assert.match(result.restartOutput, /restart shiva-api/);
 });
 
+test("restart() still succeeds when pm2 reports the target service under a different pid", async () => {
+  const pm2Json = JSON.stringify([
+    { name: "shiva-api", pm_id: 0, pid: process.pid + 1, pm2_env: { status: "online" } },
+  ]);
+  const result = await runner(
+    {},
+    {
+      ...process.env,
+      RESTART_MODE: "SUCCESS",
+      LIST_MODE: "JSON",
+      LIST_JSON: pm2Json,
+    },
+  ).restart("shiva-api");
+  assert.equal(result.restartTruncated, false);
+});
+
+test("restart() refuses with RESTART_SELF_TARGET when pm2 reports the target service as this exact process", async () => {
+  const pm2Json = JSON.stringify([
+    { name: "shiva-api", pm_id: 0, pid: process.pid, pm2_env: { status: "online" } },
+  ]);
+  await assert.rejects(
+    () =>
+      runner(
+        {},
+        {
+          ...process.env,
+          RESTART_MODE: "SUCCESS",
+          LIST_MODE: "JSON",
+          LIST_JSON: pm2Json,
+        },
+      ).restart("shiva-api"),
+    (error: unknown) =>
+      error instanceof BuildRestartError &&
+      error.failure === "RESTART_SELF_TARGET",
+  );
+});
+
+test("run() refuses with RESTART_SELF_TARGET when pm2 reports the target service as this exact process, after a successful build", async () => {
+  const repoPath = await repoWithPackageJson();
+  const pm2Json = JSON.stringify([
+    { name: "shiva-api", pm_id: 0, pid: process.pid, pm2_env: { status: "online" } },
+  ]);
+  await assert.rejects(
+    () =>
+      runner(
+        {},
+        {
+          ...process.env,
+          BUILD_MODE: "SUCCESS",
+          RESTART_MODE: "SUCCESS",
+          LIST_MODE: "JSON",
+          LIST_JSON: pm2Json,
+        },
+      ).run({ repoPath, pm2ServiceName: "shiva-api" }),
+    (error: unknown) =>
+      error instanceof BuildRestartError &&
+      error.failure === "RESTART_SELF_TARGET",
+  );
+});
+
+test("restart() proceeds (fails open) when the self-restart check itself cannot be completed", async () => {
+  const result = await runner(
+    {},
+    { ...process.env, RESTART_MODE: "SUCCESS", LIST_MODE: "FAIL" },
+  ).restart("shiva-api");
+  assert.equal(result.restartTruncated, false);
+});
+
 test("restart() rejects with RESTART_FAILED when pm2 restart exits non-zero", async () => {
   await assert.rejects(
     () =>

@@ -71,6 +71,12 @@ export interface KiteOrder {
   readonly price: number;
 }
 
+/** Structural match for Shiva's pino-backed app.log (see app.ts) so it can be passed straight through without adapting. */
+export interface KiteLogSink {
+  info(fields: Record<string, unknown>, message: string): void;
+  warn(fields: Record<string, unknown>, message: string): void;
+}
+
 export class KiteClientError extends Error {
   override readonly name = "KiteClientError";
   constructor(

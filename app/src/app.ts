@@ -164,6 +164,7 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
                   accessToken: config.kiteAccessToken,
                   ...(config.kiteBaseUrl ? { baseUrl: config.kiteBaseUrl } : {}),
                   requestTimeoutMs: config.kiteRequestTimeoutMs,
+                  logger: app.log,
                 })
               : undefined;
           app.log.info(

@@ -239,6 +239,92 @@ test("KiteClient.getPositions maps net and day arrays into typed positions", asy
   assert.equal(positions.day.length, 0);
 });
 
+test("KiteClient logs holdings response diagnostics without leaking portfolio values", async () => {
+  const logs: { level: string; fields: Record<string, unknown>; message: string }[] = [];
+  const logger = {
+    info: (fields: Record<string, unknown>, message: string) => logs.push({ level: "info", fields, message }),
+    warn: (fields: Record<string, unknown>, message: string) => logs.push({ level: "warn", fields, message }),
+  };
+  const client = new KiteClient({
+    apiKey: "key123",
+    accessToken: "token456",
+    requestTimeoutMs: 5_000,
+    logger,
+    fetchFunction: fakeFetch(() => ({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: [
+          {
+            tradingsymbol: "RELIANCE",
+            exchange: "NSE",
+            isin: "INE002A01018",
+            quantity: 10,
+            average_price: 2500,
+            last_price: 2600,
+            pnl: 1000,
+            product: "CNC",
+          },
+        ],
+      }),
+    })),
+  });
+
+  await client.getHoldings();
+
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]?.level, "info");
+  assert.equal(logs[0]?.fields.endpoint, "portfolio/holdings");
+  assert.equal(logs[0]?.fields.status, 200);
+  assert.deepEqual(logs[0]?.fields.body, { recordCount: 1 });
+  const serialized = JSON.stringify(logs[0]?.fields);
+  assert.ok(!serialized.includes("INE002A01018"), "ISIN must not appear in the log");
+  assert.ok(!serialized.includes("2500"), "portfolio values must not appear in the log");
+  assert.ok(!serialized.includes("token456"), "access token must not appear in the log");
+});
+
+test("KiteClient logs positions error responses with a sanitized body and redacted headers only", async () => {
+  const logs: { level: string; fields: Record<string, unknown>; message: string }[] = [];
+  const logger = {
+    info: (fields: Record<string, unknown>, message: string) => logs.push({ level: "info", fields, message }),
+    warn: (fields: Record<string, unknown>, message: string) => logs.push({ level: "warn", fields, message }),
+  };
+  const client = new KiteClient({
+    apiKey: "key123",
+    accessToken: "expired",
+    requestTimeoutMs: 5_000,
+    logger,
+    fetchFunction: async () =>
+      new Response(
+        JSON.stringify({ status: "error", error_type: "TokenException", message: "Invalid access token." }),
+        {
+          status: 403,
+          headers: {
+            "content-type": "application/json",
+            "set-cookie": "session=abc123; HttpOnly",
+            "x-request-id": "req-42",
+          },
+        },
+      ),
+  });
+
+  await assert.rejects(() => client.getPositions());
+
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]?.level, "warn");
+  assert.equal(logs[0]?.fields.endpoint, "portfolio/positions");
+  assert.equal(logs[0]?.fields.status, 403);
+  assert.deepEqual(logs[0]?.fields.headers, {
+    "content-type": "application/json",
+    "x-request-id": "req-42",
+  });
+  assert.deepEqual(logs[0]?.fields.body, {
+    status: "error",
+    error_type: "TokenException",
+    message: "Invalid access token.",
+  });
+});
+
 test("KiteClient.placeOrder posts a form-encoded body to /orders/<variety> and returns the order id", async () => {
   let capturedUrl: URL | undefined;
   let capturedMethod: string | undefined;

@@ -9,6 +9,7 @@ export type BuildRestartFailure =
   | "BUILD_FAILED"
   | "RESTART_TIMEOUT"
   | "RESTART_FAILED"
+  | "RESTART_SELF_TARGET"
   | "LIST_TIMEOUT"
   | "LIST_FAILED"
   | "LIST_PARSE_FAILED"
@@ -192,6 +193,8 @@ export class BuildRestartRunner {
       );
     }
 
+    await this.guardAgainstSelfRestart(input.pm2ServiceName, input.signal);
+
     const restartStartedAt = performance.now();
     const restart = await this.spawnStep(
       this.pm2Command,
@@ -238,6 +241,8 @@ export class BuildRestartRunner {
     restartTruncated: boolean;
   }> {
     signal?.throwIfAborted();
+    await this.guardAgainstSelfRestart(pm2ServiceName, signal);
+
     const restartStartedAt = performance.now();
     const restart = await this.spawnStep(
       this.pm2Command,
@@ -261,6 +266,42 @@ export class BuildRestartRunner {
       restartDurationMs,
       restartTruncated: restart.truncated,
     };
+  }
+
+  /**
+   * Refuses a restart whose target PM2 service is confirmed (via `pm2
+   * jlist`) to be the exact OS process currently running this code. PM2
+   * restarts a process by signaling it and only then starting its
+   * replacement — restarting yourself means that signal can arrive before
+   * this call, and everything awaiting it (the response this method is
+   * about to return, and the caller's publish/acknowledge of the delegated
+   * task), ever completes. The task then stays unacknowledged and gets
+   * redelivered, repeating the same self-restart on every attempt. If the
+   * check itself can't be completed (pm2 jlist times out, fails, or returns
+   * something unparseable), this fails open and lets the restart proceed
+   * exactly as before the check existed — a flaky read-only status probe
+   * must never block a legitimate restart of a different process.
+   */
+  private async guardAgainstSelfRestart(
+    pm2ServiceName: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let isSelf: boolean;
+    try {
+      const { services } = await this.listStatus([pm2ServiceName], signal);
+      isSelf = services.some(
+        (service) =>
+          service.name === pm2ServiceName && service.pid === process.pid,
+      );
+    } catch (error: unknown) {
+      if (signal?.aborted) throw error;
+      return;
+    }
+    if (!isSelf) return;
+    throw new BuildRestartError(
+      "RESTART_SELF_TARGET",
+      `Refusing to restart "${pm2ServiceName}": PM2 reports it as this exact running process (pid ${process.pid}). Restarting it here would be killed mid-command before a result could be reported, and the retried task would repeat the same restart indefinitely.`,
+    );
   }
 
   /**
@@ -460,6 +501,11 @@ export function buildRestartRunnerErrorToFailure(
       };
     case "RESTART_FAILED":
       return { code: "DEVELOPER_BUILD_RESTART_RESTART_FAILED", message: error.message };
+    case "RESTART_SELF_TARGET":
+      return {
+        code: "DEVELOPER_BUILD_RESTART_SELF_TARGET",
+        message: error.message,
+      };
     case "LIST_TIMEOUT":
       return {
         code: "DEVELOPER_BUILD_RESTART_LIST_TIMEOUT",
