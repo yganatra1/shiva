@@ -4,6 +4,8 @@ import { BuildRestartRunner } from "../../tools/developer/build-restart-runner";
 import type { SkillRegistry } from "../registry";
 import { createDeveloperExecuteSkill } from "../developer-execute/skill";
 import { createDeveloperBuildRestartSkill } from "../developer-build-restart/skill";
+import { createDeveloperPm2StatusSkill } from "../developer-pm2-status/skill";
+import { createDeveloperPm2RestartSkill } from "../developer-pm2-restart/skill";
 
 export function registerDeveloperSkills(
   registry: SkillRegistry,
@@ -53,6 +55,22 @@ export function registerDeveloperSkills(
 
   registry.register(
     createDeveloperBuildRestartSkill(
+      config.developerAgentRepos,
+      config.developerAgentPm2Services,
+      buildRestartRunner,
+    ),
+  );
+
+  registry.register(
+    createDeveloperPm2StatusSkill(
+      config.developerAgentRepos,
+      config.developerAgentPm2Services,
+      buildRestartRunner,
+    ),
+  );
+
+  registry.register(
+    createDeveloperPm2RestartSkill(
       config.developerAgentRepos,
       config.developerAgentPm2Services,
       buildRestartRunner,

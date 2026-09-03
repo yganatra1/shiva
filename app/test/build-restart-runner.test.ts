@@ -146,6 +146,125 @@ test("run() rejects with UNAVAILABLE when npm cannot be spawned at all", async (
   );
 });
 
+test("restart() succeeds without running a build", async () => {
+  const result = await runner(
+    {},
+    { ...process.env, RESTART_MODE: "SUCCESS" },
+  ).restart("shiva-api");
+  assert.equal(result.restartTruncated, false);
+  assert.match(result.restartOutput, /restart shiva-api/);
+});
+
+test("restart() rejects with RESTART_FAILED when pm2 restart exits non-zero", async () => {
+  await assert.rejects(
+    () =>
+      runner({}, { ...process.env, RESTART_MODE: "FAIL" }).restart("shiva-api"),
+    (error: unknown) =>
+      error instanceof BuildRestartError && error.failure === "RESTART_FAILED",
+  );
+});
+
+test("restart() enforces its own timeout, escalating to SIGKILL when the process ignores SIGTERM", async () => {
+  await assert.rejects(
+    () =>
+      runner(
+        { restartTimeoutMs: 1_000 },
+        { ...process.env, RESTART_MODE: "HANG" },
+      ).restart("shiva-api"),
+    (error: unknown) =>
+      error instanceof BuildRestartError && error.failure === "RESTART_TIMEOUT",
+  );
+});
+
+test("restart() rejects with UNAVAILABLE when pm2 cannot be spawned at all", async () => {
+  await assert.rejects(
+    () =>
+      runner({ pm2Command: "/nonexistent/definitely-not-pm2" }).restart(
+        "shiva-api",
+      ),
+    (error: unknown) =>
+      error instanceof BuildRestartError && error.failure === "UNAVAILABLE",
+  );
+});
+
+test("listStatus() returns only entries matching the requested service names", async () => {
+  const pm2Json = JSON.stringify([
+    {
+      name: "shiva-api",
+      pm_id: 0,
+      pid: 4242,
+      pm2_env: { status: "online", restart_time: 3, pm_uptime: Date.now() - 5_000 },
+    },
+    {
+      name: "unrelated-tenant-service",
+      pm_id: 1,
+      pid: 9999,
+      pm2_env: { status: "online", restart_time: 0, pm_uptime: Date.now() },
+    },
+  ]);
+  const result = await runner(
+    {},
+    { ...process.env, LIST_MODE: "JSON", LIST_JSON: pm2Json },
+  ).listStatus(["shiva-api"]);
+  assert.equal(result.services.length, 1);
+  assert.equal(result.services[0]?.name, "shiva-api");
+  assert.equal(result.services[0]?.status, "online");
+  assert.equal(result.services[0]?.pid, 4242);
+  assert.equal(result.services[0]?.restarts, 3);
+  assert.ok((result.services[0]?.uptimeMs ?? 0) >= 0);
+});
+
+test("listStatus() returns an empty list when the requested service isn't reported by pm2", async () => {
+  const result = await runner(
+    {},
+    { ...process.env, LIST_MODE: "JSON", LIST_JSON: "[]" },
+  ).listStatus(["shiva-api"]);
+  assert.deepEqual(result.services, []);
+});
+
+test("listStatus() rejects with LIST_PARSE_FAILED when pm2 jlist does not return JSON", async () => {
+  await assert.rejects(
+    () =>
+      runner({}, { ...process.env, LIST_MODE: "INVALID_JSON" }).listStatus([
+        "shiva-api",
+      ]),
+    (error: unknown) =>
+      error instanceof BuildRestartError && error.failure === "LIST_PARSE_FAILED",
+  );
+});
+
+test("listStatus() rejects with LIST_FAILED when pm2 jlist exits non-zero", async () => {
+  await assert.rejects(
+    () =>
+      runner({}, { ...process.env, LIST_MODE: "FAIL" }).listStatus(["shiva-api"]),
+    (error: unknown) =>
+      error instanceof BuildRestartError && error.failure === "LIST_FAILED",
+  );
+});
+
+test("listStatus() enforces its own timeout", async () => {
+  await assert.rejects(
+    () =>
+      runner(
+        { listTimeoutMs: 1_000 },
+        { ...process.env, LIST_MODE: "HANG" },
+      ).listStatus(["shiva-api"]),
+    (error: unknown) =>
+      error instanceof BuildRestartError && error.failure === "LIST_TIMEOUT",
+  );
+});
+
+test("listStatus() rejects with UNAVAILABLE when pm2 cannot be spawned at all", async () => {
+  await assert.rejects(
+    () =>
+      runner({ pm2Command: "/nonexistent/definitely-not-pm2" }).listStatus([
+        "shiva-api",
+      ]),
+    (error: unknown) =>
+      error instanceof BuildRestartError && error.failure === "UNAVAILABLE",
+  );
+});
+
 test("buildRestartRunnerErrorToFailure maps every failure kind and rethrows anything else", () => {
   assert.equal(
     buildRestartRunnerErrorToFailure(
@@ -158,6 +277,18 @@ test("buildRestartRunnerErrorToFailure maps every failure kind and rethrows anyt
       new BuildRestartError("BUILD_FAILED", "boom"),
     ).message,
     "boom",
+  );
+  assert.equal(
+    buildRestartRunnerErrorToFailure(
+      new BuildRestartError("LIST_TIMEOUT", "x"),
+    ).code,
+    "DEVELOPER_BUILD_RESTART_LIST_TIMEOUT",
+  );
+  assert.equal(
+    buildRestartRunnerErrorToFailure(
+      new BuildRestartError("LIST_PARSE_FAILED", "bad json"),
+    ).message,
+    "bad json",
   );
   assert.throws(() => buildRestartRunnerErrorToFailure(new Error("other")));
 });

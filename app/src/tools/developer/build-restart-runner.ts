@@ -9,6 +9,9 @@ export type BuildRestartFailure =
   | "BUILD_FAILED"
   | "RESTART_TIMEOUT"
   | "RESTART_FAILED"
+  | "LIST_TIMEOUT"
+  | "LIST_FAILED"
+  | "LIST_PARSE_FAILED"
   | "UNAVAILABLE"
   | "CANCELLED";
 
@@ -44,11 +47,14 @@ export interface BuildRestartResult {
 export interface BuildRestartRunnerOptions {
   readonly buildTimeoutMs: number;
   readonly restartTimeoutMs: number;
+  /** Timeout for the read-only `pm2 jlist` status check. Defaults to 15s. */
+  readonly listTimeoutMs?: number;
   readonly maxOutputBytes?: number;
   /**
-   * The subprocess environment for both `npm run build` and `pm2 restart`.
-   * Not scrubbed down, matching ClaudeCodeRunner — both commands need the
-   * same effective permissions as the OS user running this agent.
+   * The subprocess environment for `npm run build`, `pm2 restart`, and
+   * `pm2 jlist`. Not scrubbed down, matching ClaudeCodeRunner — all three
+   * commands need the same effective permissions as the OS user running
+   * this agent.
    */
   readonly env: NodeJS.ProcessEnv;
   /** Test seams; production spawns the real binaries on PATH. */
@@ -56,8 +62,39 @@ export interface BuildRestartRunnerOptions {
   readonly pm2Command?: string;
 }
 
+/** A single PM2-managed process as reported by `pm2 jlist`. */
+export interface Pm2ServiceStatus {
+  readonly name: string;
+  readonly pm2Id: number;
+  readonly status: string;
+  readonly pid: number | null;
+  readonly restarts: number;
+  readonly uptimeMs: number | null;
+}
+
+export interface Pm2ListResult {
+  /** Only entries whose name was requested — pm2 jlist reports every
+   * process on the host, and callers must never see services they didn't
+   * ask about. */
+  readonly services: readonly Pm2ServiceStatus[];
+  readonly raw: string;
+  readonly truncated: boolean;
+}
+
 const DEFAULT_MAX_OUTPUT_BYTES = 512 * 1024;
+const DEFAULT_LIST_TIMEOUT_MS = 15_000;
 const IGNORED_DIRECTORY_NAMES = new Set(["node_modules"]);
+
+interface RawPm2ListEntry {
+  readonly name?: unknown;
+  readonly pm_id?: unknown;
+  readonly pid?: unknown;
+  readonly pm2_env?: {
+    readonly status?: unknown;
+    readonly restart_time?: unknown;
+    readonly pm_uptime?: unknown;
+  };
+}
 
 /**
  * Finds the single directory under `repoPath` that contains a package.json,
@@ -86,11 +123,16 @@ async function findPackageJsonDir(repoPath: string): Promise<string | undefined>
  * Runs `npm run build` in the directory containing package.json inside a
  * configured repository, then `pm2 restart <service>` — but only if the
  * build succeeded. A failed build never reaches the restart step, so the
- * running service is left untouched.
+ * running service is left untouched. `restart` separately exposes a
+ * standalone `pm2 restart <service>` for callers that want to restart a
+ * service without rebuilding it, and `listStatus` exposes the read-only
+ * `pm2 jlist` operational command, e.g. to confirm a service came back up
+ * after a restart.
  */
 export class BuildRestartRunner {
   private readonly buildTimeoutMs: number;
   private readonly restartTimeoutMs: number;
+  private readonly listTimeoutMs: number;
   private readonly maxOutputBytes: number;
   private readonly env: NodeJS.ProcessEnv;
   private readonly npmCommand: string;
@@ -99,6 +141,7 @@ export class BuildRestartRunner {
   constructor(options: BuildRestartRunnerOptions) {
     this.buildTimeoutMs = options.buildTimeoutMs;
     this.restartTimeoutMs = options.restartTimeoutMs;
+    this.listTimeoutMs = options.listTimeoutMs ?? DEFAULT_LIST_TIMEOUT_MS;
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     this.env = options.env;
     this.npmCommand = options.npmCommand ?? "npm";
@@ -111,6 +154,11 @@ export class BuildRestartRunner {
     if (!Number.isInteger(this.restartTimeoutMs) || this.restartTimeoutMs < 1_000) {
       throw new RangeError(
         "BuildRestartRunner restartTimeoutMs must be a positive integer of at least 1000ms.",
+      );
+    }
+    if (!Number.isInteger(this.listTimeoutMs) || this.listTimeoutMs < 1_000) {
+      throw new RangeError(
+        "BuildRestartRunner listTimeoutMs must be a positive integer of at least 1000ms.",
       );
     }
   }
@@ -173,6 +221,112 @@ export class BuildRestartRunner {
       restartDurationMs,
       restartTruncated: restart.truncated,
     };
+  }
+
+  /**
+   * Runs `pm2 restart <service>` directly, without building first. Separate
+   * from `run()` so a caller can restart a service that doesn't need a fresh
+   * build applied, while still going through the same timeout/output-cap
+   * machinery and RESTART_TIMEOUT/RESTART_FAILED/UNAVAILABLE failure codes.
+   */
+  async restart(
+    pm2ServiceName: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    restartOutput: string;
+    restartDurationMs: number;
+    restartTruncated: boolean;
+  }> {
+    signal?.throwIfAborted();
+    const restartStartedAt = performance.now();
+    const restart = await this.spawnStep(
+      this.pm2Command,
+      ["restart", pm2ServiceName],
+      process.cwd(),
+      this.restartTimeoutMs,
+      "RESTART_TIMEOUT",
+      signal,
+    );
+    const restartDurationMs = Math.max(0, performance.now() - restartStartedAt);
+    if (restart.exitCode !== 0) {
+      throw new BuildRestartError(
+        "RESTART_FAILED",
+        `pm2 restart ${pm2ServiceName} exited with status ${restart.exitCode}.${
+          restart.output ? ` Output: ${restart.output.slice(-2_000)}` : ""
+        }`,
+      );
+    }
+    return {
+      restartOutput: restart.output,
+      restartDurationMs,
+      restartTruncated: restart.truncated,
+    };
+  }
+
+  /**
+   * Runs `pm2 jlist` (the machine-readable form of `pm2 list`/`pm2 status`)
+   * and returns only the entries whose name is in `serviceNames` — pm2
+   * reports every process the daemon manages, and this tool must never leak
+   * status for a service the caller didn't ask about.
+   */
+  async listStatus(
+    serviceNames: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<Pm2ListResult> {
+    signal?.throwIfAborted();
+    const list = await this.spawnStep(
+      this.pm2Command,
+      ["jlist"],
+      process.cwd(),
+      this.listTimeoutMs,
+      "LIST_TIMEOUT",
+      signal,
+    );
+    if (list.exitCode !== 0) {
+      throw new BuildRestartError(
+        "LIST_FAILED",
+        `pm2 jlist exited with status ${list.exitCode}.${
+          list.output ? ` Output: ${list.output.slice(-2_000)}` : ""
+        }`,
+      );
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(list.output);
+    } catch (error) {
+      throw new BuildRestartError(
+        "LIST_PARSE_FAILED",
+        "pm2 jlist did not return valid JSON.",
+        { cause: error },
+      );
+    }
+    if (!Array.isArray(parsed)) {
+      throw new BuildRestartError(
+        "LIST_PARSE_FAILED",
+        "pm2 jlist did not return a JSON array.",
+      );
+    }
+
+    const requested = new Set(serviceNames);
+    const services: Pm2ServiceStatus[] = [];
+    for (const entry of parsed as RawPm2ListEntry[]) {
+      if (typeof entry?.name !== "string" || !requested.has(entry.name)) continue;
+      const pmUptime =
+        typeof entry.pm2_env?.pm_uptime === "number" ? entry.pm2_env.pm_uptime : undefined;
+      services.push({
+        name: entry.name,
+        pm2Id: typeof entry.pm_id === "number" ? entry.pm_id : -1,
+        status:
+          typeof entry.pm2_env?.status === "string" ? entry.pm2_env.status : "unknown",
+        pid: typeof entry.pid === "number" ? entry.pid : null,
+        restarts:
+          typeof entry.pm2_env?.restart_time === "number" ? entry.pm2_env.restart_time : 0,
+        uptimeMs: pmUptime !== undefined ? Math.max(0, Date.now() - pmUptime) : null,
+      });
+    }
+
+    return { services, raw: list.output, truncated: list.truncated };
   }
 
   private spawnStep(
@@ -306,6 +460,15 @@ export function buildRestartRunnerErrorToFailure(
       };
     case "RESTART_FAILED":
       return { code: "DEVELOPER_BUILD_RESTART_RESTART_FAILED", message: error.message };
+    case "LIST_TIMEOUT":
+      return {
+        code: "DEVELOPER_BUILD_RESTART_LIST_TIMEOUT",
+        message: "pm2 jlist did not finish within its allotted time.",
+      };
+    case "LIST_FAILED":
+      return { code: "DEVELOPER_BUILD_RESTART_LIST_FAILED", message: error.message };
+    case "LIST_PARSE_FAILED":
+      return { code: "DEVELOPER_BUILD_RESTART_LIST_PARSE_FAILED", message: error.message };
     case "CANCELLED":
       return {
         code: "DEVELOPER_BUILD_RESTART_CANCELLED",
