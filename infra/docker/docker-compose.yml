@@ -166,6 +166,96 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
 
+  # Deterministic equity trade-opportunity scanner. No LLM ever produces a
+  # score/signal; the LLM here only formats/dispatches over trading_* skills
+  # (see app/src/trading/README.md). Read-only market analysis, no orders.
+  trading-agent:
+    build:
+      context: ../..
+      dockerfile: infra/docker/app.Dockerfile
+    command: ["node", "dist/agents/trading/trading-agent-runner.js"]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      REDIS_URL: redis://redis:6379
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      SHIVA_MODEL: ${SHIVA_MODEL:-gemma4:26b-a4b-it-q4_K_M}
+      SHIVA_CONTEXT_LENGTH: ${SHIVA_CONTEXT_LENGTH:-16384}
+      SHIVA_KEEP_ALIVE: ${SHIVA_KEEP_ALIVE:-30m}
+      OLLAMA_REQUEST_TIMEOUT_MS: ${OLLAMA_REQUEST_TIMEOUT_MS:-300000}
+      SHIVA_USER_ID: ${SHIVA_USER_ID:-00000000-0000-4000-8000-000000000001}
+      SHIVA_USER_NAME: ${SHIVA_USER_NAME:-Yash}
+      SHIVA_TIME_ZONE: ${SHIVA_TIME_ZONE:-Asia/Kolkata}
+      AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-12}
+      AGENT_REQUEST_TIMEOUT_MS: ${AGENT_REQUEST_TIMEOUT_MS:-300000}
+      AGENT_RECLAIM_IDLE_MS: ${AGENT_RECLAIM_IDLE_MS:-30000}
+      AGENT_MAX_DELIVERY_ATTEMPTS: ${AGENT_MAX_DELIVERY_ATTEMPTS:-3}
+      AGENT_HEARTBEAT_TTL_SECONDS: ${AGENT_HEARTBEAT_TTL_SECONDS:-15}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-shiva}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-shiva}
+      DATABASE_POOL_MAX: ${TRADING_DATABASE_POOL_MAX:-5}
+      DATABASE_SSL: "false"
+      KITE_API_KEY: ${KITE_API_KEY:-}
+      KITE_ACCESS_TOKEN: ${KITE_ACCESS_TOKEN:-}
+      KITE_BASE_URL: ${KITE_BASE_URL:-}
+      KITE_REQUEST_TIMEOUT_MS: ${KITE_REQUEST_TIMEOUT_MS:-15000}
+      TRADING_UNIVERSE_SYMBOLS: ${TRADING_UNIVERSE_SYMBOLS:-RELIANCE,TCS,HDFCBANK,INFY,ICICIBANK}
+      TRADING_EXECUTION_MODE: ${TRADING_EXECUTION_MODE:-PAPER}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+  finance-manager-agent:
+    build:
+      context: ../..
+      dockerfile: infra/docker/app.Dockerfile
+    command: ["node", "dist/agents/finance-manager/finance-manager-agent-runner.js"]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      REDIS_URL: redis://redis:6379
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      SHIVA_MODEL: ${SHIVA_MODEL:-gemma4:26b-a4b-it-q4_K_M}
+      SHIVA_CONTEXT_LENGTH: ${SHIVA_CONTEXT_LENGTH:-16384}
+      SHIVA_KEEP_ALIVE: ${SHIVA_KEEP_ALIVE:-30m}
+      OLLAMA_REQUEST_TIMEOUT_MS: ${OLLAMA_REQUEST_TIMEOUT_MS:-300000}
+      SHIVA_USER_ID: ${SHIVA_USER_ID:-00000000-0000-4000-8000-000000000001}
+      SHIVA_USER_NAME: ${SHIVA_USER_NAME:-Yash}
+      SHIVA_TIME_ZONE: ${SHIVA_TIME_ZONE:-Asia/Kolkata}
+      AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-12}
+      AGENT_REQUEST_TIMEOUT_MS: ${AGENT_REQUEST_TIMEOUT_MS:-300000}
+      AGENT_RECLAIM_IDLE_MS: ${AGENT_RECLAIM_IDLE_MS:-30000}
+      AGENT_MAX_DELIVERY_ATTEMPTS: ${AGENT_MAX_DELIVERY_ATTEMPTS:-3}
+      AGENT_HEARTBEAT_TTL_SECONDS: ${AGENT_HEARTBEAT_TTL_SECONDS:-15}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-shiva}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-shiva}
+      DATABASE_POOL_MAX: ${FINANCE_DATABASE_POOL_MAX:-5}
+      DATABASE_SSL: "false"
+      FINANCE_MFAPI_BASE_URL: ${FINANCE_MFAPI_BASE_URL:-https://api.mfapi.in}
+      FINANCE_MFAPI_TIMEOUT_MS: ${FINANCE_MFAPI_TIMEOUT_MS:-10000}
+      FINANCE_MFAPI_MAX_RETRIES: ${FINANCE_MFAPI_MAX_RETRIES:-2}
+      FINANCE_MFAPI_MAX_CONCURRENCY: ${FINANCE_MFAPI_MAX_CONCURRENCY:-5}
+      FINANCE_MFAPI_CACHE_TTL_SECONDS: ${FINANCE_MFAPI_CACHE_TTL_SECONDS:-21600}
+      FINANCE_RISK_FREE_RATE: ${FINANCE_RISK_FREE_RATE:-0.065}
+      FINANCE_MANAGER_AGENT_HOST: 0.0.0.0
+      FINANCE_MANAGER_AGENT_PORT: 3004
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    expose:
+      - "3004"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3004/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   asr:
     build:
       context: ../..

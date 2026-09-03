@@ -461,6 +461,25 @@ module.exports = {
         NODE_ENV: "production"
       }
     },
+
+    {
+      name: "shiva-finance-manager-agent",
+      cwd: "$APP",
+      script: "npm",
+      args: "run start:finance-manager-agent",
+      interpreter: "none",
+
+      autorestart: true,
+      restart_delay: 2000,
+      max_restarts: 20,
+
+      out_file: "$PM2_LOG_DIR/finance-manager-agent-out.log",
+      error_file: "$PM2_LOG_DIR/finance-manager-agent-error.log",
+
+      env: {
+        NODE_ENV: "production"
+      }
+    },
 ${VOICE_APPS}
   ]
 };
@@ -473,6 +492,7 @@ pm2 delete shiva-api >/dev/null 2>&1 || true
 pm2 delete shiva-scheduler >/dev/null 2>&1 || true
 pm2 delete shiva-device-agent >/dev/null 2>&1 || true
 pm2 delete shiva-google-agent >/dev/null 2>&1 || true
+pm2 delete shiva-finance-manager-agent >/dev/null 2>&1 || true
 pm2 delete shiva-asr >/dev/null 2>&1 || true
 pm2 delete shiva-tts >/dev/null 2>&1 || true
 
@@ -607,6 +627,7 @@ echo "  pm2 logs shiva-api"
 echo "  pm2 logs shiva-scheduler"
 echo "  pm2 logs shiva-device-agent"
 echo "  pm2 logs shiva-google-agent"
+echo "  pm2 logs shiva-finance-manager-agent"
 echo "  pm2 logs shiva-asr"
 echo "  pm2 logs shiva-tts"
 echo "  pm2 monit"

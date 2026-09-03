@@ -29,7 +29,7 @@ Android app -> WS /device/ws (relayed, unmodified) -> shiva-device-agent :3002 (
                                              -> DeviceCommandDispatcher owns the phone's
                                                 live socket and command correlation
 Core delegation -> PostgreSQL outbox -> Redis stream shiva:agent:tasks
-                                             -> device-agent or google-agent process
+                                             -> device-agent, google-agent, or finance-manager-agent
                                              -> plain-text response stream -> Shiva Core
                                              -> reload original request + executionContext
                                              -> decide next delegation or final user message
@@ -67,10 +67,12 @@ From the repository root:
 cp .env.example .env
 cp .env.device-agent.example .env.device-agent
 cp .env.google-agent.example .env.google-agent
+cp .env.finance-manager-agent.example .env.finance-manager-agent
 ```
 
-Configure Core in `.env`, the local Device worker in `.env.device-agent`, and
-the local Google worker in `.env.google-agent`. Leave Google credentials and
+Configure Core in `.env`, the local Device worker in `.env.device-agent`, the
+local Google worker in `.env.google-agent`, and the local Finance Manager
+worker in `.env.finance-manager-agent`. Leave Google credentials and
 the device token empty in Core's `.env`; their values belong in the matching
 agent file. All three real files are gitignored. Production workers ignore
 dotenv files entirely and receive only their PM2-filtered or Compose-explicit

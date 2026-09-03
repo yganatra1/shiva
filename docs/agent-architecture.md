@@ -7,7 +7,7 @@ Shiva now has two distinct agent layers:
 - **Shiva Core** is the only user-facing brain. It owns intent, memory and people resolution, security checks, context minimization, delegation, continuation reasoning, and final communication.
 - **Specialized agents** are independently managed processes. They receive one minimal natural-language instruction, use only their domain tools, and return one plain natural-language message. They never receive or take over the user conversation.
 
-The current process registry contains `device-agent` and `google-agent`. Its IDs are stable routing identifiers; names, descriptions, and capabilities are free-form human-readable text, so adding a future agent does not expand a central capability enum.
+The current process registry contains `device-agent`, `google-agent`, `developer-agent`, and `finance-manager-agent`. Its IDs are stable routing identifiers; names, descriptions, and capabilities are free-form human-readable text, so adding a future agent does not expand a central capability enum.
 
 ## Durable multi-agent flow
 
@@ -79,7 +79,10 @@ execution-control, people resolution, web research, self/repository inspection,
 and `delegate_to_agent`. `device-agent` owns the connected Android surface;
 `google-agent` owns the currently registered Google Sheets operations
 (`sheets_find`, `sheets_create`, `sheets_read`, `sheets_add_tab`, and
-`sheets_update`). The older fixed-schema `record_expense`/`expense_report`
+`sheets_update`). `finance-manager-agent` owns Indian mutual-fund NAV
+research (`mutual_fund_search`, `mutual_fund_details`, `mutual_fund_analyze`,
+`mutual_fund_compare`, `mutual_fund_rank`) and never calculates those
+metrics in the LLM. The older fixed-schema `record_expense`/`expense_report`
 adapters remain in source for incremental migration and tests, but they are not
 registered in the current runtime.
 

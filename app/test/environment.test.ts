@@ -5,6 +5,7 @@ import {
   ConfigurationError,
   loadConfig,
   loadDeviceAgentConfig,
+  loadFinanceManagerAgentConfig,
   loadGoogleAgentConfig,
 } from "../src/config/environment.js";
 
@@ -399,6 +400,56 @@ test("production google-agent never invokes a dotenv reader", () => {
       assert.equal(config.redisUrl, "redis://127.0.0.1:6384");
       assert.equal(config.googleUserOAuth?.clientSecret, "google-secret");
       assert.equal(process.env.DEVICE_WS_TOKEN, undefined);
+    },
+  );
+});
+
+test("finance-manager-agent keeps database and MFapi settings but scrubs Google/web secrets", () => {
+  withEnvironment(
+    {
+      REDIS_URL: "redis://127.0.0.1:6387",
+      DATABASE_URL: "postgresql://user:database-secret@127.0.0.1/shiva",
+      FINANCE_RISK_FREE_RATE: "0.07",
+      FINANCE_MFAPI_MAX_CONCURRENCY: "4",
+      GOOGLE_OAUTH_CLIENT_SECRET: "google-secret",
+      BRAVE_SEARCH_API_KEY: "web-secret",
+      DEVICE_WS_TOKEN: "device-secret",
+    },
+    () => {
+      const config = loadFinanceManagerAgentConfig();
+      assert.equal(config.redisUrl, "redis://127.0.0.1:6387");
+      assert.equal(config.databaseUrl, "postgresql://user:database-secret@127.0.0.1/shiva");
+      assert.equal(config.financeRiskFreeRate, 0.07);
+      assert.equal(config.financeRiskFreeRateSource, "configured");
+      assert.equal(config.financeMfapiMaxConcurrency, 4);
+      assert.equal(config.financeMfapiBaseUrl, "https://api.mfapi.in");
+      assert.equal("googleUserOAuth" in config, false);
+      assert.equal(process.env.GOOGLE_OAUTH_CLIENT_SECRET, undefined);
+      assert.equal(process.env.BRAVE_SEARCH_API_KEY, undefined);
+      assert.equal(process.env.DEVICE_WS_TOKEN, undefined);
+    },
+  );
+});
+
+test("production finance-manager-agent never invokes a dotenv reader", () => {
+  withEnvironment(
+    {
+      NODE_ENV: "production",
+      SHIVA_LOAD_AGENT_ENV_FILES: "true",
+      REDIS_URL: "redis://127.0.0.1:6388",
+      GOOGLE_OAUTH_CLIENT_SECRET: "must-be-scrubbed",
+    },
+    () => {
+      let reads = 0;
+      const config = loadFinanceManagerAgentConfig({
+        readEnvironmentFile() {
+          reads += 1;
+          throw new Error("production must not read any environment file");
+        },
+      });
+      assert.equal(reads, 0);
+      assert.equal(config.redisUrl, "redis://127.0.0.1:6388");
+      assert.equal(process.env.GOOGLE_OAUTH_CLIENT_SECRET, undefined);
     },
   );
 });

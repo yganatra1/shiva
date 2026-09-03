@@ -6,6 +6,8 @@ import {
   executionModeSchema,
   type ExecutionMode,
 } from "../security/execution-mode";
+import { loadTradingConfigFromEnv } from "../trading/config";
+import type { TradingConfig } from "../trading/types";
 
 const rootEnvironmentPath = fileURLToPath(
   new URL("../../../.env", import.meta.url),
@@ -21,6 +23,12 @@ const developerAgentEnvironmentPath = fileURLToPath(
 );
 const schedulerEnvironmentPath = fileURLToPath(
   new URL("../../../.env.scheduler", import.meta.url),
+);
+const tradingAgentEnvironmentPath = fileURLToPath(
+  new URL("../../../.env.trading-agent", import.meta.url),
+);
+const financeManagerAgentEnvironmentPath = fileURLToPath(
+  new URL("../../../.env.finance-manager-agent", import.meta.url),
 );
 
 const httpBaseUrlSchema = z
@@ -100,6 +108,10 @@ const httpsBaseUrlSchema = httpBaseUrlSchema.superRefine((value, context) => {
 const braveSearchUrlSchema = httpsBaseUrlSchema.refine(
   (value) => new URL(value).hostname === "api.search.brave.com",
   { message: "must use the official api.search.brave.com host" },
+);
+const mfapiUrlSchema = httpsBaseUrlSchema.refine(
+  (value) => new URL(value).hostname === "api.mfapi.in",
+  { message: "must use the official api.mfapi.in host" },
 );
 
 const booleanEnvironmentSchema = z
@@ -312,6 +324,19 @@ const environmentSchema = z
   SHIVA_TIME_ZONE: timeZoneSchema.default("Asia/Kolkata"),
   SHIVA_SCHEDULER_CORE_URL: httpBaseUrlSchema.default("http://127.0.0.1:3000"),
   SHIVA_SCHEDULER_TOKEN: optionalSchedulerTokenSchema,
+  // Bearer token for POST /trading/scans and GET /trading/... (see
+  // app/src/api/trading-route.ts). Reuses the scheduler token's shape
+  // (>= 32 chars); the trading route is only registered when this is set.
+  TRADING_API_TOKEN: optionalSchedulerTokenSchema,
+  // Read-only Kite Connect credentials for the trading scanner's market data
+  // (see app/src/tools/kite). KITE_API_SECRET is only used by the manual,
+  // out-of-band session-generation script (app/scripts/kite-generate-session.ts),
+  // never by the running app itself.
+  KITE_API_KEY: optionalSecretSchema,
+  KITE_API_SECRET: optionalSecretSchema,
+  KITE_ACCESS_TOKEN: optionalSecretSchema,
+  KITE_BASE_URL: httpsBaseUrlSchema.optional(),
+  KITE_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(15_000),
   SCHEDULER_DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(10).default(2),
   SCHEDULER_CORE_TIMEOUT_MS: z.coerce
     .number()
@@ -375,6 +400,45 @@ const environmentSchema = z
     .min(60_000)
     .max(86_400_000)
     .default(2_100_000),
+  FINANCE_MANAGER_AGENT_TASK_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(30_000)
+    .max(86_400_000)
+    .default(600_000),
+  FINANCE_MFAPI_BASE_URL: mfapiUrlSchema.default("https://api.mfapi.in"),
+  FINANCE_MFAPI_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(120_000)
+    .default(10_000),
+  FINANCE_MFAPI_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+  FINANCE_MFAPI_MAX_CONCURRENCY: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(20)
+    .default(5),
+  FINANCE_MFAPI_CACHE_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(86_400)
+    .default(21_600),
+  FINANCE_RISK_FREE_RATE: z.coerce.number().min(0).max(0.25).default(0.065),
+  FINANCE_MANAGER_AGENT_HOST: z
+    .string()
+    .trim()
+    .min(1)
+    .max(255)
+    .default("127.0.0.1"),
+  FINANCE_MANAGER_AGENT_PORT: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(65_535)
+    .default(3004),
   AGENT_RECLAIM_IDLE_MS: z.coerce
     .number()
     .int()
@@ -629,6 +693,13 @@ export interface AppConfig {
   readonly timeZone: string;
   readonly schedulerCoreUrl: string;
   readonly schedulerToken?: string;
+  /** Bearer token gating /trading/* routes; unset means the routes are not registered. */
+  readonly tradingApiToken?: string;
+  readonly kiteApiKey?: string;
+  readonly kiteApiSecret?: string;
+  readonly kiteAccessToken?: string;
+  readonly kiteBaseUrl?: string;
+  readonly kiteRequestTimeoutMs: number;
   readonly schedulerDatabasePoolMax: number;
   readonly schedulerCoreTimeoutMs: number;
   readonly schedulerProcessingUncertainAfterMs: number;
@@ -638,6 +709,17 @@ export interface AppConfig {
   readonly agentTaskTimeoutMs: number;
   /** Core's longer durable deadline for developer-agent tasks. */
   readonly developerAgentTaskTimeoutMs: number;
+  /** Core's durable deadline for finance-manager-agent ranking/analysis tasks. */
+  readonly financeManagerAgentTaskTimeoutMs: number;
+  readonly financeMfapiBaseUrl: string;
+  readonly financeMfapiTimeoutMs: number;
+  readonly financeMfapiMaxRetries: number;
+  readonly financeMfapiMaxConcurrency: number;
+  readonly financeMfapiCacheTtlSeconds: number;
+  readonly financeRiskFreeRate: number;
+  readonly financeRiskFreeRateSource: "configured" | "default";
+  readonly financeManagerAgentHost: string;
+  readonly financeManagerAgentPort: number;
   readonly agentReclaimIdleMs: number;
   readonly agentMaxDeliveryAttempts: number;
   readonly agentHeartbeatTtlSeconds: number;
@@ -823,6 +905,91 @@ export type DeveloperAgentConfig = Pick<
   | "nodeEnv"
 >;
 
+/**
+ * Trading-agent needs its own Postgres access (for TradingRepositoryPort)
+ * plus an LLM for its delegate_to_agent planner/formatting layer, but no
+ * Core database, device bridge, web, voice, or other domain config. `trading`
+ * carries the fully-validated deterministic scanner/strategy configuration
+ * (app/src/trading/config.ts) — never reach into `process.env` for it again.
+ */
+export type TradingAgentConfig = Pick<
+  AppConfig,
+  | "brainProvider"
+  | "ollamaUrl"
+  | "model"
+  | "geminiApiKey"
+  | "openaiApiKey"
+  | "awsBearerTokenBedrock"
+  | "awsAccessKeyId"
+  | "awsSecretAccessKey"
+  | "awsSessionToken"
+  | "awsRegion"
+  | "contextLength"
+  | "keepAlive"
+  | "ollamaRequestTimeoutMs"
+  | "redisUrl"
+  | "databaseUrl"
+  | "databasePoolMax"
+  | "databaseSsl"
+  | "userId"
+  | "userName"
+  | "timeZone"
+  | "agentMaxSteps"
+  | "agentRequestTimeoutMs"
+  | "agentReclaimIdleMs"
+  | "agentMaxDeliveryAttempts"
+  | "agentHeartbeatTtlSeconds"
+  | "kiteApiKey"
+  | "kiteApiSecret"
+  | "kiteAccessToken"
+  | "kiteBaseUrl"
+  | "kiteRequestTimeoutMs"
+  | "nodeEnv"
+> & { readonly trading: TradingConfig };
+
+/**
+ * Finance Manager needs Postgres for NAV/analytics snapshots, Redis for
+ * Core delegation, and an LLM only to explain TypeScript-calculated metrics.
+ */
+export type FinanceManagerAgentConfig = Pick<
+  AppConfig,
+  | "brainProvider"
+  | "ollamaUrl"
+  | "model"
+  | "geminiApiKey"
+  | "openaiApiKey"
+  | "awsBearerTokenBedrock"
+  | "awsAccessKeyId"
+  | "awsSecretAccessKey"
+  | "awsSessionToken"
+  | "awsRegion"
+  | "contextLength"
+  | "keepAlive"
+  | "ollamaRequestTimeoutMs"
+  | "redisUrl"
+  | "databaseUrl"
+  | "databasePoolMax"
+  | "databaseSsl"
+  | "userId"
+  | "userName"
+  | "timeZone"
+  | "agentMaxSteps"
+  | "agentRequestTimeoutMs"
+  | "agentReclaimIdleMs"
+  | "agentMaxDeliveryAttempts"
+  | "agentHeartbeatTtlSeconds"
+  | "financeMfapiBaseUrl"
+  | "financeMfapiTimeoutMs"
+  | "financeMfapiMaxRetries"
+  | "financeMfapiMaxConcurrency"
+  | "financeMfapiCacheTtlSeconds"
+  | "financeRiskFreeRate"
+  | "financeRiskFreeRateSource"
+  | "financeManagerAgentHost"
+  | "financeManagerAgentPort"
+  | "nodeEnv"
+>;
+
 export class ConfigurationError extends Error {
   override readonly name = "ConfigurationError";
 }
@@ -951,6 +1118,125 @@ const SCHEDULER_ENVIRONMENT_KEYS = [
   "SCHEDULER_JOB_HEARTBEAT_SECONDS",
   "SCHEDULER_JOB_RETENTION_SECONDS",
   "SCHEDULER_JOB_DELETE_AFTER_SECONDS",
+  "NODE_ENV",
+] as const;
+
+/**
+ * trading-agent needs its own DB access for TradingRepositoryPort reads and
+ * writes (mirroring scheduler-worker's inclusion of DATABASE_* keys, not
+ * google/developer-agent's DB-less shape), an LLM for the delegate_to_agent
+ * planner/formatting layer only (never for scoring), and every TRADING_*
+ * knob TradingConfig understands (see app/src/trading/config.ts).
+ */
+const TRADING_AGENT_ENVIRONMENT_KEYS = [
+  "SHIVA_BRAIN_PROVIDER",
+  "OLLAMA_URL",
+  "SHIVA_MODEL",
+  "GEMINI_API_KEY",
+  "OPENAI_API_KEY",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_REGION",
+  "SHIVA_CONTEXT_LENGTH",
+  "SHIVA_KEEP_ALIVE",
+  "OLLAMA_REQUEST_TIMEOUT_MS",
+  "REDIS_URL",
+  "SHIVA_USER_ID",
+  "SHIVA_USER_NAME",
+  "SHIVA_TIME_ZONE",
+  "AGENT_MAX_STEPS",
+  "AGENT_REQUEST_TIMEOUT_MS",
+  "AGENT_RECLAIM_IDLE_MS",
+  "AGENT_MAX_DELIVERY_ATTEMPTS",
+  "AGENT_HEARTBEAT_TTL_SECONDS",
+  "DATABASE_URL",
+  "DATABASE_POOL_MAX",
+  "DATABASE_SSL",
+  "TRADING_BENCHMARK_SYMBOL",
+  "TRADING_EMA_FAST_PERIOD",
+  "TRADING_EMA_MEDIUM_PERIOD",
+  "TRADING_EMA_SLOW_PERIOD",
+  "TRADING_RSI_PERIOD",
+  "TRADING_ATR_PERIOD",
+  "TRADING_ADX_PERIOD",
+  "TRADING_RSI_MOMENTUM_LOWER_BOUND",
+  "TRADING_RSI_MOMENTUM_UPPER_BOUND",
+  "TRADING_ADX_BULLISH_THRESHOLD",
+  "TRADING_ADX_SIDEWAYS_THRESHOLD",
+  "TRADING_BREAKOUT_LOOKBACK",
+  "TRADING_BREAKOUT_VOLUME_MULTIPLIER",
+  "TRADING_BREAKOUT_ADX_THRESHOLD",
+  "TRADING_MOMENTUM_1M_LOOKBACK_DAYS",
+  "TRADING_MOMENTUM_3M_LOOKBACK_DAYS",
+  "TRADING_MIN_AVERAGE_TRADED_VALUE",
+  "TRADING_MIN_AVERAGE_VOLUME",
+  "TRADING_MIN_STOCK_PRICE",
+  "TRADING_ATR_PREFERRED_RANGE_LOW_PCT",
+  "TRADING_ATR_PREFERRED_RANGE_HIGH_PCT",
+  "TRADING_RELATIVE_STRENGTH_THRESHOLD",
+  "TRADING_MIN_OPPORTUNITY_SCORE",
+  "TRADING_SCANNER_CONCURRENCY",
+  "TRADING_ALLOW_SIDEWAYS_FOR_TREND_MOMENTUM",
+  "TRADING_ALLOW_SIDEWAYS_FOR_BREAKOUT",
+  "TRADING_EXECUTION_MODE",
+  "TRADING_UNIVERSE_SYMBOLS",
+  "TRADING_WEIGHT_TREND_STRUCTURE",
+  "TRADING_WEIGHT_TREND_RELATIVE_STRENGTH",
+  "TRADING_WEIGHT_TREND_MOMENTUM_3M",
+  "TRADING_WEIGHT_TREND_VOLUME_QUALITY",
+  "TRADING_WEIGHT_TREND_VOLATILITY_QUALITY",
+  "TRADING_WEIGHT_TREND_LIQUIDITY",
+  "TRADING_WEIGHT_BREAKOUT_STRENGTH",
+  "TRADING_WEIGHT_BREAKOUT_VOLUME_EXPANSION",
+  "TRADING_WEIGHT_BREAKOUT_TREND_QUALITY",
+  "TRADING_WEIGHT_BREAKOUT_ADX_STRENGTH",
+  "TRADING_WEIGHT_BREAKOUT_RELATIVE_STRENGTH",
+  "TRADING_WEIGHT_BREAKOUT_VOLATILITY_QUALITY",
+  "TRADING_WEIGHT_BREAKOUT_LIQUIDITY",
+  "KITE_API_KEY",
+  "KITE_API_SECRET",
+  "KITE_ACCESS_TOKEN",
+  "KITE_BASE_URL",
+  "KITE_REQUEST_TIMEOUT_MS",
+  "NODE_ENV",
+] as const;
+
+const FINANCE_MANAGER_AGENT_ENVIRONMENT_KEYS = [
+  "SHIVA_BRAIN_PROVIDER",
+  "OLLAMA_URL",
+  "SHIVA_MODEL",
+  "GEMINI_API_KEY",
+  "OPENAI_API_KEY",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_REGION",
+  "SHIVA_CONTEXT_LENGTH",
+  "SHIVA_KEEP_ALIVE",
+  "OLLAMA_REQUEST_TIMEOUT_MS",
+  "REDIS_URL",
+  "SHIVA_USER_ID",
+  "SHIVA_USER_NAME",
+  "SHIVA_TIME_ZONE",
+  "AGENT_MAX_STEPS",
+  "AGENT_REQUEST_TIMEOUT_MS",
+  "AGENT_RECLAIM_IDLE_MS",
+  "AGENT_MAX_DELIVERY_ATTEMPTS",
+  "AGENT_HEARTBEAT_TTL_SECONDS",
+  "DATABASE_URL",
+  "DATABASE_POOL_MAX",
+  "DATABASE_SSL",
+  "FINANCE_MFAPI_BASE_URL",
+  "FINANCE_MFAPI_TIMEOUT_MS",
+  "FINANCE_MFAPI_MAX_RETRIES",
+  "FINANCE_MFAPI_MAX_CONCURRENCY",
+  "FINANCE_MFAPI_CACHE_TTL_SECONDS",
+  "FINANCE_RISK_FREE_RATE",
+  "FINANCE_MANAGER_AGENT_HOST",
+  "FINANCE_MANAGER_AGENT_PORT",
   "NODE_ENV",
 ] as const;
 
@@ -1123,6 +1409,134 @@ export function loadDeveloperAgentConfig(
   };
 }
 
+/** Loads only Redis/Ollama/Postgres/trading values; it never opens Core's root .env. */
+export function loadTradingAgentConfig(
+  options: AgentEnvironmentLoadOptions = {},
+): TradingAgentConfig {
+  const config = loadScopedAgentConfig(
+    TRADING_AGENT_ENVIRONMENT_KEYS,
+    tradingAgentEnvironmentPath,
+    options,
+  );
+  return {
+    brainProvider: config.brainProvider,
+    ollamaUrl: config.ollamaUrl,
+    model: config.model,
+    ...(config.geminiApiKey ? { geminiApiKey: config.geminiApiKey } : {}),
+    ...(config.openaiApiKey ? { openaiApiKey: config.openaiApiKey } : {}),
+    ...(config.awsBearerTokenBedrock
+      ? { awsBearerTokenBedrock: config.awsBearerTokenBedrock }
+      : {}),
+    ...(config.awsAccessKeyId ? { awsAccessKeyId: config.awsAccessKeyId } : {}),
+    ...(config.awsSecretAccessKey
+      ? { awsSecretAccessKey: config.awsSecretAccessKey }
+      : {}),
+    ...(config.awsSessionToken ? { awsSessionToken: config.awsSessionToken } : {}),
+    awsRegion: config.awsRegion,
+    contextLength: config.contextLength,
+    keepAlive: config.keepAlive,
+    ollamaRequestTimeoutMs: config.ollamaRequestTimeoutMs,
+    redisUrl: config.redisUrl,
+    databaseUrl: config.databaseUrl,
+    databasePoolMax: config.databasePoolMax,
+    databaseSsl: config.databaseSsl,
+    userId: config.userId,
+    userName: config.userName,
+    timeZone: config.timeZone,
+    agentMaxSteps: config.agentMaxSteps,
+    agentRequestTimeoutMs: config.agentRequestTimeoutMs,
+    agentReclaimIdleMs: config.agentReclaimIdleMs,
+    agentMaxDeliveryAttempts: config.agentMaxDeliveryAttempts,
+    agentHeartbeatTtlSeconds: config.agentHeartbeatTtlSeconds,
+    ...(config.kiteApiKey ? { kiteApiKey: config.kiteApiKey } : {}),
+    ...(config.kiteApiSecret ? { kiteApiSecret: config.kiteApiSecret } : {}),
+    ...(config.kiteAccessToken ? { kiteAccessToken: config.kiteAccessToken } : {}),
+    ...(config.kiteBaseUrl ? { kiteBaseUrl: config.kiteBaseUrl } : {}),
+    kiteRequestTimeoutMs: config.kiteRequestTimeoutMs,
+    nodeEnv: config.nodeEnv,
+    trading: loadTradingConfigFromEnv(tradingScopedEnvironment(options)),
+  };
+}
+
+/** Loads Redis/Ollama/Postgres/MFapi values; it never opens Core's root .env. */
+export function loadFinanceManagerAgentConfig(
+  options: AgentEnvironmentLoadOptions = {},
+): FinanceManagerAgentConfig {
+  const config = loadScopedAgentConfig(
+    FINANCE_MANAGER_AGENT_ENVIRONMENT_KEYS,
+    financeManagerAgentEnvironmentPath,
+    options,
+  );
+  return {
+    brainProvider: config.brainProvider,
+    ollamaUrl: config.ollamaUrl,
+    model: config.model,
+    ...(config.geminiApiKey ? { geminiApiKey: config.geminiApiKey } : {}),
+    ...(config.openaiApiKey ? { openaiApiKey: config.openaiApiKey } : {}),
+    ...(config.awsBearerTokenBedrock
+      ? { awsBearerTokenBedrock: config.awsBearerTokenBedrock }
+      : {}),
+    ...(config.awsAccessKeyId ? { awsAccessKeyId: config.awsAccessKeyId } : {}),
+    ...(config.awsSecretAccessKey
+      ? { awsSecretAccessKey: config.awsSecretAccessKey }
+      : {}),
+    ...(config.awsSessionToken ? { awsSessionToken: config.awsSessionToken } : {}),
+    awsRegion: config.awsRegion,
+    contextLength: config.contextLength,
+    keepAlive: config.keepAlive,
+    ollamaRequestTimeoutMs: config.ollamaRequestTimeoutMs,
+    redisUrl: config.redisUrl,
+    databaseUrl: config.databaseUrl,
+    databasePoolMax: config.databasePoolMax,
+    databaseSsl: config.databaseSsl,
+    userId: config.userId,
+    userName: config.userName,
+    timeZone: config.timeZone,
+    agentMaxSteps: config.agentMaxSteps,
+    agentRequestTimeoutMs: config.agentRequestTimeoutMs,
+    agentReclaimIdleMs: config.agentReclaimIdleMs,
+    agentMaxDeliveryAttempts: config.agentMaxDeliveryAttempts,
+    agentHeartbeatTtlSeconds: config.agentHeartbeatTtlSeconds,
+    financeMfapiBaseUrl: config.financeMfapiBaseUrl,
+    financeMfapiTimeoutMs: config.financeMfapiTimeoutMs,
+    financeMfapiMaxRetries: config.financeMfapiMaxRetries,
+    financeMfapiMaxConcurrency: config.financeMfapiMaxConcurrency,
+    financeMfapiCacheTtlSeconds: config.financeMfapiCacheTtlSeconds,
+    financeRiskFreeRate: config.financeRiskFreeRate,
+    financeRiskFreeRateSource: config.financeRiskFreeRateSource,
+    financeManagerAgentHost: config.financeManagerAgentHost,
+    financeManagerAgentPort: config.financeManagerAgentPort,
+    nodeEnv: config.nodeEnv,
+  };
+}
+
+/**
+ * Re-derives just the TRADING_* slice of the merged environment
+ * loadScopedAgentConfig used. loadScopedAgentConfig itself only returns a
+ * parsed AppConfig (unknown TRADING_* keys are silently dropped by that
+ * zod schema), and file-sourced dev values are never written back to
+ * process.env, so TradingConfig's own env loader needs this merge repeated
+ * for the TRADING_* keys specifically.
+ */
+function tradingScopedEnvironment(
+  options: AgentEnvironmentLoadOptions,
+): Record<string, string | undefined> {
+  const loadDevelopmentFile =
+    process.env.NODE_ENV !== "production" &&
+    process.env.SHIVA_LOAD_AGENT_ENV_FILES === "true";
+  const fileEnvironment = loadDevelopmentFile
+    ? (options.readEnvironmentFile ?? readAgentEnvironmentFile)(
+        tradingAgentEnvironmentPath,
+      )
+    : {};
+  const merged: Record<string, string | undefined> = {};
+  for (const key of TRADING_AGENT_ENVIRONMENT_KEYS) {
+    if (!key.startsWith("TRADING_")) continue;
+    merged[key] = process.env[key] ?? fileEnvironment[key];
+  }
+  return merged;
+}
+
 /** Lightweight worker config: PostgreSQL + authenticated Core transport only. */
 export function loadSchedulerConfig(
   options: AgentEnvironmentLoadOptions = {},
@@ -1277,6 +1691,16 @@ function parseConfig(environment: NodeJS.ProcessEnv | Record<string, string>): A
     ...(result.data.SHIVA_SCHEDULER_TOKEN
       ? { schedulerToken: result.data.SHIVA_SCHEDULER_TOKEN }
       : {}),
+    ...(result.data.TRADING_API_TOKEN
+      ? { tradingApiToken: result.data.TRADING_API_TOKEN }
+      : {}),
+    ...(result.data.KITE_API_KEY ? { kiteApiKey: result.data.KITE_API_KEY } : {}),
+    ...(result.data.KITE_API_SECRET ? { kiteApiSecret: result.data.KITE_API_SECRET } : {}),
+    ...(result.data.KITE_ACCESS_TOKEN
+      ? { kiteAccessToken: result.data.KITE_ACCESS_TOKEN }
+      : {}),
+    ...(result.data.KITE_BASE_URL ? { kiteBaseUrl: result.data.KITE_BASE_URL } : {}),
+    kiteRequestTimeoutMs: result.data.KITE_REQUEST_TIMEOUT_MS,
     schedulerDatabasePoolMax: result.data.SCHEDULER_DATABASE_POOL_MAX,
     schedulerCoreTimeoutMs: result.data.SCHEDULER_CORE_TIMEOUT_MS,
     schedulerProcessingUncertainAfterMs:
@@ -1287,6 +1711,21 @@ function parseConfig(environment: NodeJS.ProcessEnv | Record<string, string>): A
     agentTaskTimeoutMs: result.data.AGENT_TASK_TIMEOUT_MS,
     developerAgentTaskTimeoutMs:
       result.data.DEVELOPER_AGENT_TASK_TIMEOUT_MS,
+    financeManagerAgentTaskTimeoutMs:
+      result.data.FINANCE_MANAGER_AGENT_TASK_TIMEOUT_MS,
+    financeMfapiBaseUrl: result.data.FINANCE_MFAPI_BASE_URL,
+    financeMfapiTimeoutMs: result.data.FINANCE_MFAPI_TIMEOUT_MS,
+    financeMfapiMaxRetries: result.data.FINANCE_MFAPI_MAX_RETRIES,
+    financeMfapiMaxConcurrency: result.data.FINANCE_MFAPI_MAX_CONCURRENCY,
+    financeMfapiCacheTtlSeconds: result.data.FINANCE_MFAPI_CACHE_TTL_SECONDS,
+    financeRiskFreeRate: result.data.FINANCE_RISK_FREE_RATE,
+    financeRiskFreeRateSource:
+      typeof environment.FINANCE_RISK_FREE_RATE === "string" &&
+      environment.FINANCE_RISK_FREE_RATE.trim().length > 0
+        ? "configured"
+        : "default",
+    financeManagerAgentHost: result.data.FINANCE_MANAGER_AGENT_HOST,
+    financeManagerAgentPort: result.data.FINANCE_MANAGER_AGENT_PORT,
     agentReclaimIdleMs: result.data.AGENT_RECLAIM_IDLE_MS,
     agentMaxDeliveryAttempts: result.data.AGENT_MAX_DELIVERY_ATTEMPTS,
     agentHeartbeatTtlSeconds: result.data.AGENT_HEARTBEAT_TTL_SECONDS,

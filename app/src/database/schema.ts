@@ -1,11 +1,14 @@
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
+  bigint,
   boolean,
   check,
+  doublePrecision,
   index,
   integer,
   jsonb,
+  numeric,
   pgEnum,
   pgTable,
   real,
@@ -16,6 +19,12 @@ import {
   vector,
 } from "drizzle-orm/pg-core";
 
+import type {
+  MutualFund,
+  MutualFundAnalysis,
+  MutualFundAssumptions,
+  MutualFundHistory,
+} from "../finance/types.js";
 import {
   PERSON_FACE_EMBEDDING_DIMENSIONS,
   type FaceBoundingBox,
@@ -91,6 +100,12 @@ export const scheduledTaskExecutionStatus = pgEnum(
   "scheduled_task_execution_status",
   ["processing", "succeeded", "failed"],
 );
+export const tradingMarketRegime = pgEnum("trading_market_regime", [
+  "BULLISH",
+  "SIDEWAYS",
+  "BEARISH",
+  "UNKNOWN",
+]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
@@ -986,5 +1001,254 @@ export const memories = pgTable(
     index("memories_source_conversation_idx")
       .on(table.sourceConversationId)
       .where(sql`${table.sourceConversationId} IS NOT NULL`),
+  ],
+);
+
+/**
+ * One completed run of the deterministic trading scanner (app/src/trading).
+ * Raw candle data is never stored here — only the computed regime/counts.
+ */
+export const tradingScans = pgTable(
+  "trading_scans",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }).notNull(),
+    benchmark: text("benchmark").notNull(),
+    marketRegime: tradingMarketRegime("market_regime").notNull(),
+    totalInstruments: integer("total_instruments").notNull(),
+    analyzedInstruments: integer("analyzed_instruments").notNull(),
+    skippedInstruments: integer("skipped_instruments").notNull(),
+    failedInstruments: integer("failed_instruments").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    check("trading_scans_benchmark_not_empty", sql`length(btrim(${table.benchmark})) > 0`),
+    check(
+      "trading_scans_completed_after_started",
+      sql`${table.completedAt} >= ${table.startedAt}`,
+    ),
+    check("trading_scans_total_nonnegative", sql`${table.totalInstruments} >= 0`),
+    check("trading_scans_analyzed_nonnegative", sql`${table.analyzedInstruments} >= 0`),
+    check("trading_scans_skipped_nonnegative", sql`${table.skippedInstruments} >= 0`),
+    check("trading_scans_failed_nonnegative", sql`${table.failedInstruments} >= 0`),
+    index("trading_scans_started_at_idx").on(table.startedAt.desc()),
+  ],
+);
+
+/**
+ * One ranked long-equity candidate produced by a scan. finalScore is the
+ * highest eligible strategy score for the instrument (see
+ * app/src/trading/scoring/opportunity-aggregation.ts), never an average.
+ */
+export const tradeOpportunities = pgTable(
+  "trade_opportunities",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    scanId: uuid("scan_id")
+      .notNull()
+      .references(() => tradingScans.id, { onDelete: "cascade" }),
+    instrumentToken: bigint("instrument_token", { mode: "number" }).notNull(),
+    exchange: text("exchange").notNull(),
+    tradingsymbol: text("tradingsymbol").notNull(),
+    primaryStrategy: text("primary_strategy").notNull(),
+    finalScore: doublePrecision("final_score").notNull(),
+    regime: tradingMarketRegime("regime").notNull(),
+    reasonsJson: jsonb("reasons_json")
+      .$type<readonly string[]>()
+      .default([])
+      .notNull(),
+    metricsJson: jsonb("metrics_json")
+      .$type<Record<string, unknown>>()
+      .default({})
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    check("trade_opportunities_exchange_not_empty", sql`length(btrim(${table.exchange})) > 0`),
+    check(
+      "trade_opportunities_tradingsymbol_not_empty",
+      sql`length(btrim(${table.tradingsymbol})) > 0`,
+    ),
+    check(
+      "trade_opportunities_primary_strategy_not_empty",
+      sql`length(btrim(${table.primaryStrategy})) > 0`,
+    ),
+    check(
+      "trade_opportunities_final_score_range",
+      sql`${table.finalScore} >= 0 AND ${table.finalScore} <= 100`,
+    ),
+    check(
+      "trade_opportunities_reasons_is_array",
+      sql`jsonb_typeof(${table.reasonsJson}) = 'array'`,
+    ),
+    check(
+      "trade_opportunities_metrics_is_object",
+      sql`jsonb_typeof(${table.metricsJson}) = 'object'`,
+    ),
+    index("trade_opportunities_scan_id_idx").on(table.scanId),
+    index("trade_opportunities_symbol_created_idx").on(
+      table.tradingsymbol,
+      table.createdAt.desc(),
+    ),
+    index("trade_opportunities_final_score_idx").on(table.finalScore.desc()),
+  ],
+);
+
+/**
+ * Cached MFapi scheme catalog used for category ranking. Invalidated by
+ * fetched_at age (see FINANCE_MFAPI_CACHE_TTL_SECONDS), not by NAV date.
+ */
+export const mutualFundSchemeListCache = pgTable("mutual_fund_scheme_list_cache", {
+  id: text("id").primaryKey(),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
+  fundsJson: jsonb("funds_json")
+    .$type<readonly MutualFund[]>()
+    .notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+/**
+ * Normalized ascending NAV history keyed by scheme and the series' latest
+ * NAV date so analytics can be recomputed without another MFapi download.
+ */
+export const mutualFundNavHistory = pgTable(
+  "mutual_fund_nav_history",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    schemeCode: integer("scheme_code").notNull(),
+    latestNavDate: text("latest_nav_date").notNull(),
+    inceptionDate: text("inception_date").notNull(),
+    navObservationCount: integer("nav_observation_count").notNull(),
+    historyJson: jsonb("history_json").$type<MutualFundHistory>().notNull(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("mutual_fund_nav_history_scheme_latest_idx").on(
+      table.schemeCode,
+      table.latestNavDate,
+    ),
+    index("mutual_fund_nav_history_scheme_idx").on(table.schemeCode),
+    check(
+      "mutual_fund_nav_history_scheme_positive",
+      sql`${table.schemeCode} > 0`,
+    ),
+    check(
+      "mutual_fund_nav_history_latest_iso",
+      sql`${table.latestNavDate} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`,
+    ),
+    check(
+      "mutual_fund_nav_history_inception_iso",
+      sql`${table.inceptionDate} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`,
+    ),
+    check(
+      "mutual_fund_nav_history_count_positive",
+      sql`${table.navObservationCount} > 0`,
+    ),
+    check(
+      "mutual_fund_nav_history_json_object",
+      sql`jsonb_typeof(${table.historyJson}) = 'object'`,
+    ),
+  ],
+);
+
+/**
+ * Deterministic analytics snapshot. Invalidation is scheme_code + latest_nav_date
+ * + calculation_version, not a wall-clock TTL.
+ */
+export const mutualFundAnalytics = pgTable(
+  "mutual_fund_analytics",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    schemeCode: integer("scheme_code").notNull(),
+    latestNavDate: text("latest_nav_date").notNull(),
+    calculationVersion: text("calculation_version").notNull(),
+    riskFreeRate: doublePrecision("risk_free_rate").notNull(),
+    navObservationCount: integer("nav_observation_count").notNull(),
+    assumptionsJson: jsonb("assumptions_json")
+      .$type<MutualFundAssumptions>()
+      .notNull(),
+    snapshotJson: jsonb("snapshot_json").$type<MutualFundAnalysis>().notNull(),
+    calculatedAt: timestamp("calculated_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("mutual_fund_analytics_scheme_date_version_idx").on(
+      table.schemeCode,
+      table.latestNavDate,
+      table.calculationVersion,
+    ),
+    index("mutual_fund_analytics_scheme_idx").on(table.schemeCode),
+    check(
+      "mutual_fund_analytics_scheme_positive",
+      sql`${table.schemeCode} > 0`,
+    ),
+    check(
+      "mutual_fund_analytics_latest_iso",
+      sql`${table.latestNavDate} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`,
+    ),
+    check(
+      "mutual_fund_analytics_version_not_empty",
+      sql`length(btrim(${table.calculationVersion})) > 0`,
+    ),
+    check(
+      "mutual_fund_analytics_count_positive",
+      sql`${table.navObservationCount} > 0`,
+    ),
+    check(
+      "mutual_fund_analytics_snapshot_object",
+      sql`jsonb_typeof(${table.snapshotJson}) = 'object'`,
+    ),
+  ],
+);
+
+/**
+ * Fire-and-log audit trail for order placement/cancellation. Not an
+ * execution gate and not order-lifecycle tracking — the real state of an
+ * order lives at the broker; this is just a record of what Shiva submitted
+ * and how the submission call itself went. See trading_get_orders /
+ * KiteClientPort.getOrders for live order status.
+ */
+export const tradingOrders = pgTable(
+  "trading_orders",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    kiteOrderId: text("kite_order_id"),
+    tradingsymbol: text("tradingsymbol").notNull(),
+    exchange: text("exchange").notNull(),
+    transactionType: text("transaction_type").notNull(),
+    quantity: integer("quantity").notNull(),
+    orderType: text("order_type").notNull(),
+    product: text("product").notNull(),
+    price: numeric("price", { mode: "number" }),
+    status: text("status").notNull(),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    check(
+      "trading_orders_tradingsymbol_not_empty",
+      sql`length(btrim(${table.tradingsymbol})) > 0`,
+    ),
+    check("trading_orders_exchange_not_empty", sql`length(btrim(${table.exchange})) > 0`),
+    check(
+      "trading_orders_transaction_type_valid",
+      sql`${table.transactionType} IN ('BUY', 'SELL')`,
+    ),
+    check("trading_orders_quantity_positive", sql`${table.quantity} > 0`),
+    check("trading_orders_order_type_valid", sql`${table.orderType} IN ('MARKET', 'LIMIT')`),
+    check("trading_orders_product_valid", sql`${table.product} IN ('CNC', 'MIS', 'NRML')`),
+    check("trading_orders_status_not_empty", sql`length(btrim(${table.status})) > 0`),
+    index("trading_orders_created_at_idx").on(table.createdAt.desc()),
   ],
 );

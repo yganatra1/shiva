@@ -13,6 +13,7 @@ import { registerExecutionSettingsRoute } from "./api/execution-settings-route";
 import { registerDeviceSocketRelayRoute } from "./api/device-socket-relay-route";
 import { registerHealthRoute } from "./api/health-route";
 import { registerPeopleRoutes } from "./api/people-route";
+import { registerTradingRoutes } from "./api/trading-route";
 import { registerVoiceRoutes } from "./api/voice-route";
 import { registerVoiceSocketRoute } from "./api/voice-socket-route";
 import type { AIProvider } from "./brain/ai-provider";
@@ -62,6 +63,17 @@ import { DrizzleSchedulerRepository } from "./scheduler/scheduler-repository";
 import { SchedulerService } from "./scheduler/scheduler-service";
 import { ScheduledCoreExecutor } from "./scheduler/scheduled-core-executor";
 import { registerSchedulerInternalRoute } from "./scheduler/scheduler-api-route";
+import { KiteClient } from "./tools/kite/client";
+import { loadTradingConfigFromEnv } from "./trading/config";
+import { KiteMarketDataProvider } from "./trading/market-data/kite-market-data-provider";
+import { UnconfiguredMarketDataProvider } from "./trading/market-data/unconfigured-provider";
+import { TradingScannerService } from "./trading/scanner/trading-scanner-service";
+import { BreakoutVolumeStrategy } from "./trading/strategies/breakout-volume-strategy";
+import { TrendMomentumStrategy } from "./trading/strategies/trend-momentum-strategy";
+import { DrizzleTradingRepository } from "./trading/trading-repository";
+import { TradingService } from "./trading/trading-service";
+import { KiteInstrumentUniverseProvider } from "./trading/universe/kite-instrument-universe-provider";
+import { StaticInstrumentUniverseProvider } from "./trading/universe/static-universe-provider";
 import { HttpASRProvider } from "./voice/http-asr-provider";
 import { HttpTTSProvider } from "./voice/http-tts-provider";
 import type { ASRProvider, TTSProvider } from "./voice/provider";
@@ -140,6 +152,53 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
           queueOptions: config.schedulerQueueOptions,
           logger: schedulerLogger,
         })
+      : undefined;
+  const tradingService =
+    database && config.tradingApiToken
+      ? (() => {
+          const tradingConfig = loadTradingConfigFromEnv(process.env);
+          const kiteClient =
+            config.kiteApiKey && config.kiteAccessToken
+              ? new KiteClient({
+                  apiKey: config.kiteApiKey,
+                  accessToken: config.kiteAccessToken,
+                  ...(config.kiteBaseUrl ? { baseUrl: config.kiteBaseUrl } : {}),
+                  requestTimeoutMs: config.kiteRequestTimeoutMs,
+                })
+              : undefined;
+          app.log.info(
+            kiteClient
+              ? "Kite Connect configured — trading scans will fetch real market data."
+              : "Kite Connect not configured — scans will not produce candidates until KITE_API_KEY/KITE_ACCESS_TOKEN are set.",
+          );
+          const universeProvider = kiteClient
+            ? new KiteInstrumentUniverseProvider({
+                client: kiteClient,
+                exchange: "NSE",
+                tradingsymbols: tradingConfig.staticUniverseSymbols,
+              })
+            : new StaticInstrumentUniverseProvider({
+                symbols: tradingConfig.staticUniverseSymbols,
+              });
+          const benchmarkInstrument = {
+            instrumentToken: 0,
+            exchange: "INDICES",
+            tradingsymbol: tradingConfig.benchmarkSymbol,
+          };
+          const scanner = new TradingScannerService({
+            universeProvider,
+            marketDataProvider: kiteClient
+              ? new KiteMarketDataProvider({ client: kiteClient })
+              : new UnconfiguredMarketDataProvider(),
+            strategies: [TrendMomentumStrategy, BreakoutVolumeStrategy],
+            config: tradingConfig,
+            benchmarkInstrument,
+          });
+          return new TradingService({
+            scanner,
+            repository: new DrizzleTradingRepository(database.db),
+          });
+        })()
       : undefined;
   const embeddingProvider =
     overrides.embeddingProvider ??
@@ -313,6 +372,12 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
       }),
       config.schedulerToken,
     );
+  }
+  if (tradingService && config.tradingApiToken) {
+    registerTradingRoutes(app, {
+      service: tradingService,
+      token: config.tradingApiToken,
+    });
   }
   if (peopleRepository && faceRecognition) {
     registerPeopleRoutes(app, {

@@ -3,7 +3,6 @@ import { test } from "node:test";
 
 import { AgentLoop } from "../src/agent/agent-loop.js";
 import type {
-  AgentDecision,
   AgentPlanner,
   AgentRequest,
 } from "../src/agent/types.js";

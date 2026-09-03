@@ -141,6 +141,31 @@ export function createAgentRuntime(
       "make code changes and run tests in a repository",
     ],
   });
+  agentRegistry.register({
+    id: "finance-manager-agent",
+    name: "Finance Manager Agent",
+    description:
+      "Researches Indian mutual funds using NAV history: search, analyze, compare, and rank. Does not buy, redeem, or run SIPs.",
+    capabilities: [
+      "search Indian mutual funds by name and resolve MFapi scheme codes",
+      "analyze a mutual fund's NAV-derived trailing and rolling returns, volatility, drawdown, Sharpe, and Sortino",
+      "compare up to 10 mutual funds side by side",
+      "rank Direct Growth funds inside one scheme category such as ELSS or Flexi Cap",
+      "explain that quantitative rankings are not complete investment advice and omit TER, AUM, holdings, and benchmark data",
+    ],
+  });
+  agentRegistry.register({
+    id: "trading-agent",
+    name: "Trading Agent",
+    description:
+      "Reports deterministic long-equity trade candidates identified by Shiva's quantitative scanner (trend/momentum and breakout strategies). Read-only market analysis — it does not place orders.",
+    capabilities: [
+      "list today's top-ranked long equity trade candidates",
+      "explain why a specific stock is ranked highly with concrete reasons (trend, RSI, relative strength, volume, breakout %, ADX)",
+      "report the current market regime (bullish/sideways/bearish) and when the last scan ran",
+      "trigger a fresh scan of the configured instrument universe",
+    ],
+  });
   const transport = new RedisAgentTransport({
     redisUrl: config.redisUrl,
     onRedisError: onAuditError,
@@ -153,6 +178,7 @@ export function createAgentRuntime(
       taskTimeoutMs: config.agentTaskTimeoutMs,
       taskTimeoutMsByAgent: {
         "developer-agent": config.developerAgentTaskTimeoutMs,
+        "finance-manager-agent": config.financeManagerAgentTaskTimeoutMs,
       },
       onPublishError: (error, task) => {
         onAuditError(

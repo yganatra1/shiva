@@ -15,6 +15,7 @@ __pycache__/
 !.env.google-agent.example
 !.env.developer-agent.example
 !.env.scheduler.example
+!.env.finance-manager-agent.example
 
 # Runtime data
 data/
