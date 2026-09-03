@@ -1,35 +1,58 @@
 #!/usr/bin/env node
 // Test-only stand-in for the `claude` CLI, spawned by ClaudeCodeRunner tests
 // via the `command` test seam. Branches on the instruction text (the -p
-// argument) to simulate the outcomes the runner must handle.
+// argument) to simulate the outcomes the runner must handle. Emits
+// newline-delimited JSON matching --output-format stream-json's shape: a
+// "result" event is the one ClaudeCodeRunner treats as terminal.
 
 const instruction = process.argv[3] ?? "";
 
+function writeLine(event) {
+  process.stdout.write(JSON.stringify(event) + "\n");
+}
+
 switch (instruction) {
   case "ECHO_ARGV":
-    process.stdout.write(
-      JSON.stringify({ result: JSON.stringify(process.argv.slice(2)) }),
-    );
+    writeLine({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "checking argv" }],
+      },
+    });
+    writeLine({
+      type: "result",
+      result: JSON.stringify(process.argv.slice(2)),
+    });
     process.exit(0);
     break;
   case "SUCCESS":
-    process.stdout.write(
-      JSON.stringify({
-        session_id: "sess-1",
-        result: "did the thing",
-        is_error: false,
-      }),
-    );
+    writeLine({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "figuring out what to do" },
+          { type: "text", text: "Doing the thing now." },
+          { type: "tool_use", name: "Bash", input: { command: "echo hi" } },
+        ],
+      },
+    });
+    writeLine({
+      type: "result",
+      session_id: "sess-1",
+      result: "did the thing",
+      is_error: false,
+    });
     process.exit(0);
     break;
   case "IS_ERROR":
-    process.stdout.write(
-      JSON.stringify({
-        session_id: "sess-2",
-        result: "could not finish",
-        is_error: true,
-      }),
-    );
+    writeLine({
+      type: "result",
+      session_id: "sess-2",
+      result: "could not finish",
+      is_error: true,
+    });
     process.exit(0);
     break;
   case "MALFORMED":
@@ -37,7 +60,7 @@ switch (instruction) {
     process.exit(0);
     break;
   case "MISSING_RESULT_FIELD":
-    process.stdout.write(JSON.stringify({ session_id: "sess-3" }));
+    writeLine({ type: "result", session_id: "sess-3" });
     process.exit(0);
     break;
   case "FAIL":

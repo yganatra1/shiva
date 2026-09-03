@@ -144,7 +144,7 @@ export class ClaudeCodeRunner {
     }
 
     const parsed = claudeCodeJsonResultSchema.safeParse(
-      parseJson(spawned.stdout),
+      lastResultEvent(spawned.stdout),
     );
     if (!parsed.success) {
       throw new ClaudeCodeRunnerError(
@@ -185,7 +185,8 @@ export class ClaudeCodeRunner {
           "-p",
           instruction,
           "--output-format",
-          "json",
+          "stream-json",
+          "--verbose",
           ...(this.permissionMode === "bypassPermissions"
             ? ["--dangerously-skip-permissions"]
             : ["--permission-mode", this.permissionMode]),
@@ -275,6 +276,7 @@ export class ClaudeCodeRunner {
       }, this.timeoutMs);
       deadline.unref();
       child.stdout.on("data", capture(stdout));
+      child.stdout.on("data", logStreamEvents());
       child.stderr.on("data", capture(stderr));
       child.once("error", (error) =>
         finish({
@@ -333,4 +335,66 @@ function parseJson(text: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/** Finds the terminal "result" event in stream-json output (one JSON object per line). */
+function lastResultEvent(stdout: string): unknown {
+  let result: unknown;
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parsed = parseJson(trimmed);
+    if (isRecord(parsed) && parsed.type === "result") result = parsed;
+  }
+  return result;
+}
+
+/**
+ * Returns a stdout data listener that incrementally parses stream-json's
+ * newline-delimited events and logs Claude Code's reasoning as it happens —
+ * thinking blocks, visible text, and tool calls — via console.log, the same
+ * ad hoc tracing convention already used elsewhere in this codebase (e.g.
+ * planner.ts). This is purely observational: it never affects the buffered
+ * bytes capture() collects or the final result lastResultEvent() extracts.
+ */
+function logStreamEvents(): (chunk: Buffer) => void {
+  let pending = "";
+  return (chunk: Buffer) => {
+    pending += chunk.toString("utf8");
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      logClaudeCodeEvent(parseJson(trimmed));
+    }
+  };
+}
+
+function logClaudeCodeEvent(event: unknown): void {
+  if (!isRecord(event)) return;
+  if (event.type === "assistant" && isRecord(event.message)) {
+    const content = event.message.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content) {
+      if (!isRecord(block)) continue;
+      if (block.type === "thinking" && typeof block.thinking === "string") {
+        console.log("[claude-code thinking]", block.thinking);
+      } else if (block.type === "text" && typeof block.text === "string") {
+        console.log("[claude-code]", block.text);
+      } else if (block.type === "tool_use") {
+        console.log(
+          "[claude-code tool_use]",
+          block.name,
+          JSON.stringify(block.input),
+        );
+      }
+    }
+  } else if (event.type === "result") {
+    console.log("[claude-code result]", event);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
