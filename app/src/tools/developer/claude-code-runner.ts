@@ -198,10 +198,15 @@ export class ClaudeCodeRunner {
         {
           cwd,
           shell: false,
-          stdio: ["ignore", "pipe", "pipe"],
+          // "ignore" maps stdin to /dev/null at the OS level; explicitly
+          // piping and immediately ending it is a more predictable EOF
+          // signal across platforms for a CLI that also supports reading
+          // piped stdin input in -p mode.
+          stdio: ["pipe", "pipe", "pipe"],
           env: this.env,
         },
       );
+      child.stdin.end();
       let deadline: NodeJS.Timeout | undefined;
       let forceKill: NodeJS.Timeout | undefined;
       const clearLifecycle = () => {

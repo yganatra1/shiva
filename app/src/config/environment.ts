@@ -190,15 +190,21 @@ const developerAgentReposSchema = z
 
 /**
  * Comma-separated Claude Code tool patterns pre-approved regardless of
- * DEVELOPER_AGENT_PERMISSION_MODE (e.g. "Bash(npm *),Bash(npx *)"). Without
- * this, an edit-only mode like acceptEdits can change a file but never
- * verify it — Bash tool calls stay denied since headless mode has no TTY to
- * approve them. Defaults to this repo's own npm/npx tooling, which covers
- * typecheck/test/build without opening up git or arbitrary shell commands.
+ * DEVELOPER_AGENT_PERMISSION_MODE. A bare tool name (no parentheses, e.g.
+ * "Bash") pre-approves every invocation of that tool unconditionally — this
+ * is deliberately the default here: without it, an edit-only mode like
+ * acceptEdits can change a file but never verify or inspect further, since
+ * headless mode has no TTY to approve a tool call it wasn't told about in
+ * advance. With bare "Bash" pre-approved, this is no longer scoped to just
+ * npm/npx — git and any other shell command are allowed too. Tool-level
+ * containment is intentionally gone at that point; "never push/deploy/
+ * restart unless explicitly asked" (developer-planner-rules.ts) is the
+ * remaining safety boundary, the same posture as bypassPermissions would
+ * give, just reachable under root.
  */
 const developerAgentAllowedToolsSchema = z
   .string()
-  .default("Bash(npm *),Bash(npx *)")
+  .default("Bash,Read,Edit,Write,Glob,Grep")
   .transform((value): readonly string[] =>
     value
       .split(",")
