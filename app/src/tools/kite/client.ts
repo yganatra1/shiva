@@ -221,6 +221,9 @@ export class KiteClient implements KiteClientPort {
         },
         signal: deadline.signal,
       });
+      if (diagnostics) {
+        await this.logResponse(diagnostics.endpoint, init?.method ?? "GET", response, startedAt);
+      }
       if (!response.ok) {
         const detail = await readErrorDetail(response);
         const code = response.status === 401 || response.status === 403
