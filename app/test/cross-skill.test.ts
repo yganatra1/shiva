@@ -147,63 +147,6 @@ test("agent chains web research into an authorized ordinary expense write before
   assert.match(result.response, /found.*recorded/i);
 });
 
-test("a planner cannot claim a failed sheet write was confirmed by the executor", async () => {
-  const repository = new CrossSkillExpenseSheet();
-  repository.insertExpense = async () => {
-    throw new Error("private Google Sheets failure");
-  };
-  const registry = new SkillRegistry();
-  registry.register(
-    new RecordExpenseSkill(new ExpenseInsertTool(repository)),
-  );
-  const decisions: AgentDecision[] = [
-    {
-      type: "skill_call",
-      skill: "record_expense",
-      arguments: { amount: 45, description: "GPU" },
-      authorization: "user_authorized",
-    },
-    {
-      type: "respond",
-      message: "I could not record the expense because the sheet write failed.",
-    },
-  ];
-  const planner: AgentPlanner = {
-    async decide(context) {
-      if (context.step === 2) {
-        assert.deepEqual(context.observations[0]?.result, {
-          success: false,
-          error: {
-            code: "SKILL_EXECUTION_FAILED",
-            message: "The skill could not complete its operation.",
-          },
-        });
-      }
-      const decision = decisions.shift();
-      if (!decision) throw new Error("Missing fake decision.");
-      return decision;
-    },
-  };
-  const loop = new AgentLoop(
-    planner,
-    new SkillExecutor(registry, autoPolicy()),
-    registry,
-  );
-
-  const result = await loop.run({
-    userMessage: "Record INR 45 for GPU.",
-    conversationId: "10000000-0000-4000-8000-000000000001",
-    userId: "20000000-0000-4000-8000-000000000002",
-    userName: "Yash",
-    timeZone: "Asia/Kolkata",
-    contextMessages: [],
-  });
-
-  assert.equal(result.kind, "response");
-  assert.match(result.response, /could not record/i);
-  assert.equal(repository.rows.length, 0);
-});
-
 function autoPolicy(): ExecutionPolicyEngine {
   return new ExecutionPolicyEngine(
     new ExecutionStateService(

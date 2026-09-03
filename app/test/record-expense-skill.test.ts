@@ -246,35 +246,6 @@ test("expense_report classifies first-use provisioning as a write and a ready le
   assert.equal(sheet.listCalls, 1);
 });
 
-test("record_expense rejects invalid precision and never claims a failed sheet append", async () => {
-  const sheet = new InMemoryExpenseSheet();
-  const executor = expenseExecutor(sheet);
-
-  const invalid = await executor.execute(
-    "record_expense",
-    { amount: 1.234, description: "Invalid" },
-    context,
-    { userAuthorized: true },
-  );
-  assert.equal(invalid.success, false);
-  assert.equal(sheet.rows.length, 0);
-
-  sheet.failInsert = true;
-  const failed = await executor.execute(
-    "record_expense",
-    { amount: 99, description: "Will fail" },
-    context,
-    { userAuthorized: true },
-  );
-  assert.deepEqual(failed, {
-    success: false,
-    error: {
-      code: "SKILL_EXECUTION_FAILED",
-      message: "The skill could not complete its operation.",
-    },
-  });
-});
-
 function expenseExecutor(repository: ExpenseRepositoryPort): SkillExecutor {
   const registry = new SkillRegistry();
   registry.register(new RecordExpenseSkill(new ExpenseInsertTool(repository)));

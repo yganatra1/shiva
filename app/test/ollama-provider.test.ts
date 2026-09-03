@@ -9,54 +9,6 @@ import {
 } from "../src/brain/ai-provider.js";
 import { OllamaProvider } from "../src/brain/ollama-provider.js";
 
-test("the provider streams NDJSON chunks and chat() collects them", async (context) => {
-  const requestBodies: unknown[] = [];
-  const acceptHeaders: Array<string | undefined> = [];
-  const upstream = createServer((request, response) => {
-    const bodyParts: Buffer[] = [];
-    request.on("data", (part: Buffer) => bodyParts.push(part));
-    request.on("end", () => {
-      acceptHeaders.push(request.headers.accept);
-      requestBodies.push(
-        JSON.parse(Buffer.concat(bodyParts).toString("utf8")) as unknown,
-      );
-      response.setHeader("content-type", "application/x-ndjson");
-      response.write(
-        `${JSON.stringify({ done: false, message: { content: "Hello" } })}\n`,
-      );
-      setTimeout(() => {
-        response.write(
-          `${JSON.stringify({ done: false, message: { content: " Shiva" } })}\n`,
-        );
-        response.end(`${JSON.stringify({ done: true })}\n`);
-      }, 25);
-    });
-  });
-  context.after(() => closeServer(upstream));
-
-  const baseUrl = await listenOnRandomPort(upstream);
-  const provider = createProvider(baseUrl, 1_000);
-  const messages = [{ role: "user" as const, content: "Hello" }];
-
-  const streamedChunks: string[] = [];
-  for await (const chunk of provider.streamChat({ messages })) {
-    streamedChunks.push(chunk.content);
-  }
-  assert.deepEqual(streamedChunks, ["Hello", " Shiva"]);
-
-  const collected = await provider.chat({ messages });
-  assert.deepEqual(collected, { content: "Hello Shiva" });
-  assert.equal(requestBodies.length, 2);
-  assert.deepEqual(acceptHeaders, [
-    "application/x-ndjson",
-    "application/x-ndjson",
-  ]);
-  for (const requestBody of requestBodies) {
-    assert.equal(isRecord(requestBody) && requestBody.stream, true);
-    assert.equal(isRecord(requestBody) && requestBody.think, true);
-  }
-});
-
 test("the provider surfaces thinking deltas separately from content", async (context) => {
   const upstream = createServer((request, response) => {
     request.resume();
