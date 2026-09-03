@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { generateSession, KiteClient } from "../../src/tools/kite/client.js";
+import { KiteClientError } from "../../src/tools/kite/types.js";
 
 const CSV = [
   "instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,instrument_type,segment,exchange",
@@ -125,6 +126,34 @@ test("KiteClient surfaces a 401/403 as an UNAUTHORIZED KiteClientError", async (
     (error: unknown) => {
       assert.ok(error && typeof error === "object" && "code" in error);
       assert.equal((error as { code: string }).code, "UNAUTHORIZED");
+      return true;
+    },
+  );
+});
+
+test("KiteClient surfaces Kite's actual error_type/message instead of a bare status code", async () => {
+  const client = new KiteClient({
+    apiKey: "key123",
+    accessToken: "expired",
+    requestTimeoutMs: 5_000,
+    fetchFunction: fakeFetch(() => ({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "error",
+        error_type: "TokenException",
+        message: "Incorrect `api_key` or `access_token`.",
+      }),
+    })),
+  });
+  await assert.rejects(
+    () => client.getInstruments("NSE"),
+    (error: unknown) => {
+      assert.ok(error instanceof KiteClientError);
+      assert.equal(error.kiteErrorType, "TokenException");
+      assert.equal(error.httpStatus, 403);
+      assert.match(error.message, /TokenException/);
+      assert.match(error.message, /Incorrect `api_key` or `access_token`\./);
       return true;
     },
   );

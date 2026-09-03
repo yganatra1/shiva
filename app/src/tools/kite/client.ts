@@ -221,34 +221,46 @@ export class KiteClient implements KiteClientPort {
         },
         signal: deadline.signal,
       });
-      if (diagnostics) {
-        await this.logResponse(diagnostics.endpoint, init?.method ?? "GET", response, startedAt);
-      }
-      if (response.status === 403 || response.status === 401) {
-        await discardBody(response);
-        throw new KiteClientError(
-          "UNAUTHORIZED",
-          `Kite Connect returned HTTP status ${response.status}; the access token may be expired (it expires daily).`,
-        );
-      }
       if (!response.ok) {
-        await discardBody(response);
-        throw new KiteClientError(
-          "UNAVAILABLE",
-          `Kite Connect returned HTTP status ${response.status}.`,
-        );
+        const detail = await readErrorDetail(response);
+        const code = response.status === 401 || response.status === 403
+          ? "UNAUTHORIZED"
+          : "UNAVAILABLE";
+        const suffix = response.status === 401 || response.status === 403
+          ? " The access token may be expired (it expires daily) or the request may be missing a required header/scope."
+          : "";
+        const message = detail.kiteErrorType || detail.kiteMessage
+          ? `Kite Connect ${url.pathname} returned HTTP ${response.status} (${detail.kiteErrorType ?? "unknown_error_type"}): ${detail.kiteMessage ?? detail.raw}.${suffix}`
+          : `Kite Connect ${url.pathname} returned HTTP ${response.status}: ${detail.raw || "<empty body>"}.${suffix}`;
+        // eslint-disable-next-line no-console -- KiteClient has no injected logger; this is the only place Kite's actual error detail is ever visible in process logs.
+        console.error("[kite] request failed", {
+          method: init?.method ?? "GET",
+          path: url.pathname,
+          status: response.status,
+          kiteErrorType: detail.kiteErrorType,
+          kiteMessage: detail.kiteMessage,
+        });
+        throw new KiteClientError(code, message, {
+          httpStatus: response.status,
+          ...(detail.kiteErrorType ? { kiteErrorType: detail.kiteErrorType } : {}),
+        });
       }
       return response;
     } catch (error: unknown) {
       if (error instanceof KiteClientError) throw error;
       if (deadline.signal.aborted) {
+        console.error("[kite] request timed out", { path: url.pathname, timeoutMs: this.options.requestTimeoutMs });
         throw new KiteClientError(
           "TIMEOUT",
-          "Kite Connect did not respond before its deadline.",
+          `Kite Connect ${url.pathname} did not respond within ${this.options.requestTimeoutMs}ms.`,
           { cause: error },
         );
       }
-      throw new KiteClientError("UNAVAILABLE", "Kite Connect request failed.", {
+      console.error("[kite] request failed before a response was received", {
+        path: url.pathname,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new KiteClientError("UNAVAILABLE", `Kite Connect ${url.pathname} request failed.`, {
         cause: error,
       });
     } finally {
@@ -324,10 +336,19 @@ export async function generateSession(
     body: body.toString(),
   });
   if (!response.ok) {
-    throw new KiteClientError(
-      "UNAVAILABLE",
-      `Kite session generation returned HTTP status ${response.status}.`,
-    );
+    const detail = await readErrorDetail(response);
+    console.error("[kite] session generation failed", {
+      status: response.status,
+      kiteErrorType: detail.kiteErrorType,
+      kiteMessage: detail.kiteMessage,
+    });
+    const message = detail.kiteErrorType || detail.kiteMessage
+      ? `Kite session generation returned HTTP ${response.status} (${detail.kiteErrorType ?? "unknown_error_type"}): ${detail.kiteMessage ?? detail.raw}.`
+      : `Kite session generation returned HTTP ${response.status}: ${detail.raw || "<empty body>"}.`;
+    throw new KiteClientError("UNAVAILABLE", message, {
+      httpStatus: response.status,
+      ...(detail.kiteErrorType ? { kiteErrorType: detail.kiteErrorType } : {}),
+    });
   }
   const payload = (await response.json()) as { data?: { access_token?: string } };
   const accessToken = payload.data?.access_token;
@@ -406,11 +427,31 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-async function discardBody(response: Response): Promise<void> {
+/**
+ * Reads a failed response's body once and pulls out Kite's own
+ * `{ error_type, message }` shape when present, falling back to the raw
+ * text (Kite occasionally returns plain-text/HTML for edge-case failures,
+ * e.g. upstream gateway errors) so no failure ever collapses to a bare
+ * HTTP status with zero detail.
+ */
+async function readErrorDetail(
+  response: Response,
+): Promise<{ readonly kiteErrorType?: string; readonly kiteMessage?: string; readonly raw: string }> {
+  let raw = "";
   try {
-    await response.body?.cancel();
+    raw = await response.text();
   } catch {
-    // The sanitized upstream status is already the actionable failure.
+    return { raw: "" };
+  }
+  try {
+    const parsed = JSON.parse(raw) as { error_type?: string; message?: string };
+    return {
+      raw,
+      ...(typeof parsed.error_type === "string" ? { kiteErrorType: parsed.error_type } : {}),
+      ...(typeof parsed.message === "string" ? { kiteMessage: parsed.message } : {}),
+    };
+  } catch {
+    return { raw };
   }
 }
 

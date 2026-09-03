@@ -71,20 +71,26 @@ export interface KiteOrder {
   readonly price: number;
 }
 
-/** Structural match for Shiva's pino-backed app.log (see app.ts) so it can be passed straight through without adapting. */
-export interface KiteLogSink {
-  info(fields: Record<string, unknown>, message: string): void;
-  warn(fields: Record<string, unknown>, message: string): void;
+export interface KiteClientErrorOptions extends ErrorOptions {
+  /** Kite's own `error_type` (e.g. "TokenException", "InputException", "OrderException"), when present. */
+  readonly kiteErrorType?: string;
+  /** The HTTP status Kite returned, when this came from a non-2xx response. */
+  readonly httpStatus?: number;
 }
 
 export class KiteClientError extends Error {
   override readonly name = "KiteClientError";
+  readonly kiteErrorType?: string;
+  readonly httpStatus?: number;
+
   constructor(
     readonly code: "UNAVAILABLE" | "INVALID_RESPONSE" | "TIMEOUT" | "UNAUTHORIZED",
     message: string,
-    options?: ErrorOptions,
+    options?: KiteClientErrorOptions,
   ) {
     super(message, options);
+    if (options?.kiteErrorType !== undefined) this.kiteErrorType = options.kiteErrorType;
+    if (options?.httpStatus !== undefined) this.httpStatus = options.httpStatus;
   }
 }
 
