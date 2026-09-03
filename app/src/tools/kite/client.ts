@@ -200,6 +200,7 @@ export class KiteClient implements KiteClientPort {
         ...(init?.body !== undefined ? { body: init.body } : {}),
         headers: {
           Authorization: `token ${this.options.apiKey}:${this.options.accessToken}`,
+          "X-Kite-Version": "3",
           ...(init?.headers ?? {}),
         },
         signal: deadline.signal,

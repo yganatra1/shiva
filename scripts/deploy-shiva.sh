@@ -373,11 +373,13 @@ module.exports = {
       out_file: "$PM2_LOG_DIR/api-out.log",
       error_file: "$PM2_LOG_DIR/api-error.log",
 
-      // Google credentials belong only to google-agent. Core coordinates the
-      // request and owns policy, but no longer executes Google skills.
+      // Google/Kite credentials belong only to their respective agents. Core
+      // coordinates the request and owns policy, but no longer executes
+      // Google skills or calls Kite directly.
       filter_env: [
         "GOOGLE_",
-        "EXPENSE_SHEET_ID"
+        "EXPENSE_SHEET_ID",
+        "KITE_"
       ],
 
       env: {
@@ -480,6 +482,31 @@ module.exports = {
         NODE_ENV: "production"
       }
     },
+
+    {
+      name: "shiva-trading-agent",
+      cwd: "$APP",
+      script: "npm",
+      args: "run start:trading-agent",
+      interpreter: "none",
+
+      autorestart: true,
+      restart_delay: 2000,
+      max_restarts: 20,
+
+      out_file: "$PM2_LOG_DIR/trading-agent-out.log",
+      error_file: "$PM2_LOG_DIR/trading-agent-error.log",
+
+      // Trading Agent needs PostgreSQL, Redis, Kite credentials, and bounded
+      // worker settings. The runner applies its own strict allowlist again
+      // before accepting work, same as device/google agents.
+      filter_env: [
+      ],
+
+      env: {
+        NODE_ENV: "production"
+      }
+    },
 ${VOICE_APPS}
   ]
 };
@@ -493,6 +520,7 @@ pm2 delete shiva-scheduler >/dev/null 2>&1 || true
 pm2 delete shiva-device-agent >/dev/null 2>&1 || true
 pm2 delete shiva-google-agent >/dev/null 2>&1 || true
 pm2 delete shiva-finance-manager-agent >/dev/null 2>&1 || true
+pm2 delete shiva-trading-agent >/dev/null 2>&1 || true
 pm2 delete shiva-asr >/dev/null 2>&1 || true
 pm2 delete shiva-tts >/dev/null 2>&1 || true
 
@@ -628,6 +656,7 @@ echo "  pm2 logs shiva-scheduler"
 echo "  pm2 logs shiva-device-agent"
 echo "  pm2 logs shiva-google-agent"
 echo "  pm2 logs shiva-finance-manager-agent"
+echo "  pm2 logs shiva-trading-agent"
 echo "  pm2 logs shiva-asr"
 echo "  pm2 logs shiva-tts"
 echo "  pm2 monit"

@@ -158,12 +158,17 @@ export function createAgentRuntime(
     id: "trading-agent",
     name: "Trading Agent",
     description:
-      "Reports deterministic long-equity trade candidates identified by Shiva's quantitative scanner (trend/momentum and breakout strategies). Read-only market analysis — it does not place orders.",
+      "Reports deterministic long-equity trade candidates identified by Shiva's quantitative scanner (trend/momentum and breakout strategies), and reads/manages the user's live Kite trading account (holdings, positions, orders).",
     capabilities: [
       "list today's top-ranked long equity trade candidates",
       "explain why a specific stock is ranked highly with concrete reasons (trend, RSI, relative strength, volume, breakout %, ADX)",
       "report the current market regime (bullish/sideways/bearish) and when the last scan ran",
       "trigger a fresh scan of the configured instrument universe",
+      "report the user's current portfolio holdings and their P&L from their connected Kite account",
+      "report the user's current open positions (net and intraday) from their connected Kite account",
+      "look up the status of the user's recent/pending Kite orders",
+      "place a real buy or sell order on the user's Kite account (requires explicit user confirmation)",
+      "cancel a real pending order on the user's Kite account (requires explicit user confirmation)",
     ],
   });
   const transport = new RedisAgentTransport({
