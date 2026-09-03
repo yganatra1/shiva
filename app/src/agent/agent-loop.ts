@@ -95,10 +95,10 @@ export class AgentLoop {
     if (
       !Number.isInteger(requestTimeoutMs) ||
       requestTimeoutMs < 1 ||
-      requestTimeoutMs > 1_800_000
+      requestTimeoutMs > 86_400_000
     ) {
       throw new RangeError(
-        "Agent request timeout must be an integer from 1 to 1800000 milliseconds.",
+        "Agent request timeout must be an integer from 1 to 86400000 milliseconds.",
       );
     }
   }

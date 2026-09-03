@@ -69,10 +69,10 @@ export class AgentTaskDispatcher {
     if (
       !Number.isInteger(options.taskTimeoutMs) ||
       options.taskTimeoutMs < 5_000 ||
-      options.taskTimeoutMs > 1_800_000
+      options.taskTimeoutMs > 86_400_000
     ) {
       throw new RangeError(
-        "Agent task timeout must be an integer from 5000 to 1800000 milliseconds.",
+        "Agent task timeout must be an integer from 5000 to 86400000 milliseconds.",
       );
     }
     this.taskTimeoutMs = options.taskTimeoutMs;
