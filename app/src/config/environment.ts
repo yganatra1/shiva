@@ -188,6 +188,58 @@ const developerAgentReposSchema = z
     return repos;
   });
 
+const DEVELOPER_AGENT_PM2_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+/**
+ * Parses "name:pm2ProcessName,name:pm2ProcessName" into a PM2 service
+ * allowlist for developer_build_restart. A "name" here is a
+ * DEVELOPER_AGENT_REPOS key — the skill only exposes the intersection of
+ * both maps as selectable repos, and the model can only ever select a name,
+ * never supply a PM2 process name directly.
+ */
+const developerAgentPm2ServicesSchema = z
+  .string()
+  .default("")
+  .transform((value, ctx): Readonly<Record<string, string>> => {
+    const services: Record<string, string> = {};
+    for (const rawEntry of value.split(",")) {
+      const entry = rawEntry.trim();
+      if (!entry) continue;
+      const separatorIndex = entry.indexOf(":");
+      if (separatorIndex <= 0 || separatorIndex === entry.length - 1) {
+        ctx.addIssue({
+          code: "custom",
+          message: `must list entries as name:pm2ProcessName (got "${entry}")`,
+        });
+        return z.NEVER;
+      }
+      const name = entry.slice(0, separatorIndex).trim();
+      const pm2Name = entry.slice(separatorIndex + 1).trim();
+      if (!DEVELOPER_AGENT_REPO_NAME_PATTERN.test(name)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `repo name "${name}" must be lowercase kebab-case`,
+        });
+        return z.NEVER;
+      }
+      if (!DEVELOPER_AGENT_PM2_NAME_PATTERN.test(pm2Name)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `PM2 process name "${pm2Name}" for repo "${name}" is invalid`,
+        });
+        return z.NEVER;
+      }
+      if (services[name] !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          message: `repo name "${name}" is listed more than once`,
+        });
+        return z.NEVER;
+      }
+      services[name] = pm2Name;
+    }
+    return services;
+  });
+
 /**
  * Comma-separated Claude Code tool patterns pre-approved regardless of
  * DEVELOPER_AGENT_PERMISSION_MODE. A bare tool name (no parentheses, e.g.
@@ -377,6 +429,21 @@ const environmentSchema = z
     .enum(["bypassPermissions", "acceptEdits", "plan", "default"])
     .default("acceptEdits"),
   DEVELOPER_AGENT_ALLOWED_TOOLS: developerAgentAllowedToolsSchema,
+  // name -> PM2 process name; only repos listed in both this and
+  // DEVELOPER_AGENT_REPOS are selectable by developer_build_restart.
+  DEVELOPER_AGENT_PM2_SERVICES: developerAgentPm2ServicesSchema,
+  DEVELOPER_AGENT_BUILD_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(10_000)
+    .max(1_800_000)
+    .default(300_000),
+  DEVELOPER_AGENT_RESTART_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(120_000)
+    .default(30_000),
   BRAVE_SEARCH_API_KEY: optionalSecretSchema,
   BRAVE_SEARCH_URL: braveSearchUrlSchema.default("https://api.search.brave.com"),
   WEB_REQUEST_TIMEOUT_MS: z.coerce
@@ -597,6 +664,10 @@ export interface AppConfig {
     | "plan"
     | "default";
   readonly developerAgentAllowedTools: readonly string[];
+  /** name -> PM2 process name; developer_build_restart only offers the intersection with developerAgentRepos. */
+  readonly developerAgentPm2Services: Readonly<Record<string, string>>;
+  readonly developerAgentBuildTimeoutMs: number;
+  readonly developerAgentRestartTimeoutMs: number;
   readonly braveSearchApiKey?: string;
   readonly braveSearchUrl: string;
   readonly webRequestTimeoutMs: number;
@@ -738,6 +809,9 @@ export type DeveloperAgentConfig = Pick<
   | "developerAgentMaxTurns"
   | "developerAgentPermissionMode"
   | "developerAgentAllowedTools"
+  | "developerAgentPm2Services"
+  | "developerAgentBuildTimeoutMs"
+  | "developerAgentRestartTimeoutMs"
   | "nodeEnv"
 >;
 
@@ -847,6 +921,9 @@ const DEVELOPER_AGENT_ENVIRONMENT_KEYS = [
   "DEVELOPER_AGENT_MAX_TURNS",
   "DEVELOPER_AGENT_PERMISSION_MODE",
   "DEVELOPER_AGENT_ALLOWED_TOOLS",
+  "DEVELOPER_AGENT_PM2_SERVICES",
+  "DEVELOPER_AGENT_BUILD_TIMEOUT_MS",
+  "DEVELOPER_AGENT_RESTART_TIMEOUT_MS",
   "NODE_ENV",
 ] as const;
 
@@ -1031,6 +1108,9 @@ export function loadDeveloperAgentConfig(
     developerAgentMaxTurns: config.developerAgentMaxTurns,
     developerAgentPermissionMode: config.developerAgentPermissionMode,
     developerAgentAllowedTools: config.developerAgentAllowedTools,
+    developerAgentPm2Services: config.developerAgentPm2Services,
+    developerAgentBuildTimeoutMs: config.developerAgentBuildTimeoutMs,
+    developerAgentRestartTimeoutMs: config.developerAgentRestartTimeoutMs,
     nodeEnv: config.nodeEnv,
   };
 }
@@ -1234,6 +1314,10 @@ function parseConfig(environment: NodeJS.ProcessEnv | Record<string, string>): A
     developerAgentMaxTurns: result.data.DEVELOPER_AGENT_MAX_TURNS,
     developerAgentPermissionMode: result.data.DEVELOPER_AGENT_PERMISSION_MODE,
     developerAgentAllowedTools: result.data.DEVELOPER_AGENT_ALLOWED_TOOLS,
+    developerAgentPm2Services: result.data.DEVELOPER_AGENT_PM2_SERVICES,
+    developerAgentBuildTimeoutMs: result.data.DEVELOPER_AGENT_BUILD_TIMEOUT_MS,
+    developerAgentRestartTimeoutMs:
+      result.data.DEVELOPER_AGENT_RESTART_TIMEOUT_MS,
     ...(result.data.BRAVE_SEARCH_API_KEY
       ? { braveSearchApiKey: result.data.BRAVE_SEARCH_API_KEY }
       : {}),
