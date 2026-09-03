@@ -188,6 +188,24 @@ const developerAgentReposSchema = z
     return repos;
   });
 
+/**
+ * Comma-separated Claude Code tool patterns pre-approved regardless of
+ * DEVELOPER_AGENT_PERMISSION_MODE (e.g. "Bash(npm *),Bash(npx *)"). Without
+ * this, an edit-only mode like acceptEdits can change a file but never
+ * verify it — Bash tool calls stay denied since headless mode has no TTY to
+ * approve them. Defaults to this repo's own npm/npx tooling, which covers
+ * typecheck/test/build without opening up git or arbitrary shell commands.
+ */
+const developerAgentAllowedToolsSchema = z
+  .string()
+  .default("Bash(npm *),Bash(npx *)")
+  .transform((value): readonly string[] =>
+    value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0),
+  );
+
 const environmentSchema = z
   .object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
@@ -352,6 +370,7 @@ const environmentSchema = z
   DEVELOPER_AGENT_PERMISSION_MODE: z
     .enum(["bypassPermissions", "acceptEdits", "plan", "default"])
     .default("acceptEdits"),
+  DEVELOPER_AGENT_ALLOWED_TOOLS: developerAgentAllowedToolsSchema,
   BRAVE_SEARCH_API_KEY: optionalSecretSchema,
   BRAVE_SEARCH_URL: braveSearchUrlSchema.default("https://api.search.brave.com"),
   WEB_REQUEST_TIMEOUT_MS: z.coerce
@@ -571,6 +590,7 @@ export interface AppConfig {
     | "acceptEdits"
     | "plan"
     | "default";
+  readonly developerAgentAllowedTools: readonly string[];
   readonly braveSearchApiKey?: string;
   readonly braveSearchUrl: string;
   readonly webRequestTimeoutMs: number;
@@ -711,6 +731,7 @@ export type DeveloperAgentConfig = Pick<
   | "developerAgentExecutionTimeoutMs"
   | "developerAgentMaxTurns"
   | "developerAgentPermissionMode"
+  | "developerAgentAllowedTools"
   | "nodeEnv"
 >;
 
@@ -819,6 +840,7 @@ const DEVELOPER_AGENT_ENVIRONMENT_KEYS = [
   "DEVELOPER_AGENT_EXECUTION_TIMEOUT_MS",
   "DEVELOPER_AGENT_MAX_TURNS",
   "DEVELOPER_AGENT_PERMISSION_MODE",
+  "DEVELOPER_AGENT_ALLOWED_TOOLS",
   "NODE_ENV",
 ] as const;
 
@@ -1002,6 +1024,7 @@ export function loadDeveloperAgentConfig(
     developerAgentExecutionTimeoutMs: config.developerAgentExecutionTimeoutMs,
     developerAgentMaxTurns: config.developerAgentMaxTurns,
     developerAgentPermissionMode: config.developerAgentPermissionMode,
+    developerAgentAllowedTools: config.developerAgentAllowedTools,
     nodeEnv: config.nodeEnv,
   };
 }
@@ -1204,6 +1227,7 @@ function parseConfig(environment: NodeJS.ProcessEnv | Record<string, string>): A
       result.data.DEVELOPER_AGENT_EXECUTION_TIMEOUT_MS,
     developerAgentMaxTurns: result.data.DEVELOPER_AGENT_MAX_TURNS,
     developerAgentPermissionMode: result.data.DEVELOPER_AGENT_PERMISSION_MODE,
+    developerAgentAllowedTools: result.data.DEVELOPER_AGENT_ALLOWED_TOOLS,
     ...(result.data.BRAVE_SEARCH_API_KEY
       ? { braveSearchApiKey: result.data.BRAVE_SEARCH_API_KEY }
       : {}),

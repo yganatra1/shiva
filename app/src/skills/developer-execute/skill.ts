@@ -18,22 +18,30 @@ export interface DeveloperExecuteOutput {
   readonly truncated: boolean;
 }
 
-const PERMISSION_MODE_DESCRIPTIONS: Readonly<
-  Record<ClaudeCodePermissionMode, string>
-> = {
-  bypassPermissions:
-    "Claude Code has full read/write file and shell access inside that repository (runs with --dangerously-skip-permissions) — it can create, edit, or delete files and run arbitrary commands including git.",
-  acceptEdits:
-    "Claude Code can freely read, create, edit, and delete files inside that repository (runs with --permission-mode acceptEdits), but headless mode has no terminal to prompt on, so any command it would normally ask about (e.g. running git, tests, or other shell commands) is automatically denied rather than executed — it cannot silently do more than file edits.",
-  plan:
-    "Claude Code only plans in this mode (--permission-mode plan) — it can read the repository but every file edit and shell command is automatically denied, so it cannot make any actual change.",
-  default:
-    "Claude Code runs in its default permission mode; headless mode has no terminal to prompt on, so any action requiring approval is automatically denied rather than executed.",
-};
+function describePermissionMode(
+  permissionMode: ClaudeCodePermissionMode,
+  allowedTools: readonly string[],
+): string {
+  const allowedToolsNote =
+    allowedTools.length > 0
+      ? ` These specific commands are pre-approved and will actually run: ${allowedTools.join(", ")}.`
+      : "";
+  switch (permissionMode) {
+    case "bypassPermissions":
+      return "Claude Code has full read/write file and shell access inside that repository (runs with --dangerously-skip-permissions) — it can create, edit, or delete files and run arbitrary commands including git.";
+    case "acceptEdits":
+      return `Claude Code can freely read, create, edit, and delete files inside that repository (runs with --permission-mode acceptEdits). Headless mode has no terminal to prompt on, so any other command (git, tests, builds, etc.) is automatically denied rather than executed unless explicitly pre-approved.${allowedToolsNote}`;
+    case "plan":
+      return "Claude Code only plans in this mode (--permission-mode plan) — it can read the repository but every file edit and shell command is automatically denied, so it cannot make any actual change.";
+    default:
+      return `Claude Code runs in its default permission mode; headless mode has no terminal to prompt on, so any action requiring approval is automatically denied rather than executed unless explicitly pre-approved.${allowedToolsNote}`;
+  }
+}
 
 export function createDeveloperExecuteSkill(
   repos: Readonly<Record<string, string>>,
   permissionMode: ClaudeCodePermissionMode,
+  allowedTools: readonly string[],
   runner?: ClaudeCodeRunner,
 ) {
   const repoNames = Object.keys(repos);
@@ -45,7 +53,7 @@ export function createDeveloperExecuteSkill(
     instruction: z.string().trim().min(1).max(8_000),
   });
   type DeveloperExecuteInput = z.infer<typeof inputSchema>;
-  const permissionDescription = PERMISSION_MODE_DESCRIPTIONS[permissionMode];
+  const permissionDescription = describePermissionMode(permissionMode, allowedTools);
 
   return defineSkill<DeveloperExecuteInput, DeveloperExecuteOutput>({
     name: "developer_execute",

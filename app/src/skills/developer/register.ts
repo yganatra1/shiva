@@ -11,6 +11,7 @@ export function registerDeveloperSkills(
     | "developerAgentExecutionTimeoutMs"
     | "developerAgentMaxTurns"
     | "developerAgentPermissionMode"
+    | "developerAgentAllowedTools"
   >,
 ): void {
   const runner =
@@ -19,6 +20,7 @@ export function registerDeveloperSkills(
           timeoutMs: config.developerAgentExecutionTimeoutMs,
           maxTurns: config.developerAgentMaxTurns,
           permissionMode: config.developerAgentPermissionMode,
+          allowedTools: config.developerAgentAllowedTools,
           env: process.env,
         })
       : undefined;
@@ -27,6 +29,7 @@ export function registerDeveloperSkills(
     createDeveloperExecuteSkill(
       config.developerAgentRepos,
       config.developerAgentPermissionMode,
+      config.developerAgentAllowedTools,
       runner,
     ),
   );

@@ -68,6 +68,7 @@ export const testConfig: AppConfig = {
   developerAgentExecutionTimeoutMs: 1_500_000,
   developerAgentMaxTurns: 60,
   developerAgentPermissionMode: "acceptEdits",
+  developerAgentAllowedTools: ["Bash(npm *)", "Bash(npx *)"],
   braveSearchUrl: "https://api.search.brave.com",
   webRequestTimeoutMs: 1_000,
   webMaxContentBytes: 64 * 1024,

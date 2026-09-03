@@ -45,6 +45,25 @@ test("run() translates any other permissionMode into --permission-mode <value>",
   assert.equal(argv[modeIndex + 1], "acceptEdits");
 });
 
+test("run() passes --allowedTools as one comma-joined argument when configured", async () => {
+  const result = await runner({
+    allowedTools: ["Bash(npm *)", "Bash(npx *)"],
+  }).run({ repoPath: process.cwd(), instruction: "ECHO_ARGV" });
+  const argv = JSON.parse(result.result) as string[];
+  const flagIndex = argv.indexOf("--allowedTools");
+  assert.ok(flagIndex >= 0);
+  assert.equal(argv[flagIndex + 1], "Bash(npm *),Bash(npx *)");
+});
+
+test("run() omits --allowedTools entirely when none are configured", async () => {
+  const result = await runner({ allowedTools: [] }).run({
+    repoPath: process.cwd(),
+    instruction: "ECHO_ARGV",
+  });
+  const argv = JSON.parse(result.result) as string[];
+  assert.ok(!argv.includes("--allowedTools"));
+});
+
 test("run() parses a successful JSON result", async () => {
   const result = await runner().run({
     repoPath: process.cwd(),

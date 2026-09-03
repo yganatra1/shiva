@@ -60,6 +60,14 @@ export interface ClaudeCodeRunnerOptions {
   readonly maxTurns: number;
   readonly maxOutputBytes?: number;
   readonly permissionMode: ClaudeCodePermissionMode;
+  /**
+   * Claude Code tool patterns pre-approved regardless of permissionMode, e.g.
+   * ["Bash(npm *)", "Bash(npx *)"]. Under a mode other than bypassPermissions,
+   * headless has no TTY to approve anything not covered here or by the
+   * mode's own auto-approvals (acceptEdits' file edits) — without this,
+   * "run the tests" instructions can edit a file but never verify it.
+   */
+  readonly allowedTools?: readonly string[];
   /** Test seam; production always spawns the real "claude" binary on PATH. */
   readonly command?: string;
   /**
@@ -94,6 +102,7 @@ export class ClaudeCodeRunner {
   private readonly maxTurns: number;
   private readonly maxOutputBytes: number;
   private readonly permissionMode: ClaudeCodePermissionMode;
+  private readonly allowedTools: readonly string[];
   private readonly command: string;
   private readonly env: NodeJS.ProcessEnv;
 
@@ -102,6 +111,7 @@ export class ClaudeCodeRunner {
     this.maxTurns = options.maxTurns;
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     this.permissionMode = options.permissionMode;
+    this.allowedTools = options.allowedTools ?? [];
     this.command = options.command ?? "claude";
     this.env = options.env;
     if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 1_000) {
@@ -179,6 +189,9 @@ export class ClaudeCodeRunner {
           ...(this.permissionMode === "bypassPermissions"
             ? ["--dangerously-skip-permissions"]
             : ["--permission-mode", this.permissionMode]),
+          ...(this.allowedTools.length > 0
+            ? ["--allowedTools", this.allowedTools.join(",")]
+            : []),
           "--max-turns",
           String(this.maxTurns),
         ],
