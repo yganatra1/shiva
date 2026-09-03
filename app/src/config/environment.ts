@@ -285,13 +285,13 @@ const environmentSchema = z
     .number()
     .int()
     .min(1_000)
-    .max(1_800_000)
+    .max(86_400_000)
     .default(300_000),
   AGENT_TASK_TIMEOUT_MS: z.coerce
     .number()
     .int()
     .min(5_000)
-    .max(1_800_000)
+    .max(86_400_000)
     .default(300_000),
   AGENT_RECLAIM_IDLE_MS: z.coerce
     .number()
@@ -343,7 +343,7 @@ const environmentSchema = z
     .number()
     .int()
     .min(60_000)
-    .max(1_800_000)
+    .max(86_400_000)
     .default(1_500_000),
   DEVELOPER_AGENT_MAX_TURNS: z.coerce.number().int().min(1).max(200).default(60),
   // "bypassPermissions" (--dangerously-skip-permissions) refuses to start
