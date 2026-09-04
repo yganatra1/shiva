@@ -18,6 +18,7 @@ import { TrendMomentumStrategy } from "../../trading/strategies/trend-momentum-s
 import { DrizzleTradingRepository } from "../../trading/trading-repository";
 import { TradingService } from "../../trading/trading-service";
 import { KiteInstrumentUniverseProvider } from "../../trading/universe/kite-instrument-universe-provider";
+import { createKiteBenchmarkInstrumentResolver } from "../../trading/universe/resolve-kite-benchmark";
 import { StaticInstrumentUniverseProvider } from "../../trading/universe/static-universe-provider";
 import { AgentWorker } from "../shared/agent-worker";
 import { RedisAgentTransport } from "../shared/redis-agent-transport";
@@ -71,11 +72,9 @@ async function start(): Promise<void> {
         : new UnconfiguredMarketDataProvider(),
       strategies: [TrendMomentumStrategy, BreakoutVolumeStrategy],
       config: config.trading,
-      benchmarkInstrument: {
-        instrumentToken: 0,
-        exchange: "INDICES",
-        tradingsymbol: config.trading.benchmarkSymbol,
-      },
+      benchmarkInstrument: kiteClient
+        ? createKiteBenchmarkInstrumentResolver(kiteClient, "NSE", config.trading.benchmarkSymbol)
+        : { instrumentToken: 0, exchange: "NSE", tradingsymbol: config.trading.benchmarkSymbol },
     });
     const tradingService = new TradingService({
       scanner,

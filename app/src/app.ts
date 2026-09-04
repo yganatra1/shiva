@@ -73,6 +73,7 @@ import { TrendMomentumStrategy } from "./trading/strategies/trend-momentum-strat
 import { DrizzleTradingRepository } from "./trading/trading-repository";
 import { TradingService } from "./trading/trading-service";
 import { KiteInstrumentUniverseProvider } from "./trading/universe/kite-instrument-universe-provider";
+import { createKiteBenchmarkInstrumentResolver } from "./trading/universe/resolve-kite-benchmark";
 import { StaticInstrumentUniverseProvider } from "./trading/universe/static-universe-provider";
 import { HttpASRProvider } from "./voice/http-asr-provider";
 import { HttpTTSProvider } from "./voice/http-tts-provider";
@@ -181,11 +182,9 @@ export function createApp(config: AppConfig, overrides: AppOverrides = {}): Fast
             : new StaticInstrumentUniverseProvider({
                 symbols: tradingConfig.staticUniverseSymbols,
               });
-          const benchmarkInstrument = {
-            instrumentToken: 0,
-            exchange: "INDICES",
-            tradingsymbol: tradingConfig.benchmarkSymbol,
-          };
+          const benchmarkInstrument = kiteClient
+            ? createKiteBenchmarkInstrumentResolver(kiteClient, "NSE", tradingConfig.benchmarkSymbol)
+            : { instrumentToken: 0, exchange: "NSE", tradingsymbol: tradingConfig.benchmarkSymbol };
           const scanner = new TradingScannerService({
             universeProvider,
             marketDataProvider: kiteClient

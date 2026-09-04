@@ -21,9 +21,12 @@ export interface TradingScannerServiceOptions {
   /**
    * The benchmark instrument to fetch candles for (config.benchmarkSymbol is
    * just a display name; resolving it to a broker instrument token is a
-   * deployment concern, not something this scanner hardcodes).
+   * deployment concern, not something this scanner hardcodes). May be a
+   * static value (tests, or when no broker is configured) or an async
+   * resolver — e.g. one backed by a live instrument dump — resolved once per
+   * scan(); callers typically cache the result themselves.
    */
-  readonly benchmarkInstrument: TradingInstrument;
+  readonly benchmarkInstrument: TradingInstrument | (() => Promise<TradingInstrument>);
   /** Injected for deterministic, replayable tests; defaults to the wall clock. */
   readonly now?: () => Date;
   /** How many trading days of history to request per instrument. */
@@ -47,9 +50,14 @@ export class TradingScannerService {
     const historyDays = this.options.historyDays ?? DEFAULT_HISTORY_DAYS;
     const config = this.options.config;
 
+    const benchmarkInstrument =
+      typeof this.options.benchmarkInstrument === "function"
+        ? await this.options.benchmarkInstrument()
+        : this.options.benchmarkInstrument;
+
     const [universe, benchmarkCandles] = await Promise.all([
       this.options.universeProvider.getUniverse(),
-      this.fetchCandles(this.options.benchmarkInstrument, historyDays),
+      this.fetchCandles(benchmarkInstrument, historyDays),
     ]);
 
     const marketRegime = detectMarketRegime(benchmarkCandles, config);
